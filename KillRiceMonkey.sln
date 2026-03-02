@@ -5,17 +5,17 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{FD65FAF7-ABB9-4C6C-A4D2-9620DFC546ED}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.App", "src\TicketingAutoPurchase.App\TicketingAutoPurchase.App.csproj", "{4205C2CF-DF5A-403C-8F83-CE24F0616394}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KillRiceMonkey.App", "src\KillRiceMonkey.App\KillRiceMonkey.App.csproj", "{4205C2CF-DF5A-403C-8F83-CE24F0616394}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Domain", "src\TicketingAutoPurchase.Domain\TicketingAutoPurchase.Domain.csproj", "{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KillRiceMonkey.Domain", "src\KillRiceMonkey.Domain\KillRiceMonkey.Domain.csproj", "{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Application", "src\TicketingAutoPurchase.Application\TicketingAutoPurchase.Application.csproj", "{F198B107-8E94-4EB9-B74F-CD51B8A85242}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KillRiceMonkey.Application", "src\KillRiceMonkey.Application\KillRiceMonkey.Application.csproj", "{F198B107-8E94-4EB9-B74F-CD51B8A85242}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Infrastructure", "src\TicketingAutoPurchase.Infrastructure\TicketingAutoPurchase.Infrastructure.csproj", "{CD9663A5-2170-4378-B403-B5976A8B3286}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KillRiceMonkey.Infrastructure", "src\KillRiceMonkey.Infrastructure\KillRiceMonkey.Infrastructure.csproj", "{CD9663A5-2170-4378-B403-B5976A8B3286}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{92AA172D-2534-45A3-A2CD-483108CD72AE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Tests", "tests\TicketingAutoPurchase.Tests\TicketingAutoPurchase.Tests.csproj", "{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KillRiceMonkey.Tests", "tests\KillRiceMonkey.Tests\KillRiceMonkey.Tests.csproj", "{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

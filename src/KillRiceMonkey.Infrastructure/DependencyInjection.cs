@@ -1,8 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
-using TicketingAutoPurchase.Application.Abstractions;
-using TicketingAutoPurchase.Infrastructure.Services;
+using KillRiceMonkey.Application.Abstractions;
+using KillRiceMonkey.Infrastructure.Services;
 
-namespace TicketingAutoPurchase.Infrastructure;
+namespace KillRiceMonkey.Infrastructure;
 
 public static class DependencyInjection
 {

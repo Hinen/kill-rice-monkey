@@ -1,4 +1,4 @@
-namespace TicketingAutoPurchase.Tests;
+namespace KillRiceMonkey.Tests;
 
 public class UnitTest1
 {

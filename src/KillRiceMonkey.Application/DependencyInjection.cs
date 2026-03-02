@@ -1,6 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace TicketingAutoPurchase.Application;
+namespace KillRiceMonkey.Application;
 
 public static class DependencyInjection
 {

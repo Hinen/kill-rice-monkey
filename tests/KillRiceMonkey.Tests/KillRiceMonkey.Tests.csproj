@@ -21,8 +21,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\TicketingAutoPurchase.Application\TicketingAutoPurchase.Application.csproj" />
-    <ProjectReference Include="..\..\src\TicketingAutoPurchase.Domain\TicketingAutoPurchase.Domain.csproj" />
+    <ProjectReference Include="..\..\src\KillRiceMonkey.Application\KillRiceMonkey.Application.csproj" />
+    <ProjectReference Include="..\..\src\KillRiceMonkey.Domain\KillRiceMonkey.Domain.csproj" />
   </ItemGroup>
 
 </Project>

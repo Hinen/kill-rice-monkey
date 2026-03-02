@@ -1,13 +1,13 @@
-﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 using System.Windows;
-using TicketingAutoPurchase.Application;
-using TicketingAutoPurchase.App.ViewModels;
-using TicketingAutoPurchase.Infrastructure;
+using KillRiceMonkey.Application;
+using KillRiceMonkey.App.ViewModels;
+using KillRiceMonkey.Infrastructure;
 
-namespace TicketingAutoPurchase.App;
+namespace KillRiceMonkey.App;
 
 public partial class App : System.Windows.Application
 {

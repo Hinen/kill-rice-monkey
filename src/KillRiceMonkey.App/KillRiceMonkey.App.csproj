@@ -1,8 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\TicketingAutoPurchase.Application\TicketingAutoPurchase.Application.csproj" />
-    <ProjectReference Include="..\TicketingAutoPurchase.Infrastructure\TicketingAutoPurchase.Infrastructure.csproj" />
+    <ProjectReference Include="..\KillRiceMonkey.Application\KillRiceMonkey.Application.csproj" />
+    <ProjectReference Include="..\KillRiceMonkey.Infrastructure\KillRiceMonkey.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>
