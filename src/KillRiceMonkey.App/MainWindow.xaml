@@ -45,7 +45,7 @@
         </StackPanel>
 
         <TextBlock Grid.Row="4" Margin="0,12,0,0" TextWrapping="Wrap" Foreground="#374151"
-                   Text="{Binding HotkeyText, StringFormat=전역 핫키({0})로 active 진입 가능. 파일명 규칙: 숫자-normal.png / 숫자-active.png}" />
+                   Text="{Binding HotkeyText, StringFormat=전역 핫키({0})로 active 진입 가능. 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png}" />
 
         <Border Grid.Row="5" Margin="0,20,0,0" Padding="14" CornerRadius="8" BorderThickness="1" BorderBrush="#D1D5DB" Background="#F9FAFB">
             <TextBlock TextWrapping="Wrap" Text="{Binding LastRunSummary}" />

@@ -12,7 +12,7 @@ namespace KillRiceMonkey.Infrastructure.Services;
 
 public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationService
 {
-    private static readonly Regex StepPattern = new("^(?<step>\\d+)-(?<state>normal|active)\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex StepPattern = new("^(?<step>\\d+)(?:-(?<state>normal|active))?\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
 
     private const int PollDelayMilliseconds = 30;
@@ -67,7 +67,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 {
                     if (stepGroups.Count == 0)
                     {
-                        return new AutomationRunResult(false, "숫자-상태.png 패턴의 이미지가 없습니다.", DateTimeOffset.Now);
+                        return new AutomationRunResult(false, "숫자.png 또는 숫자-상태.png 패턴의 이미지가 없습니다.", DateTimeOffset.Now);
                     }
 
                     _logger.LogInformation("Automation started. directory={Directory}, stepCount={Count}", resolvedDirectory, stepGroups.Count);
@@ -109,10 +109,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var started = DateTimeOffset.UtcNow;
         var activeTemplates = stepGroup.Templates.Where(x => x.State == "active").ToList();
         var normalTemplates = stepGroup.Templates.Where(x => x.State == "normal").ToList();
+        var singleTemplates = stepGroup.Templates.Where(x => x.State == "single").ToList();
 
-        if (normalTemplates.Count == 0)
+        if (normalTemplates.Count == 0 && singleTemplates.Count == 0)
         {
-            return (false, $"{stepGroup.Step}단계 normal 이미지가 없습니다.");
+            return (false, $"{stepGroup.Step}단계 클릭 가능한 이미지가 없습니다.");
         }
 
         var bestScore = double.NegativeInfinity;
@@ -124,11 +125,18 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             using var frame = CaptureScreen();
             using var grayFrame = ToGray(frame.Image);
 
-            var normalMatch = TryFindMatch(grayFrame, normalTemplates, threshold, out var normalBestScore);
-            bestScore = Math.Max(bestScore, normalBestScore);
-            if (normalMatch is not null)
+            var clickableTemplates = normalTemplates.Count > 0 ? normalTemplates : singleTemplates;
+            var clickMatch = TryFindMatch(grayFrame, clickableTemplates, threshold, out var clickBestScore);
+            bestScore = Math.Max(bestScore, clickBestScore);
+            if (clickMatch is not null)
             {
-                ClickAt(frame.OffsetX + normalMatch.Value.X, frame.OffsetY + normalMatch.Value.Y);
+                ClickAt(frame.OffsetX + clickMatch.Value.X, frame.OffsetY + clickMatch.Value.Y);
+
+                if (clickableTemplates == singleTemplates)
+                {
+                    return (true, $"{stepGroup.Step}단계 클릭 성공 (single, score={clickMatch.Value.Score:F3})");
+                }
+
                 var transitioned = await WaitForTransitionAsync(
                     activeTemplates,
                     normalTemplates,
@@ -139,7 +147,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
                 if (transitioned)
                 {
-                    return (true, $"{stepGroup.Step}단계 클릭 성공 ({normalMatch.Value.State}, score={normalMatch.Value.Score:F3})");
+                    return (true, $"{stepGroup.Step}단계 클릭 성공 ({clickMatch.Value.State}, score={clickMatch.Value.Score:F3})");
                 }
 
                 return (false, $"{stepGroup.Step}단계 클릭 후 상태 전환 확인 실패");
@@ -170,7 +178,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            var state = match.Groups["state"].Value.ToLowerInvariant();
+            var stateGroup = match.Groups["state"];
+            var state = stateGroup.Success ? stateGroup.Value.ToLowerInvariant() : "single";
             var image = Cv2.ImRead(filePath, ImreadModes.Grayscale);
             if (image.Empty())
             {
