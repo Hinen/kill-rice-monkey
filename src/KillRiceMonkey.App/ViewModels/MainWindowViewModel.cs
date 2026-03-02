@@ -64,6 +64,11 @@ public partial class MainWindowViewModel : ObservableObject
             StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
             LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
         }
+        catch (Exception ex)
+        {
+            StatusMessage = "예외 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 예외 발생: {ex.Message}";
+        }
         finally
         {
             IsRunning = false;

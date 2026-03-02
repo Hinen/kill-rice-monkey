@@ -39,44 +39,62 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     public async Task<AutomationRunResult> RunAsync(TicketingJobRequest request, CancellationToken cancellationToken)
     {
-        return await _pipeline.ExecuteAsync(async token =>
+        try
         {
-            var resolvedDirectory = Path.GetFullPath(request.ImageDirectory, AppContext.BaseDirectory);
-            if (!Directory.Exists(resolvedDirectory))
+            return await _pipeline.ExecuteAsync(async token =>
             {
-                return new AutomationRunResult(false, $"이미지 폴더를 찾을 수 없습니다: {resolvedDirectory}", DateTimeOffset.Now);
-            }
-
-            var stepGroups = LoadStepGroups(resolvedDirectory);
-            try
-            {
-                if (stepGroups.Count == 0)
+                if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
                 {
-                    return new AutomationRunResult(false, "숫자-상태.png 패턴의 이미지가 없습니다.", DateTimeOffset.Now);
+                    return new AutomationRunResult(false, "매칭 임계값은 0보다 크고 1 이하여야 합니다.", DateTimeOffset.Now);
                 }
 
-                _logger.LogInformation("Automation started. directory={Directory}, stepCount={Count}", resolvedDirectory, stepGroups.Count);
-
-                foreach (var stepGroup in stepGroups)
+                if (request.StepTimeoutSeconds <= 0)
                 {
-                    token.ThrowIfCancellationRequested();
+                    return new AutomationRunResult(false, "단계별 제한 시간은 1초 이상이어야 합니다.", DateTimeOffset.Now);
+                }
 
-                    var found = await WaitAndClickStepAsync(stepGroup, request.MatchThreshold, request.StepTimeoutSeconds, token);
-                    if (!found.IsSuccess)
+                var resolvedDirectory = ResolveImageDirectory(request.ImageDirectory);
+                if (resolvedDirectory is null)
+                {
+                    return new AutomationRunResult(false, $"이미지 폴더를 찾을 수 없습니다: {request.ImageDirectory}", DateTimeOffset.Now);
+                }
+
+                var stepGroups = LoadStepGroups(resolvedDirectory);
+                try
+                {
+                    if (stepGroups.Count == 0)
                     {
-                        return new AutomationRunResult(false, found.Message, DateTimeOffset.Now);
+                        return new AutomationRunResult(false, "숫자-상태.png 패턴의 이미지가 없습니다.", DateTimeOffset.Now);
                     }
-                }
 
-                var message = $"{stepGroups.Count}개 단계를 완료했습니다.";
-                _logger.LogInformation(message);
-                return new AutomationRunResult(true, message, DateTimeOffset.Now);
-            }
-            finally
-            {
-                DisposeStepGroups(stepGroups);
-            }
-        }, cancellationToken);
+                    _logger.LogInformation("Automation started. directory={Directory}, stepCount={Count}", resolvedDirectory, stepGroups.Count);
+
+                    foreach (var stepGroup in stepGroups)
+                    {
+                        token.ThrowIfCancellationRequested();
+
+                        var found = await WaitAndClickStepAsync(stepGroup, request.MatchThreshold, request.StepTimeoutSeconds, token);
+                        if (!found.IsSuccess)
+                        {
+                            return new AutomationRunResult(false, found.Message, DateTimeOffset.Now);
+                        }
+                    }
+
+                    var message = $"{stepGroups.Count}개 단계를 완료했습니다.";
+                    _logger.LogInformation(message);
+                    return new AutomationRunResult(true, message, DateTimeOffset.Now);
+                }
+                finally
+                {
+                    DisposeStepGroups(stepGroups);
+                }
+            }, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Automation failed with exception");
+            return new AutomationRunResult(false, $"예외 발생: {ex.Message}", DateTimeOffset.Now);
+        }
     }
 
     private async Task<(bool IsSuccess, string Message)> WaitAndClickStepAsync(
@@ -88,19 +106,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var started = DateTimeOffset.UtcNow;
         var activeTemplates = stepGroup.Templates.Where(x => x.State == "active").ToList();
         var normalTemplates = stepGroup.Templates.Where(x => x.State == "normal").ToList();
+        var bestScore = double.NegativeInfinity;
 
         while (DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(timeoutSeconds))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             using var frame = CaptureScreen();
-            var activeMatch = TryFindMatch(frame.Image, activeTemplates, threshold);
+            var activeMatch = TryFindMatch(frame.Image, activeTemplates, threshold, out var activeBestScore);
+            bestScore = Math.Max(bestScore, activeBestScore);
             if (activeMatch is not null)
             {
                 return (true, $"{stepGroup.Step}단계 이미 active 상태 감지 (score={activeMatch.Value.Score:F3})");
             }
 
-            var normalMatch = TryFindMatch(frame.Image, normalTemplates, threshold);
+            var normalMatch = TryFindMatch(frame.Image, normalTemplates, threshold, out var normalBestScore);
+            bestScore = Math.Max(bestScore, normalBestScore);
             if (normalMatch is not null)
             {
                 ClickAt(frame.OffsetX + normalMatch.Value.X, frame.OffsetY + normalMatch.Value.Y);
@@ -123,7 +144,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             await Task.Delay(120, cancellationToken);
         }
 
-        return (false, $"{stepGroup.Step}단계 버튼 탐지 실패 (timeout {timeoutSeconds}s)");
+        var bestText = double.IsNegativeInfinity(bestScore) ? "N/A" : bestScore.ToString("F3");
+        return (false, $"{stepGroup.Step}단계 버튼 탐지 실패 (timeout {timeoutSeconds}s, best={bestText})");
     }
 
     private static IReadOnlyList<StepGroup> LoadStepGroups(string directory)
@@ -145,7 +167,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
 
             var state = match.Groups["state"].Value.ToLowerInvariant();
-            var image = Cv2.ImRead(filePath, ImreadModes.Color);
+            var image = Cv2.ImRead(filePath, ImreadModes.Grayscale);
             if (image.Empty())
             {
                 continue;
@@ -172,18 +194,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             .ToList();
     }
 
-    private static MatchHit? TryFindMatch(Mat screenshot, IReadOnlyList<StepTemplate> templates, double threshold)
+    private static MatchHit? TryFindMatch(Mat screenshot, IReadOnlyList<StepTemplate> templates, double threshold, out double bestScore)
     {
+        bestScore = double.NegativeInfinity;
+
+        using var matchingImage = ToGray(screenshot);
+
         foreach (var template in templates)
         {
-            if (screenshot.Width < template.Image.Width || screenshot.Height < template.Image.Height)
+            if (matchingImage.Width < template.Image.Width || matchingImage.Height < template.Image.Height)
             {
                 continue;
             }
 
             using var result = new Mat();
-            Cv2.MatchTemplate(screenshot, template.Image, result, TemplateMatchModes.CCoeffNormed);
+            Cv2.MatchTemplate(matchingImage, template.Image, result, TemplateMatchModes.CCoeffNormed);
             Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
+            bestScore = Math.Max(bestScore, maxValue);
             if (maxValue >= threshold)
             {
                 return new MatchHit(
@@ -195,6 +222,24 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return null;
+    }
+
+    private static Mat ToGray(Mat source)
+    {
+        if (source.Channels() == 1)
+        {
+            return source.Clone();
+        }
+
+        var gray = new Mat();
+        if (source.Channels() == 4)
+        {
+            Cv2.CvtColor(source, gray, ColorConversionCodes.BGRA2GRAY);
+            return gray;
+        }
+
+        Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+        return gray;
     }
 
     private static async Task<bool> WaitForTransitionAsync(
@@ -210,12 +255,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             cancellationToken.ThrowIfCancellationRequested();
 
             using var frame = CaptureScreen();
-            if (activeTemplates.Count > 0 && TryFindMatch(frame.Image, activeTemplates, threshold) is not null)
+            if (activeTemplates.Count > 0 && TryFindMatch(frame.Image, activeTemplates, threshold, out _) is not null)
             {
                 return true;
             }
 
-            if (normalTemplates.Count > 0 && TryFindMatch(frame.Image, normalTemplates, threshold) is null)
+            if (normalTemplates.Count > 0 && TryFindMatch(frame.Image, normalTemplates, threshold, out _) is null)
             {
                 return true;
             }
@@ -235,6 +280,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 template.Image.Dispose();
             }
         }
+    }
+
+    private static string? ResolveImageDirectory(string configuredPath)
+    {
+        var primary = Path.GetFullPath(configuredPath, AppContext.BaseDirectory);
+        if (Directory.Exists(primary))
+        {
+            return primary;
+        }
+
+        var fallback = Path.GetFullPath(configuredPath, Environment.CurrentDirectory);
+        if (Directory.Exists(fallback))
+        {
+            return fallback;
+        }
+
+        return null;
     }
 
     private static ScreenFrame CaptureScreen()
