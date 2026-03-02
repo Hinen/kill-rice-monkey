@@ -1,6 +1,6 @@
-using TicketingAutoPurchase.Application.Models;
+using KillRiceMonkey.Application.Models;
 
-namespace TicketingAutoPurchase.Application.Abstractions;
+namespace KillRiceMonkey.Application.Abstractions;
 
 public interface ITicketingAutomationService
 {

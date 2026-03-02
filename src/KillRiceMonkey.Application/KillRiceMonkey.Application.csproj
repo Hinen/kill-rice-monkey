@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\TicketingAutoPurchase.Domain\TicketingAutoPurchase.Domain.csproj" />
+    <ProjectReference Include="..\KillRiceMonkey.Domain\KillRiceMonkey.Domain.csproj" />
   </ItemGroup>
 
   <ItemGroup>
