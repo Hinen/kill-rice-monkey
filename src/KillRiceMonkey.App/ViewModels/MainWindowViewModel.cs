@@ -10,6 +10,11 @@ public partial class MainWindowViewModel : ObservableObject
 {
     private readonly ITicketingAutomationService _ticketingAutomationService;
 
+    public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Custom"];
+
+    [ObservableProperty]
+    private string _selectedTemplate = "Custom";
+
     [ObservableProperty]
     private string _imageDirectory = "button-images";
 
@@ -67,7 +72,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         try
         {
-            var request = new TicketingJobRequest(ImageDirectory, MatchThreshold, StepTimeoutSeconds);
+            var request = new TicketingJobRequest(ParseTemplateType(SelectedTemplate), ImageDirectory, MatchThreshold, StepTimeoutSeconds);
             var result = await _ticketingAutomationService.RunAsync(request, CancellationToken.None);
 
             StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
@@ -88,5 +93,12 @@ public partial class MainWindowViewModel : ObservableObject
                 mainWindow.Activate();
             }
         }
+    }
+
+    private static TicketingTemplateType ParseTemplateType(string value)
+    {
+        return value.Equals("Yes24", StringComparison.OrdinalIgnoreCase)
+            ? TicketingTemplateType.Yes24
+            : TicketingTemplateType.Custom;
     }
 }
