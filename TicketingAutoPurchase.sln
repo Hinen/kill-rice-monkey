@@ -1,0 +1,57 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{FD65FAF7-ABB9-4C6C-A4D2-9620DFC546ED}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.App", "src\TicketingAutoPurchase.App\TicketingAutoPurchase.App.csproj", "{4205C2CF-DF5A-403C-8F83-CE24F0616394}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Domain", "src\TicketingAutoPurchase.Domain\TicketingAutoPurchase.Domain.csproj", "{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Application", "src\TicketingAutoPurchase.Application\TicketingAutoPurchase.Application.csproj", "{F198B107-8E94-4EB9-B74F-CD51B8A85242}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Infrastructure", "src\TicketingAutoPurchase.Infrastructure\TicketingAutoPurchase.Infrastructure.csproj", "{CD9663A5-2170-4378-B403-B5976A8B3286}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{92AA172D-2534-45A3-A2CD-483108CD72AE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TicketingAutoPurchase.Tests", "tests\TicketingAutoPurchase.Tests\TicketingAutoPurchase.Tests.csproj", "{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4205C2CF-DF5A-403C-8F83-CE24F0616394}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4205C2CF-DF5A-403C-8F83-CE24F0616394}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4205C2CF-DF5A-403C-8F83-CE24F0616394}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4205C2CF-DF5A-403C-8F83-CE24F0616394}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F198B107-8E94-4EB9-B74F-CD51B8A85242}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F198B107-8E94-4EB9-B74F-CD51B8A85242}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F198B107-8E94-4EB9-B74F-CD51B8A85242}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F198B107-8E94-4EB9-B74F-CD51B8A85242}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CD9663A5-2170-4378-B403-B5976A8B3286}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CD9663A5-2170-4378-B403-B5976A8B3286}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CD9663A5-2170-4378-B403-B5976A8B3286}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CD9663A5-2170-4378-B403-B5976A8B3286}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{4205C2CF-DF5A-403C-8F83-CE24F0616394} = {FD65FAF7-ABB9-4C6C-A4D2-9620DFC546ED}
+		{8B3E6F74-76E7-4540-B982-7BF9F7FD1A98} = {FD65FAF7-ABB9-4C6C-A4D2-9620DFC546ED}
+		{F198B107-8E94-4EB9-B74F-CD51B8A85242} = {FD65FAF7-ABB9-4C6C-A4D2-9620DFC546ED}
+		{CD9663A5-2170-4378-B403-B5976A8B3286} = {FD65FAF7-ABB9-4C6C-A4D2-9620DFC546ED}
+		{8FDFBC97-C4BF-4BC6-9B51-90DC7917DAF7} = {92AA172D-2534-45A3-A2CD-483108CD72AE}
+	EndGlobalSection
+EndGlobal

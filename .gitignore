@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+TestResults/
+logs/
+playwright.ps1
+playwright.cmd
+playwright.sh
