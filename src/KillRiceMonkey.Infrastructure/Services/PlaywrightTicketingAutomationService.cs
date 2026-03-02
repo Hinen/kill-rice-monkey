@@ -13,6 +13,7 @@ namespace KillRiceMonkey.Infrastructure.Services;
 public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationService
 {
     private static readonly Regex StepPattern = new("^(?<step>\\d+)-(?<state>normal|active)\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly double[] MatchScales = [0.90, 0.95, 1.00, 1.05, 1.10];
 
     private const int SmXvirtualscreen = 76;
     private const int SmYvirtualscreen = 77;
@@ -202,26 +203,54 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         foreach (var template in templates)
         {
-            if (matchingImage.Width < template.Image.Width || matchingImage.Height < template.Image.Height)
+            foreach (var scale in MatchScales)
             {
-                continue;
-            }
+                using var scaledTemplate = BuildScaledTemplate(template.Image, scale);
+                if (scaledTemplate is null)
+                {
+                    continue;
+                }
 
-            using var result = new Mat();
-            Cv2.MatchTemplate(matchingImage, template.Image, result, TemplateMatchModes.CCoeffNormed);
-            Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
-            bestScore = Math.Max(bestScore, maxValue);
-            if (maxValue >= threshold)
-            {
-                return new MatchHit(
-                    template.State,
-                    maxLocation.X + (template.Image.Width / 2),
-                    maxLocation.Y + (template.Image.Height / 2),
-                    maxValue);
+                if (matchingImage.Width < scaledTemplate.Width || matchingImage.Height < scaledTemplate.Height)
+                {
+                    continue;
+                }
+
+                using var result = new Mat();
+                Cv2.MatchTemplate(matchingImage, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
+                Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
+                bestScore = Math.Max(bestScore, maxValue);
+                if (maxValue >= threshold)
+                {
+                    return new MatchHit(
+                        template.State,
+                        maxLocation.X + (scaledTemplate.Width / 2),
+                        maxLocation.Y + (scaledTemplate.Height / 2),
+                        maxValue);
+                }
             }
         }
 
         return null;
+    }
+
+    private static Mat? BuildScaledTemplate(Mat source, double scale)
+    {
+        if (Math.Abs(scale - 1.0) < 0.0001)
+        {
+            return source.Clone();
+        }
+
+        var width = (int)Math.Round(source.Width * scale);
+        var height = (int)Math.Round(source.Height * scale);
+        if (width < 2 || height < 2)
+        {
+            return null;
+        }
+
+        var resized = new Mat();
+        Cv2.Resize(source, resized, new OpenCvSharp.Size(width, height), interpolation: InterpolationFlags.Linear);
+        return resized;
     }
 
     private static Mat ToGray(Mat source)
