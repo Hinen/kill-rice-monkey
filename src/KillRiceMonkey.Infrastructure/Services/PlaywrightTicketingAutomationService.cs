@@ -13,7 +13,9 @@ namespace KillRiceMonkey.Infrastructure.Services;
 public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationService
 {
     private static readonly Regex StepPattern = new("^(?<step>\\d+)-(?<state>normal|active)\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly double[] MatchScales = [0.90, 0.95, 1.00, 1.05, 1.10];
+    private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
+
+    private const int PollDelayMilliseconds = 30;
 
     private const int SmXvirtualscreen = 76;
     private const int SmYvirtualscreen = 77;
@@ -120,7 +122,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             cancellationToken.ThrowIfCancellationRequested();
 
             using var frame = CaptureScreen();
-            var normalMatch = TryFindMatch(frame.Image, normalTemplates, threshold, out var normalBestScore);
+            using var grayFrame = ToGray(frame.Image);
+
+            var normalMatch = TryFindMatch(grayFrame, normalTemplates, threshold, out var normalBestScore);
             bestScore = Math.Max(bestScore, normalBestScore);
             if (normalMatch is not null)
             {
@@ -130,7 +134,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     normalTemplates,
                     threshold,
                     timeoutSeconds,
-                    started,
+                    DateTimeOffset.UtcNow,
                     cancellationToken);
 
                 if (transitioned)
@@ -141,7 +145,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return (false, $"{stepGroup.Step}단계 클릭 후 상태 전환 확인 실패");
             }
 
-            await Task.Delay(120, cancellationToken);
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
         }
 
         var bestText = double.IsNegativeInfinity(bestScore) ? "N/A" : bestScore.ToString("F3");
@@ -185,7 +189,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 throw new InvalidOperationException($"중복 상태 이미지가 존재합니다: {step}-{state}");
             }
 
-            templates.Add(new StepTemplate(state, image));
+            templates.Add(new StepTemplate(state, BuildScaledTemplates(image)));
+            image.Dispose();
         }
 
         return map
@@ -194,29 +199,21 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             .ToList();
     }
 
-    private static MatchHit? TryFindMatch(Mat screenshot, IReadOnlyList<StepTemplate> templates, double threshold, out double bestScore)
+    private static MatchHit? TryFindMatch(Mat grayScreenshot, IReadOnlyList<StepTemplate> templates, double threshold, out double bestScore)
     {
         bestScore = double.NegativeInfinity;
 
-        using var matchingImage = ToGray(screenshot);
-
         foreach (var template in templates)
         {
-            foreach (var scale in MatchScales)
+            foreach (var scaledTemplate in template.ScaledTemplates)
             {
-                using var scaledTemplate = BuildScaledTemplate(template.Image, scale);
-                if (scaledTemplate is null)
-                {
-                    continue;
-                }
-
-                if (matchingImage.Width < scaledTemplate.Width || matchingImage.Height < scaledTemplate.Height)
+                if (grayScreenshot.Width < scaledTemplate.Width || grayScreenshot.Height < scaledTemplate.Height)
                 {
                     continue;
                 }
 
                 using var result = new Mat();
-                Cv2.MatchTemplate(matchingImage, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
+                Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
                 Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
                 bestScore = Math.Max(bestScore, maxValue);
                 if (maxValue >= threshold)
@@ -233,23 +230,30 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return null;
     }
 
-    private static Mat? BuildScaledTemplate(Mat source, double scale)
+    private static IReadOnlyList<Mat> BuildScaledTemplates(Mat source)
     {
-        if (Math.Abs(scale - 1.0) < 0.0001)
+        var results = new List<Mat>();
+        foreach (var scale in MatchScales)
         {
-            return source.Clone();
+            if (Math.Abs(scale - 1.0) < 0.0001)
+            {
+                results.Add(source.Clone());
+                continue;
+            }
+
+            var width = (int)Math.Round(source.Width * scale);
+            var height = (int)Math.Round(source.Height * scale);
+            if (width < 2 || height < 2)
+            {
+                continue;
+            }
+
+            var resized = new Mat();
+            Cv2.Resize(source, resized, new OpenCvSharp.Size(width, height), interpolation: InterpolationFlags.Linear);
+            results.Add(resized);
         }
 
-        var width = (int)Math.Round(source.Width * scale);
-        var height = (int)Math.Round(source.Height * scale);
-        if (width < 2 || height < 2)
-        {
-            return null;
-        }
-
-        var resized = new Mat();
-        Cv2.Resize(source, resized, new OpenCvSharp.Size(width, height), interpolation: InterpolationFlags.Linear);
-        return resized;
+        return results;
     }
 
     private static Mat ToGray(Mat source)
@@ -283,17 +287,19 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             cancellationToken.ThrowIfCancellationRequested();
 
             using var frame = CaptureScreen();
-            if (activeTemplates.Count > 0 && TryFindMatch(frame.Image, activeTemplates, threshold, out _) is not null)
+            using var grayFrame = ToGray(frame.Image);
+
+            if (activeTemplates.Count > 0 && TryFindMatch(grayFrame, activeTemplates, threshold, out _) is not null)
             {
                 return true;
             }
 
-            if (normalTemplates.Count > 0 && TryFindMatch(frame.Image, normalTemplates, threshold, out _) is null)
+            if (normalTemplates.Count > 0 && TryFindMatch(grayFrame, normalTemplates, threshold, out _) is null)
             {
                 return true;
             }
 
-            await Task.Delay(120, cancellationToken);
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
         }
 
         return false;
@@ -305,7 +311,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             foreach (var template in group.Templates)
             {
-                template.Image.Dispose();
+                foreach (var scaledTemplate in template.ScaledTemplates)
+                {
+                    scaledTemplate.Dispose();
+                }
             }
         }
     }
@@ -329,6 +338,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private static ScreenFrame CaptureScreen()
     {
+        var foregroundWindow = GetForegroundWindow();
+        if (foregroundWindow != IntPtr.Zero && GetWindowRect(foregroundWindow, out var windowRect))
+        {
+            var foregroundWidth = windowRect.Right - windowRect.Left;
+            var foregroundHeight = windowRect.Bottom - windowRect.Top;
+            if (foregroundWidth > 100 && foregroundHeight > 100)
+            {
+                using var foregroundBitmap = new Bitmap(foregroundWidth, foregroundHeight);
+                using (var foregroundGraphics = Graphics.FromImage(foregroundBitmap))
+                {
+                    foregroundGraphics.CopyFromScreen(windowRect.Left, windowRect.Top, 0, 0, new System.Drawing.Size(foregroundWidth, foregroundHeight));
+                }
+
+                return new ScreenFrame(BitmapConverter.ToMat(foregroundBitmap), windowRect.Left, windowRect.Top);
+            }
+        }
+
         var left = GetSystemMetrics(SmXvirtualscreen);
         var top = GetSystemMetrics(SmYvirtualscreen);
         var width = GetSystemMetrics(SmCxvirtualscreen);
@@ -370,6 +396,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static extern bool SetCursorPos(int x, int y);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
+
+    [DllImport("user32.dll")]
     private static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -397,6 +429,15 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         public nint DwExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     private sealed class ScreenFrame : IDisposable
     {
         public ScreenFrame(Mat image, int offsetX, int offsetY)
@@ -418,6 +459,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private readonly record struct MatchHit(string State, int X, int Y, double Score);
 
-    private sealed record StepTemplate(string State, Mat Image);
+    private sealed record StepTemplate(string State, IReadOnlyList<Mat> ScaledTemplates);
     private sealed record StepGroup(int Step, IReadOnlyList<StepTemplate> Templates);
 }
