@@ -107,6 +107,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var started = DateTimeOffset.UtcNow;
         var activeTemplates = stepGroup.Templates.Where(x => x.State == "active").ToList();
         var normalTemplates = stepGroup.Templates.Where(x => x.State == "normal").ToList();
+
+        if (normalTemplates.Count == 0)
+        {
+            return (false, $"{stepGroup.Step}단계 normal 이미지가 없습니다.");
+        }
+
         var bestScore = double.NegativeInfinity;
 
         while (DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(timeoutSeconds))
@@ -114,13 +120,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             cancellationToken.ThrowIfCancellationRequested();
 
             using var frame = CaptureScreen();
-            var activeMatch = TryFindMatch(frame.Image, activeTemplates, threshold, out var activeBestScore);
-            bestScore = Math.Max(bestScore, activeBestScore);
-            if (activeMatch is not null)
-            {
-                return (true, $"{stepGroup.Step}단계 이미 active 상태 감지 (score={activeMatch.Value.Score:F3})");
-            }
-
             var normalMatch = TryFindMatch(frame.Image, normalTemplates, threshold, out var normalBestScore);
             bestScore = Math.Max(bestScore, normalBestScore);
             if (normalMatch is not null)
