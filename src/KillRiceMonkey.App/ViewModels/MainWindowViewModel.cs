@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
+using System.Windows;
 
 namespace KillRiceMonkey.App.ViewModels;
 
@@ -53,6 +54,14 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task StartAutomationAsync()
     {
+        var mainWindow = System.Windows.Application.Current?.MainWindow;
+        var originalState = mainWindow?.WindowState ?? WindowState.Normal;
+
+        if (mainWindow is not null)
+        {
+            mainWindow.WindowState = WindowState.Minimized;
+        }
+
         IsRunning = true;
         StatusMessage = "active 상태: 다단계 이미지 클릭 실행 중";
 
@@ -72,6 +81,12 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             IsRunning = false;
+
+            if (mainWindow is not null)
+            {
+                mainWindow.WindowState = originalState;
+                mainWindow.Activate();
+            }
         }
     }
 }
