@@ -44,6 +44,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         try
         {
+            if (request.TemplateType == TicketingTemplateType.Yes24)
+            {
+                return new AutomationRunResult(false, "Yes24 템플릿은 아직 구현되지 않았습니다.", DateTimeOffset.Now);
+            }
+
             return await _pipeline.ExecuteAsync(async token =>
             {
                 if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)

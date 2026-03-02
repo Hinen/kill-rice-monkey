@@ -13,17 +13,23 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <TextBlock FontSize="22" FontWeight="SemiBold" Text="티켓팅 자동 구매 - 이미지 단계 실행" />
 
         <StackPanel Grid.Row="1" Margin="0,16,0,0">
+            <TextBlock Text="실행 템플릿" FontWeight="SemiBold" />
+            <ComboBox Margin="0,6,0,0" Height="32" ItemsSource="{Binding TemplateOptions}" SelectedItem="{Binding SelectedTemplate, UpdateSourceTrigger=PropertyChanged}" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Margin="0,16,0,0">
             <TextBlock Text="버튼 이미지 폴더 경로" FontWeight="SemiBold" />
             <TextBox Margin="0,6,0,0" Height="32" Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
         </StackPanel>
 
-        <Grid Grid.Row="2" Margin="0,16,0,0">
+        <Grid Grid.Row="3" Margin="0,16,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="16" />
@@ -39,15 +45,15 @@
             </StackPanel>
         </Grid>
 
-        <StackPanel Grid.Row="3" Margin="0,20,0,0" Orientation="Horizontal">
+        <StackPanel Grid.Row="4" Margin="0,20,0,0" Orientation="Horizontal">
             <Button Content="자동화 실행" Width="140" Height="34" Command="{Binding StartAutomationCommand}" />
             <TextBlock Margin="12,8,0,0" VerticalAlignment="Center" Text="{Binding StatusMessage}" />
         </StackPanel>
 
-        <TextBlock Grid.Row="4" Margin="0,12,0,0" TextWrapping="Wrap" Foreground="#374151"
+        <TextBlock Grid.Row="5" Margin="0,12,0,0" TextWrapping="Wrap" Foreground="#374151"
                    Text="{Binding HotkeyText, StringFormat=전역 핫키({0})로 active 진입 가능. 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png}" />
 
-        <Border Grid.Row="5" Margin="0,20,0,0" Padding="14" CornerRadius="8" BorderThickness="1" BorderBrush="#D1D5DB" Background="#F9FAFB">
+        <Border Grid.Row="6" Margin="0,20,0,0" Padding="14" CornerRadius="8" BorderThickness="1" BorderBrush="#D1D5DB" Background="#F9FAFB">
             <TextBlock TextWrapping="Wrap" Text="{Binding LastRunSummary}" />
         </Border>
     </Grid>
