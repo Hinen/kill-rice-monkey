@@ -8,11 +8,11 @@ namespace KillRiceMonkey.App.ViewModels;
 
 public partial class MainWindowViewModel : ObservableObject
 {
-    private const string Yes24FixedImageDirectory = "button-images/yes24";
+    private const string BoothFixedImageDirectory = "button-images/booth";
 
     private readonly ITicketingAutomationService _ticketingAutomationService;
 
-    public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Custom"];
+    public IReadOnlyList<string> TemplateOptions { get; } = ["Booth", "Custom"];
 
     [ObservableProperty]
     private string _selectedTemplate = "Custom";
@@ -20,7 +20,7 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string _imageDirectory = "button-images";
 
-    public bool IsImageDirectoryEditable => !string.Equals(SelectedTemplate, "Yes24", StringComparison.OrdinalIgnoreCase);
+    public bool IsImageDirectoryEditable => !string.Equals(SelectedTemplate, "Booth", StringComparison.OrdinalIgnoreCase);
 
     [ObservableProperty]
     private double _matchThreshold = 0.86;
@@ -63,9 +63,9 @@ public partial class MainWindowViewModel : ObservableObject
 
     partial void OnSelectedTemplateChanged(string value)
     {
-        if (value.Equals("Yes24", StringComparison.OrdinalIgnoreCase))
+        if (value.Equals("Booth", StringComparison.OrdinalIgnoreCase))
         {
-            ImageDirectory = Yes24FixedImageDirectory;
+            ImageDirectory = BoothFixedImageDirectory;
         }
 
         OnPropertyChanged(nameof(IsImageDirectoryEditable));
@@ -87,7 +87,7 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             var templateType = ParseTemplateType(SelectedTemplate);
-            var imageDirectory = templateType == TicketingTemplateType.Yes24 ? Yes24FixedImageDirectory : ImageDirectory;
+            var imageDirectory = templateType == TicketingTemplateType.Booth ? BoothFixedImageDirectory : ImageDirectory;
             var request = new TicketingJobRequest(templateType, imageDirectory, MatchThreshold, StepTimeoutSeconds);
             var result = await _ticketingAutomationService.RunAsync(request, CancellationToken.None);
 
@@ -113,8 +113,8 @@ public partial class MainWindowViewModel : ObservableObject
 
     private static TicketingTemplateType ParseTemplateType(string value)
     {
-        return value.Equals("Yes24", StringComparison.OrdinalIgnoreCase)
-            ? TicketingTemplateType.Yes24
+        return value.Equals("Booth", StringComparison.OrdinalIgnoreCase)
+            ? TicketingTemplateType.Booth
             : TicketingTemplateType.Custom;
     }
 }
