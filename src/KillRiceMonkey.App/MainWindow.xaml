@@ -26,7 +26,7 @@
 
         <StackPanel Grid.Row="2" Margin="0,16,0,0">
             <TextBlock Text="버튼 이미지 폴더 경로" FontWeight="SemiBold" />
-            <TextBox Margin="0,6,0,0" Height="32" Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBox Margin="0,6,0,0" Height="32" IsEnabled="{Binding IsImageDirectoryEditable}" Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
         </StackPanel>
 
         <Grid Grid.Row="3" Margin="0,16,0,0">

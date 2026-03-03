@@ -8,6 +8,8 @@ namespace KillRiceMonkey.App.ViewModels;
 
 public partial class MainWindowViewModel : ObservableObject
 {
+    private const string Yes24FixedImageDirectory = "button-images/yes24";
+
     private readonly ITicketingAutomationService _ticketingAutomationService;
 
     public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Custom"];
@@ -17,6 +19,8 @@ public partial class MainWindowViewModel : ObservableObject
 
     [ObservableProperty]
     private string _imageDirectory = "button-images";
+
+    public bool IsImageDirectoryEditable => !string.Equals(SelectedTemplate, "Yes24", StringComparison.OrdinalIgnoreCase);
 
     [ObservableProperty]
     private double _matchThreshold = 0.86;
@@ -57,6 +61,16 @@ public partial class MainWindowViewModel : ObservableObject
         StartAutomationCommand.NotifyCanExecuteChanged();
     }
 
+    partial void OnSelectedTemplateChanged(string value)
+    {
+        if (value.Equals("Yes24", StringComparison.OrdinalIgnoreCase))
+        {
+            ImageDirectory = Yes24FixedImageDirectory;
+        }
+
+        OnPropertyChanged(nameof(IsImageDirectoryEditable));
+    }
+
     private async Task StartAutomationAsync()
     {
         var mainWindow = System.Windows.Application.Current?.MainWindow;
@@ -72,7 +86,9 @@ public partial class MainWindowViewModel : ObservableObject
 
         try
         {
-            var request = new TicketingJobRequest(ParseTemplateType(SelectedTemplate), ImageDirectory, MatchThreshold, StepTimeoutSeconds);
+            var templateType = ParseTemplateType(SelectedTemplate);
+            var imageDirectory = templateType == TicketingTemplateType.Yes24 ? Yes24FixedImageDirectory : ImageDirectory;
+            var request = new TicketingJobRequest(templateType, imageDirectory, MatchThreshold, StepTimeoutSeconds);
             var result = await _ticketingAutomationService.RunAsync(request, CancellationToken.None);
 
             StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
