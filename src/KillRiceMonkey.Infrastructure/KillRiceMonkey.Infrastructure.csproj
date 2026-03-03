@@ -17,6 +17,12 @@
     <PackageReference Include="System.Drawing.Common" Version="8.0.11" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\button-images\yes24\*.png">
+      <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Yes24.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
