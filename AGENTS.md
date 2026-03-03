@@ -22,3 +22,10 @@ This file stores repository-level persistent instructions for the coding agent a
 - App layer: WPF + MVVM (`src/KillRiceMonkey.App`)
 - Core layers: Application/Domain/Infrastructure under `src/`
 - Test layer: xUnit project under `tests/KillRiceMonkey.Tests`
+
+## Commit Execution Policy (Project-Level Override)
+- Plan 요청과 실제 작업 요청을 구분한다.
+- 실제 작업 요청을 수행한 경우, 별도 추가 지시가 없어도 작업 종료 전에 반드시 커밋까지 완료한다.
+- 커밋은 작업 단위를 작게 나누어 단계별로 수행한다.
+- 커밋 메시지는 한국어로 작성하고, 변수명/기술 용어는 영어를 유지한다.
+- 검증(가능한 범위의 build/test/lint) 후 커밋한다.
