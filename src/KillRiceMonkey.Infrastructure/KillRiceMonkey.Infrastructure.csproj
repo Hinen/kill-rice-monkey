@@ -18,6 +18,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\..\button-images\yes24\*.png">
+      <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Yes24.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="..\..\button-images\booth\*.png">
       <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Booth.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
