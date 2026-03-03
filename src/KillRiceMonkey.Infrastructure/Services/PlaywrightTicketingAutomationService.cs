@@ -12,6 +12,7 @@ namespace KillRiceMonkey.Infrastructure.Services;
 
 public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationService
 {
+    private const string EmbeddedTemplatePrefix = "KillRiceMonkey.Infrastructure.TemplateImages.";
     private static readonly Regex StepPattern = new("^(?<step>\\d+)(?:-(?<state>normal|active))?\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
 
@@ -44,11 +45,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         try
         {
-            if (request.TemplateType == TicketingTemplateType.Yes24)
-            {
-                return new AutomationRunResult(false, "Yes24 템플릿은 아직 구현되지 않았습니다.", DateTimeOffset.Now);
-            }
-
             return await _pipeline.ExecuteAsync(async token =>
             {
                 if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
@@ -61,13 +57,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     return new AutomationRunResult(false, "단계별 제한 시간은 1초 이상이어야 합니다.", DateTimeOffset.Now);
                 }
 
-                var resolvedDirectory = ResolveImageDirectory(request.ImageDirectory);
-                if (resolvedDirectory is null)
+                var (stepGroups, loadError) = LoadStepGroups(request);
+                if (loadError is not null)
                 {
-                    return new AutomationRunResult(false, $"이미지 폴더를 찾을 수 없습니다: {request.ImageDirectory}", DateTimeOffset.Now);
+                    return new AutomationRunResult(false, loadError, DateTimeOffset.Now);
                 }
 
-                var stepGroups = LoadStepGroups(resolvedDirectory);
                 try
                 {
                     if (stepGroups.Count == 0)
@@ -75,7 +70,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                         return new AutomationRunResult(false, "숫자.png 또는 숫자-상태.png 패턴의 이미지가 없습니다.", DateTimeOffset.Now);
                     }
 
-                    _logger.LogInformation("Automation started. directory={Directory}, stepCount={Count}", resolvedDirectory, stepGroups.Count);
+                    _logger.LogInformation("Automation started. template={Template}, stepCount={Count}", request.TemplateType, stepGroups.Count);
 
                     foreach (var stepGroup in stepGroups)
                     {
@@ -165,7 +160,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return (false, $"{stepGroup.Step}단계 버튼 탐지 실패 (timeout {timeoutSeconds}s, best={bestText})");
     }
 
-    private static IReadOnlyList<StepGroup> LoadStepGroups(string directory)
+    private static (IReadOnlyList<StepGroup> StepGroups, string? Error) LoadStepGroups(TicketingJobRequest request)
+    {
+        if (request.TemplateType == TicketingTemplateType.Custom)
+        {
+            var resolvedDirectory = ResolveImageDirectory(request.ImageDirectory);
+            if (resolvedDirectory is null)
+            {
+                return (Array.Empty<StepGroup>(), $"이미지 폴더를 찾을 수 없습니다: {request.ImageDirectory}");
+            }
+
+            return (LoadStepGroupsFromDirectory(resolvedDirectory), null);
+        }
+
+        return LoadStepGroupsFromEmbeddedResources(request.TemplateType);
+    }
+
+    private static IReadOnlyList<StepGroup> LoadStepGroupsFromDirectory(string directory)
     {
         var map = new Dictionary<int, List<StepTemplate>>();
 
@@ -211,6 +222,75 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             .OrderBy(kvp => kvp.Key)
             .Select(kvp => new StepGroup(kvp.Key, kvp.Value))
             .ToList();
+    }
+
+    private static (IReadOnlyList<StepGroup> StepGroups, string? Error) LoadStepGroupsFromEmbeddedResources(TicketingTemplateType templateType)
+    {
+        var map = new Dictionary<int, List<StepTemplate>>();
+        var assembly = typeof(PlaywrightTicketingAutomationService).Assembly;
+        var prefix = $"{EmbeddedTemplatePrefix}{templateType}.";
+
+        var resourceNames = assembly
+            .GetManifestResourceNames()
+            .Where(name => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (resourceNames.Count == 0)
+        {
+            return (Array.Empty<StepGroup>(), $"{templateType} 템플릿 이미지 리소스를 찾을 수 없습니다.");
+        }
+
+        foreach (var resourceName in resourceNames)
+        {
+            var fileName = resourceName[prefix.Length..];
+            var match = StepPattern.Match(fileName);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            if (!int.TryParse(match.Groups["step"].Value, out var step))
+            {
+                continue;
+            }
+
+            using var stream = assembly.GetManifestResourceStream(resourceName);
+            if (stream is null)
+            {
+                continue;
+            }
+
+            using var memory = new MemoryStream();
+            stream.CopyTo(memory);
+            using var encoded = Cv2.ImDecode(memory.ToArray(), ImreadModes.Grayscale);
+            if (encoded.Empty())
+            {
+                continue;
+            }
+
+            var stateGroup = match.Groups["state"];
+            var state = stateGroup.Success ? stateGroup.Value.ToLowerInvariant() : "single";
+
+            if (!map.TryGetValue(step, out var templates))
+            {
+                templates = new List<StepTemplate>();
+                map[step] = templates;
+            }
+
+            if (templates.Any(x => x.State == state))
+            {
+                throw new InvalidOperationException($"중복 상태 이미지가 존재합니다: {step}-{state}");
+            }
+
+            templates.Add(new StepTemplate(state, BuildScaledTemplates(encoded)));
+        }
+
+        var result = map
+            .OrderBy(kvp => kvp.Key)
+            .Select(kvp => new StepGroup(kvp.Key, kvp.Value))
+            .ToList();
+
+        return (result, null);
     }
 
     private static MatchHit? TryFindMatch(Mat grayScreenshot, IReadOnlyList<StepTemplate> templates, double threshold, out double bestScore)
