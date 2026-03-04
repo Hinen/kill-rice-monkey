@@ -150,7 +150,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             else
             {
-                clickMatch = TryFindMatch(grayFrame, clickableTemplates, threshold, out clickBestScore, ignoreFromX);
+                clickMatch = TryFindMatch(grayFrame, clickableTemplates, threshold, out clickBestScore);
             }
 
             bestScore = Math.Max(bestScore, clickBestScore);
