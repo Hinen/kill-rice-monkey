@@ -150,7 +150,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             else
             {
-                clickMatch = TryFindMatch(grayFrame, clickableTemplates, threshold, out clickBestScore);
+                clickMatch = TryFindMatch(grayFrame, clickableTemplates, threshold, out clickBestScore, ignoreFromX);
             }
 
             bestScore = Math.Max(bestScore, clickBestScore);
@@ -584,7 +584,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return mean.Val1 >= Yes24SeatMinSaturation;
     }
 
-    private static MatchHit? TryFindMatch(Mat grayScreenshot, IReadOnlyList<StepTemplate> templates, double threshold, out double bestScore)
+    private static MatchHit? TryFindMatch(
+        Mat grayScreenshot,
+        IReadOnlyList<StepTemplate> templates,
+        double threshold,
+        out double bestScore,
+        int? ignoreFromX = null)
     {
         bestScore = double.NegativeInfinity;
 
@@ -601,11 +606,17 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
                 Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
                 bestScore = Math.Max(bestScore, maxValue);
+                var centerX = maxLocation.X + (scaledTemplate.Width / 2);
+                if (ignoreFromX is not null && centerX >= ignoreFromX.Value)
+                {
+                    continue;
+                }
+
                 if (maxValue >= threshold)
                 {
                     return new MatchHit(
                         template.State,
-                        maxLocation.X + (scaledTemplate.Width / 2),
+                        centerX,
                         maxLocation.Y + (scaledTemplate.Height / 2),
                         maxValue);
                 }
