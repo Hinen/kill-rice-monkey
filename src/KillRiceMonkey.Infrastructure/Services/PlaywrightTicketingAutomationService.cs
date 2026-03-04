@@ -137,9 +137,20 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             using var frame = CaptureScreen();
             using var grayFrame = ToGray(frame.Image);
-            int? ignoreFromX = templateType == TicketingTemplateType.Yes24
-                ? cachedIgnoreFromX ??= ResolveYes24IgnoreFromX(grayFrame, viewTemplates, threshold)
-                : null;
+            int? ignoreFromX = null;
+            if (templateType == TicketingTemplateType.Yes24)
+            {
+                if (hasPriorityTemplates && normalTemplates.Count == 0)
+                {
+                    cachedIgnoreFromX ??= GetYes24FallbackIgnoreFromX(grayFrame.Width);
+                }
+                else
+                {
+                    cachedIgnoreFromX ??= ResolveYes24IgnoreFromX(grayFrame, viewTemplates, threshold);
+                }
+
+                ignoreFromX = cachedIgnoreFromX;
+            }
 
             var clickableTemplates = normalTemplates.Count > 0 ? normalTemplates : singleTemplates;
             MatchHit? clickMatch;
@@ -419,7 +430,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private static int ResolveYes24IgnoreFromX(Mat grayScreenshot, IReadOnlyList<StepTemplate> viewTemplates, double threshold)
     {
-        var fallback = (int)Math.Round(grayScreenshot.Width * Yes24LegendFallbackIgnoreRatio);
+        var fallback = GetYes24FallbackIgnoreFromX(grayScreenshot.Width);
         var detected = DetectLegendIgnoreFromX(grayScreenshot, viewTemplates, threshold);
         if (detected is null)
         {
@@ -433,6 +444,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return detected.Value;
+    }
+
+    private static int GetYes24FallbackIgnoreFromX(int frameWidth)
+    {
+        return (int)Math.Round(frameWidth * Yes24LegendFallbackIgnoreRatio);
     }
 
     private static MatchHit? TryFindPrioritySeatMatch(
@@ -467,6 +483,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
                     Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out _);
                     bestScore = Math.Max(bestScore, maxValue);
+
+                    if (maxValue < threshold)
+                    {
+                        continue;
+                    }
 
                     CollectMatchCandidates(result, scaledTemplate.Width, scaledTemplate.Height, threshold, ignoreFromX, candidates);
                 }
