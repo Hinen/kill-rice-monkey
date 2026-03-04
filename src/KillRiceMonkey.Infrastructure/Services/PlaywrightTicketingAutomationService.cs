@@ -470,27 +470,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             var candidates = new List<PriorityCandidate>();
 
-            foreach (var template in priorityGroup)
+            CollectPriorityCandidates(grayScreenshot, priorityGroup, threshold, ignoreFromX, candidates, fastPathOnly: true, ref bestScore);
+            if (candidates.Count == 0)
             {
-                foreach (var scaledTemplate in template.ScaledTemplates)
-                {
-                    if (grayScreenshot.Width < scaledTemplate.Width || grayScreenshot.Height < scaledTemplate.Height)
-                    {
-                        continue;
-                    }
-
-                    using var result = new Mat();
-                    Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
-                    Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out _);
-                    bestScore = Math.Max(bestScore, maxValue);
-
-                    if (maxValue < threshold)
-                    {
-                        continue;
-                    }
-
-                    CollectMatchCandidates(result, scaledTemplate.Width, scaledTemplate.Height, threshold, ignoreFromX, candidates);
-                }
+                CollectPriorityCandidates(grayScreenshot, priorityGroup, threshold, ignoreFromX, candidates, fastPathOnly: false, ref bestScore);
             }
 
             if (candidates.Count == 0)
@@ -521,6 +504,40 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return null;
+    }
+
+    private static void CollectPriorityCandidates(
+        Mat grayScreenshot,
+        IGrouping<int, StepTemplate> priorityGroup,
+        double threshold,
+        int? ignoreFromX,
+        ICollection<PriorityCandidate> candidates,
+        bool fastPathOnly,
+        ref double bestScore)
+    {
+        foreach (var template in priorityGroup)
+        {
+            var scaledTemplates = fastPathOnly ? template.ScaledTemplates.Take(1) : template.ScaledTemplates;
+            foreach (var scaledTemplate in scaledTemplates)
+            {
+                if (grayScreenshot.Width < scaledTemplate.Width || grayScreenshot.Height < scaledTemplate.Height)
+                {
+                    continue;
+                }
+
+                using var result = new Mat();
+                Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
+                Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out _);
+                bestScore = Math.Max(bestScore, maxValue);
+
+                if (maxValue < threshold)
+                {
+                    continue;
+                }
+
+                CollectMatchCandidates(result, scaledTemplate.Width, scaledTemplate.Height, threshold, ignoreFromX, candidates);
+            }
+        }
     }
 
     private static void CollectMatchCandidates(
