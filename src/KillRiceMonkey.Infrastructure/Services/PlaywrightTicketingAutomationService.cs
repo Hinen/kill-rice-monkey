@@ -20,6 +20,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private const double Yes24LegendSearchStartRatio = 0.70;
     private const double Yes24LegendMinIgnoreRatio = 0.55;
     private const double Yes24LegendThresholdDelta = 0.08;
+    private const int Yes24SeatColorSampleRadius = 6;
+    private const double Yes24SeatMinSaturation = 35;
 
     private const int PollDelayMilliseconds = 30;
 
@@ -142,7 +144,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (hasPriorityTemplates && normalTemplates.Count == 0)
             {
-                clickMatch = TryFindPrioritySeatMatch(grayFrame, clickableTemplates, threshold, ignoreFromX, out clickBestScore);
+                clickMatch = TryFindPrioritySeatMatch(frame.Image, grayFrame, clickableTemplates, threshold, ignoreFromX, templateType == TicketingTemplateType.Yes24, out clickBestScore);
             }
             else
             {
@@ -405,10 +407,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     }
 
     private static MatchHit? TryFindPrioritySeatMatch(
+        Mat colorScreenshot,
         Mat grayScreenshot,
         IReadOnlyList<StepTemplate> templates,
         double threshold,
         int? ignoreFromX,
+        bool enforceColoredSeat,
         out double bestScore)
     {
         bestScore = double.NegativeInfinity;
@@ -448,6 +452,18 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 .OrderBy(x => x.Y)
                 .ThenBy(x => x.X)
                 .ToList();
+
+            if (enforceColoredSeat)
+            {
+                ordered = ordered
+                    .Where(x => IsLikelyColoredSeat(colorScreenshot, x.X, x.Y))
+                    .ToList();
+            }
+
+            if (ordered.Count == 0)
+            {
+                continue;
+            }
 
             var selectedIndex = Math.Min(SeatSelectionOffset, ordered.Count - 1);
             var selected = ordered[selectedIndex];
@@ -507,6 +523,45 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return deduped;
+    }
+
+    private static bool IsLikelyColoredSeat(Mat colorScreenshot, int centerX, int centerY)
+    {
+        if (colorScreenshot.Empty())
+        {
+            return false;
+        }
+
+        var left = Math.Max(0, centerX - Yes24SeatColorSampleRadius);
+        var top = Math.Max(0, centerY - Yes24SeatColorSampleRadius);
+        var right = Math.Min(colorScreenshot.Width - 1, centerX + Yes24SeatColorSampleRadius);
+        var bottom = Math.Min(colorScreenshot.Height - 1, centerY + Yes24SeatColorSampleRadius);
+        var width = right - left + 1;
+        var height = bottom - top + 1;
+        if (width <= 1 || height <= 1)
+        {
+            return false;
+        }
+
+        using var roi = new Mat(colorScreenshot, new OpenCvSharp.Rect(left, top, width, height));
+        using var bgr = new Mat();
+        if (roi.Channels() == 4)
+        {
+            Cv2.CvtColor(roi, bgr, ColorConversionCodes.BGRA2BGR);
+        }
+        else if (roi.Channels() == 1)
+        {
+            Cv2.CvtColor(roi, bgr, ColorConversionCodes.GRAY2BGR);
+        }
+        else
+        {
+            roi.CopyTo(bgr);
+        }
+
+        using var hsv = new Mat();
+        Cv2.CvtColor(bgr, hsv, ColorConversionCodes.BGR2HSV);
+        var mean = Cv2.Mean(hsv);
+        return mean.Val1 >= Yes24SeatMinSaturation;
     }
 
     private static MatchHit? TryFindMatch(Mat grayScreenshot, IReadOnlyList<StepTemplate> templates, double threshold, out double bestScore)
