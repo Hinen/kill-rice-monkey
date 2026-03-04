@@ -20,6 +20,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private const double Yes24LegendSearchStartRatio = 0.70;
     private const double Yes24LegendMinIgnoreRatio = 0.55;
     private const double Yes24LegendThresholdDelta = 0.08;
+    private const double Yes24LegendFallbackIgnoreRatio = 0.72;
+    private const double Yes24LegendMaxIgnoreRatio = 0.92;
     private const int Yes24SeatColorSampleRadius = 6;
     private const double Yes24SeatMinSaturation = 35;
 
@@ -134,8 +136,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             using var frame = CaptureScreen();
             using var grayFrame = ToGray(frame.Image);
-            var ignoreFromX = templateType == TicketingTemplateType.Yes24
-                ? DetectLegendIgnoreFromX(grayFrame, viewTemplates, threshold)
+            int? ignoreFromX = templateType == TicketingTemplateType.Yes24
+                ? ResolveYes24IgnoreFromX(grayFrame, viewTemplates, threshold)
                 : null;
 
             var clickableTemplates = normalTemplates.Count > 0 ? normalTemplates : singleTemplates;
@@ -404,6 +406,24 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var ignoreFromX = Math.Max(0, candidateXs.Min() - Yes24LegendPaddingX);
         return ignoreFromX >= minAllowedIgnoreX ? ignoreFromX : null;
+    }
+
+    private static int ResolveYes24IgnoreFromX(Mat grayScreenshot, IReadOnlyList<StepTemplate> viewTemplates, double threshold)
+    {
+        var fallback = (int)Math.Round(grayScreenshot.Width * Yes24LegendFallbackIgnoreRatio);
+        var detected = DetectLegendIgnoreFromX(grayScreenshot, viewTemplates, threshold);
+        if (detected is null)
+        {
+            return fallback;
+        }
+
+        var maxAllowed = (int)Math.Round(grayScreenshot.Width * Yes24LegendMaxIgnoreRatio);
+        if (detected.Value > maxAllowed)
+        {
+            return fallback;
+        }
+
+        return detected.Value;
     }
 
     private static MatchHit? TryFindPrioritySeatMatch(
