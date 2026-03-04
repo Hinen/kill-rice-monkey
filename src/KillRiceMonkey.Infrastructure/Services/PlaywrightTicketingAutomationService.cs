@@ -13,8 +13,10 @@ namespace KillRiceMonkey.Infrastructure.Services;
 public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationService
 {
     private const string EmbeddedTemplatePrefix = "KillRiceMonkey.Infrastructure.TemplateImages.";
-    private static readonly Regex StepPattern = new("^(?<step>\\d+)(?:-(?<state>normal|active))?\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex StepPattern = new("^(?<step>\\d+)(?:-(?<suffix>[a-zA-Z0-9]+))?\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
+    private const int SeatSelectionOffset = 5;
+    private const int Yes24LegendPaddingX = 8;
 
     private const int PollDelayMilliseconds = 30;
 
@@ -76,7 +78,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     {
                         token.ThrowIfCancellationRequested();
 
-                        var found = await WaitAndClickStepAsync(stepGroup, request.MatchThreshold, request.StepTimeoutSeconds, token);
+                        var found = await WaitAndClickStepAsync(stepGroup, request.TemplateType, request.MatchThreshold, request.StepTimeoutSeconds, token);
                         if (!found.IsSuccess)
                         {
                             return new AutomationRunResult(false, found.Message, DateTimeOffset.Now);
@@ -102,14 +104,17 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task<(bool IsSuccess, string Message)> WaitAndClickStepAsync(
         StepGroup stepGroup,
+        TicketingTemplateType templateType,
         double threshold,
         int timeoutSeconds,
         CancellationToken cancellationToken)
     {
         var started = DateTimeOffset.UtcNow;
         var activeTemplates = stepGroup.Templates.Where(x => x.State == "active").ToList();
-        var normalTemplates = stepGroup.Templates.Where(x => x.State == "normal").ToList();
-        var singleTemplates = stepGroup.Templates.Where(x => x.State == "single").ToList();
+        var normalTemplates = stepGroup.Templates.Where(x => x.State == "normal" && !x.IsViewMask).ToList();
+        var singleTemplates = stepGroup.Templates.Where(x => x.State == "single" && !x.IsViewMask).ToList();
+        var viewTemplates = stepGroup.Templates.Where(x => x.IsViewMask).ToList();
+        var hasPriorityTemplates = singleTemplates.Any(x => x.Priority is not null);
 
         if (normalTemplates.Count == 0 && singleTemplates.Count == 0)
         {
@@ -124,9 +129,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             using var frame = CaptureScreen();
             using var grayFrame = ToGray(frame.Image);
+            var ignoreFromX = templateType == TicketingTemplateType.Yes24
+                ? DetectLegendIgnoreFromX(grayFrame, viewTemplates, threshold)
+                : null;
 
             var clickableTemplates = normalTemplates.Count > 0 ? normalTemplates : singleTemplates;
-            var clickMatch = TryFindMatch(grayFrame, clickableTemplates, threshold, out var clickBestScore);
+            MatchHit? clickMatch;
+            double clickBestScore;
+
+            if (hasPriorityTemplates && normalTemplates.Count == 0)
+            {
+                clickMatch = TryFindPrioritySeatMatch(grayFrame, clickableTemplates, threshold, ignoreFromX, out clickBestScore);
+            }
+            else
+            {
+                clickMatch = TryFindMatch(grayFrame, clickableTemplates, threshold, out clickBestScore);
+            }
+
             bestScore = Math.Max(bestScore, clickBestScore);
             if (clickMatch is not null)
             {
@@ -194,8 +213,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            var stateGroup = match.Groups["state"];
-            var state = stateGroup.Success ? stateGroup.Value.ToLowerInvariant() : "single";
+            var metadata = ParseTemplateMetadata(match);
+            if (metadata is null)
+            {
+                continue;
+            }
+
             var image = Cv2.ImRead(filePath, ImreadModes.Grayscale);
             if (image.Empty())
             {
@@ -208,13 +231,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 map[step] = templates;
             }
 
-            if (templates.Any(x => x.State == state))
+            if (metadata.Priority is null && templates.Any(x => x.State == metadata.State && x.Priority is null && x.IsViewMask == metadata.IsViewMask))
             {
                 image.Dispose();
-                throw new InvalidOperationException($"중복 상태 이미지가 존재합니다: {step}-{state}");
+                throw new InvalidOperationException($"중복 상태 이미지가 존재합니다: {step}-{metadata.State}");
             }
 
-            templates.Add(new StepTemplate(state, BuildScaledTemplates(image)));
+            templates.Add(new StepTemplate(metadata.State, metadata.Priority, metadata.IsViewMask, BuildScaledTemplates(image)));
             image.Dispose();
         }
 
@@ -268,8 +291,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            var stateGroup = match.Groups["state"];
-            var state = stateGroup.Success ? stateGroup.Value.ToLowerInvariant() : "single";
+            var metadata = ParseTemplateMetadata(match);
+            if (metadata is null)
+            {
+                continue;
+            }
 
             if (!map.TryGetValue(step, out var templates))
             {
@@ -277,12 +303,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 map[step] = templates;
             }
 
-            if (templates.Any(x => x.State == state))
+            if (metadata.Priority is null && templates.Any(x => x.State == metadata.State && x.Priority is null && x.IsViewMask == metadata.IsViewMask))
             {
-                throw new InvalidOperationException($"중복 상태 이미지가 존재합니다: {step}-{state}");
+                throw new InvalidOperationException($"중복 상태 이미지가 존재합니다: {step}-{metadata.State}");
             }
 
-            templates.Add(new StepTemplate(state, BuildScaledTemplates(encoded)));
+            templates.Add(new StepTemplate(metadata.State, metadata.Priority, metadata.IsViewMask, BuildScaledTemplates(encoded)));
         }
 
         var result = map
@@ -291,6 +317,168 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             .ToList();
 
         return (result, null);
+    }
+
+    private static TemplateMetadata? ParseTemplateMetadata(Match match)
+    {
+        var suffixGroup = match.Groups["suffix"];
+        if (!suffixGroup.Success)
+        {
+            return new TemplateMetadata("single", null, false);
+        }
+
+        var suffix = suffixGroup.Value.ToLowerInvariant();
+        if (suffix is "normal" or "active")
+        {
+            return new TemplateMetadata(suffix, null, false);
+        }
+
+        if (suffix == "view")
+        {
+            return new TemplateMetadata("single", null, true);
+        }
+
+        if (int.TryParse(suffix, out var priority))
+        {
+            return new TemplateMetadata("single", priority, false);
+        }
+
+        return null;
+    }
+
+    private static int? DetectLegendIgnoreFromX(Mat grayScreenshot, IReadOnlyList<StepTemplate> viewTemplates, double threshold)
+    {
+        var bestScore = double.NegativeInfinity;
+        int? ignoreFromX = null;
+
+        foreach (var template in viewTemplates)
+        {
+            foreach (var scaledTemplate in template.ScaledTemplates)
+            {
+                if (grayScreenshot.Width < scaledTemplate.Width || grayScreenshot.Height < scaledTemplate.Height)
+                {
+                    continue;
+                }
+
+                using var result = new Mat();
+                Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
+                Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
+                if (maxValue < threshold || maxValue <= bestScore)
+                {
+                    continue;
+                }
+
+                bestScore = maxValue;
+                ignoreFromX = Math.Max(0, maxLocation.X - Yes24LegendPaddingX);
+            }
+        }
+
+        return ignoreFromX;
+    }
+
+    private static MatchHit? TryFindPrioritySeatMatch(
+        Mat grayScreenshot,
+        IReadOnlyList<StepTemplate> templates,
+        double threshold,
+        int? ignoreFromX,
+        out double bestScore)
+    {
+        bestScore = double.NegativeInfinity;
+        var priorityGroups = templates
+            .Where(x => x.Priority is not null)
+            .GroupBy(x => x.Priority!.Value)
+            .OrderBy(x => x.Key);
+
+        foreach (var priorityGroup in priorityGroups)
+        {
+            var candidates = new List<PriorityCandidate>();
+
+            foreach (var template in priorityGroup)
+            {
+                foreach (var scaledTemplate in template.ScaledTemplates)
+                {
+                    if (grayScreenshot.Width < scaledTemplate.Width || grayScreenshot.Height < scaledTemplate.Height)
+                    {
+                        continue;
+                    }
+
+                    using var result = new Mat();
+                    Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
+                    Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out _);
+                    bestScore = Math.Max(bestScore, maxValue);
+
+                    CollectMatchCandidates(result, scaledTemplate.Width, scaledTemplate.Height, threshold, ignoreFromX, candidates);
+                }
+            }
+
+            if (candidates.Count == 0)
+            {
+                continue;
+            }
+
+            var ordered = DeduplicateCandidates(candidates)
+                .OrderBy(x => x.Y)
+                .ThenBy(x => x.X)
+                .ToList();
+
+            var selectedIndex = Math.Min(SeatSelectionOffset, ordered.Count - 1);
+            var selected = ordered[selectedIndex];
+            return new MatchHit("single", selected.X, selected.Y, selected.Score);
+        }
+
+        return null;
+    }
+
+    private static void CollectMatchCandidates(
+        Mat result,
+        int templateWidth,
+        int templateHeight,
+        double threshold,
+        int? ignoreFromX,
+        ICollection<PriorityCandidate> output)
+    {
+        for (var y = 0; y < result.Rows; y++)
+        {
+            for (var x = 0; x < result.Cols; x++)
+            {
+                var score = result.At<float>(y, x);
+                if (score < threshold)
+                {
+                    continue;
+                }
+
+                var centerX = x + (templateWidth / 2);
+                if (ignoreFromX is not null && centerX >= ignoreFromX.Value)
+                {
+                    continue;
+                }
+
+                var centerY = y + (templateHeight / 2);
+                output.Add(new PriorityCandidate(centerX, centerY, score));
+            }
+        }
+    }
+
+    private static IReadOnlyList<PriorityCandidate> DeduplicateCandidates(IReadOnlyList<PriorityCandidate> candidates)
+    {
+        const int mergeRadius = 10;
+        var ordered = candidates.OrderByDescending(x => x.Score).ToList();
+        var deduped = new List<PriorityCandidate>();
+
+        foreach (var candidate in ordered)
+        {
+            var duplicated = deduped.Any(existing =>
+                Math.Abs(existing.X - candidate.X) <= mergeRadius &&
+                Math.Abs(existing.Y - candidate.Y) <= mergeRadius);
+            if (duplicated)
+            {
+                continue;
+            }
+
+            deduped.Add(candidate);
+        }
+
+        return deduped;
     }
 
     private static MatchHit? TryFindMatch(Mat grayScreenshot, IReadOnlyList<StepTemplate> templates, double threshold, out double bestScore)
@@ -552,7 +740,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     }
 
     private readonly record struct MatchHit(string State, int X, int Y, double Score);
+    private readonly record struct PriorityCandidate(int X, int Y, double Score);
+    private sealed record TemplateMetadata(string State, int? Priority, bool IsViewMask);
 
-    private sealed record StepTemplate(string State, IReadOnlyList<Mat> ScaledTemplates);
+    private sealed record StepTemplate(string State, int? Priority, bool IsViewMask, IReadOnlyList<Mat> ScaledTemplates);
     private sealed record StepGroup(int Step, IReadOnlyList<StepTemplate> Templates);
 }
