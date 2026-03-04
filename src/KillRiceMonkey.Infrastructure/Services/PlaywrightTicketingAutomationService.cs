@@ -129,6 +129,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         var bestScore = double.NegativeInfinity;
+        int? cachedIgnoreFromX = null;
 
         while (DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(timeoutSeconds))
         {
@@ -137,7 +138,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             using var frame = CaptureScreen();
             using var grayFrame = ToGray(frame.Image);
             int? ignoreFromX = templateType == TicketingTemplateType.Yes24
-                ? ResolveYes24IgnoreFromX(grayFrame, viewTemplates, threshold)
+                ? cachedIgnoreFromX ??= ResolveYes24IgnoreFromX(grayFrame, viewTemplates, threshold)
                 : null;
 
             var clickableTemplates = normalTemplates.Count > 0 ? normalTemplates : singleTemplates;
@@ -146,7 +147,15 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (hasPriorityTemplates && normalTemplates.Count == 0)
             {
-                clickMatch = TryFindPrioritySeatMatch(frame.Image, grayFrame, clickableTemplates, threshold, ignoreFromX, templateType == TicketingTemplateType.Yes24, out clickBestScore);
+                if (templateType == TicketingTemplateType.Yes24 && ignoreFromX is not null && ignoreFromX.Value > 50 && ignoreFromX.Value < grayFrame.Width)
+                {
+                    using var seatRoiGray = new Mat(grayFrame, new OpenCvSharp.Rect(0, 0, ignoreFromX.Value, grayFrame.Height));
+                    clickMatch = TryFindPrioritySeatMatch(frame.Image, seatRoiGray, clickableTemplates, threshold, null, true, out clickBestScore);
+                }
+                else
+                {
+                    clickMatch = TryFindPrioritySeatMatch(frame.Image, grayFrame, clickableTemplates, threshold, ignoreFromX, templateType == TicketingTemplateType.Yes24, out clickBestScore);
+                }
             }
             else
             {
