@@ -17,6 +17,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
     private const int SeatSelectionOffset = 5;
     private const int Yes24LegendPaddingX = 8;
+    private const double Yes24LegendSearchStartRatio = 0.70;
+    private const double Yes24LegendMinIgnoreRatio = 0.55;
+    private const double Yes24LegendThresholdDelta = 0.08;
 
     private const int PollDelayMilliseconds = 30;
 
@@ -348,8 +351,15 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private static int? DetectLegendIgnoreFromX(Mat grayScreenshot, IReadOnlyList<StepTemplate> viewTemplates, double threshold)
     {
-        var bestScore = double.NegativeInfinity;
-        int? ignoreFromX = null;
+        if (viewTemplates.Count == 0)
+        {
+            return null;
+        }
+
+        var minLegendX = (int)Math.Round(grayScreenshot.Width * Yes24LegendSearchStartRatio);
+        var minAllowedIgnoreX = (int)Math.Round(grayScreenshot.Width * Yes24LegendMinIgnoreRatio);
+        var legendThreshold = Math.Max(0.60, threshold - Yes24LegendThresholdDelta);
+        var candidateXs = new List<int>();
 
         foreach (var template in viewTemplates)
         {
@@ -362,18 +372,36 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
                 using var result = new Mat();
                 Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
-                Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
-                if (maxValue < threshold || maxValue <= bestScore)
-                {
-                    continue;
-                }
 
-                bestScore = maxValue;
-                ignoreFromX = Math.Max(0, maxLocation.X - Yes24LegendPaddingX);
+                for (var y = 0; y < result.Rows; y++)
+                {
+                    for (var x = 0; x < result.Cols; x++)
+                    {
+                        var score = result.At<float>(y, x);
+                        if (score < legendThreshold)
+                        {
+                            continue;
+                        }
+
+                        var centerX = x + (scaledTemplate.Width / 2);
+                        if (centerX < minLegendX)
+                        {
+                            continue;
+                        }
+
+                        candidateXs.Add(x);
+                    }
+                }
             }
         }
 
-        return ignoreFromX;
+        if (candidateXs.Count == 0)
+        {
+            return null;
+        }
+
+        var ignoreFromX = Math.Max(0, candidateXs.Min() - Yes24LegendPaddingX);
+        return ignoreFromX >= minAllowedIgnoreX ? ignoreFromX : null;
     }
 
     private static MatchHit? TryFindPrioritySeatMatch(
