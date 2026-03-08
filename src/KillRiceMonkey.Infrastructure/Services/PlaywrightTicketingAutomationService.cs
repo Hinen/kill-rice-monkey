@@ -478,6 +478,15 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
+            if (className.Contains("is-toggled", StringComparison.OrdinalIgnoreCase) &&
+                await TryWaitForConditionAsync(
+                    async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
+                    TimeSpan.FromMilliseconds(300),
+                    cancellationToken))
+            {
+                return;
+            }
+
             await ClickNolElementAsync(round);
             await WaitForConditionAsync(
                 async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
