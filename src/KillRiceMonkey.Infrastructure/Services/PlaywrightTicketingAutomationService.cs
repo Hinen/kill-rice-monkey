@@ -173,7 +173,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         try
         {
-            var page = await GetOrCreateNolPageAsync(cancellationToken);
+            var page = await GetFreshNolPageAsync(cancellationToken);
 
             _logger.LogInformation("NOL DOM automation started. url={Url}, date={Date}, round={Round}", targetUri, desiredDate, desiredRound);
 
@@ -219,25 +219,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task<IPage> GetOrCreateNolPageAsync(CancellationToken cancellationToken)
+    private async Task<IPage> GetFreshNolPageAsync(CancellationToken cancellationToken)
     {
         await _nolBrowserLock.WaitAsync(cancellationToken);
         try
         {
             _playwright ??= await Playwright.CreateAsync();
 
-            if (_nolBrowserContext is null || !await IsUsableNolBrowserContextAsync(_nolBrowserContext))
+            await CloseNolBrowserContextIfNeededAsync();
+            var userDataDir = GetNolUserDataDirectory();
+            Directory.CreateDirectory(userDataDir);
+            _nolBrowserContext = await _playwright.Chromium.LaunchPersistentContextAsync(userDataDir, new BrowserTypeLaunchPersistentContextOptions
             {
-                await CloseNolBrowserContextIfNeededAsync();
-                var userDataDir = GetNolUserDataDirectory();
-                Directory.CreateDirectory(userDataDir);
-                _nolBrowserContext = await _playwright.Chromium.LaunchPersistentContextAsync(userDataDir, new BrowserTypeLaunchPersistentContextOptions
-                {
-                    Channel = "msedge",
-                    Headless = false,
-                    Locale = "ko-KR"
-                });
-            }
+                Channel = "msedge",
+                Headless = false,
+                Locale = "ko-KR"
+            });
 
             var page = await _nolBrowserContext.NewPageAsync();
 
@@ -284,27 +281,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         finally
         {
             _nolBrowserContext = null;
-        }
-    }
-
-    private static async Task<bool> IsUsableNolBrowserContextAsync(IBrowserContext browserContext)
-    {
-        try
-        {
-            var probePage = browserContext.Pages.FirstOrDefault(x => !x.IsClosed);
-            if (probePage is not null)
-            {
-                var probeUrl = probePage.Url;
-                return true;
-            }
-
-            var tempPage = await browserContext.NewPageAsync();
-            await tempPage.CloseAsync();
-            return true;
-        }
-        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
-        {
-            return false;
         }
     }
 
