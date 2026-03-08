@@ -156,7 +156,7 @@
                                             <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="White" Text="01" />
                                             <StackPanel Grid.Column="2">
                                                 <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="White" Text="템플릿 기반 제어" />
-                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="#C9D8F4" Text="Yes24, Booth, Custom 템플릿을 한 화면에서 전환합니다." />
+                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="#C9D8F4" Text="Yes24, Booth, NOL, Custom 템플릿을 한 화면에서 전환합니다." />
                                             </StackPanel>
                                         </Grid>
                                     </Border>
@@ -240,15 +240,19 @@
                                              Visibility="{Binding IsRunning, Converter={StaticResource BooleanToVisibilityConverter}}" />
 
                                 <Grid Grid.Row="3">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="20" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="20" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="20" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
+                                     <Grid.RowDefinitions>
+                                         <RowDefinition Height="Auto" />
+                                         <RowDefinition Height="20" />
+                                         <RowDefinition Height="Auto" />
+                                         <RowDefinition Height="20" />
+                                         <RowDefinition Height="Auto" />
+                                         <RowDefinition Height="20" />
+                                         <RowDefinition Height="Auto" />
+                                         <RowDefinition Height="20" />
+                                         <RowDefinition Height="Auto" />
+                                         <RowDefinition Height="20" />
+                                         <RowDefinition Height="Auto" />
+                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="20" />
@@ -260,6 +264,9 @@
                                         <ComboBox Style="{StaticResource InputComboBoxStyle}"
                                                   ItemsSource="{Binding TemplateOptions}"
                                                   SelectedItem="{Binding SelectedTemplate, UpdateSourceTrigger=PropertyChanged}" />
+                                        <TextBlock Margin="0,10,0,0"
+                                                   Style="{StaticResource HelperTextStyle}"
+                                                   Text="실행 전 템플릿을 반드시 선택해야 합니다." />
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="2">
@@ -275,23 +282,68 @@
                                                  Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
                                         <TextBlock Margin="0,10,0,0"
                                                    Style="{StaticResource HelperTextStyle}"
-                                                   Text="Template가 Yes24 또는 Booth이면 기본 폴더가 자동으로 고정되고, Custom일 때만 직접 수정할 수 있습니다." />
+                                                   Text="Template가 Yes24, Booth이면 기본 폴더가 자동으로 고정되고, NOL은 이미지 폴더를 사용하지 않으며, Custom일 때만 직접 수정할 수 있습니다." />
                                     </StackPanel>
 
-                                    <StackPanel Grid.Row="4" Grid.ColumnSpan="3">
-                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="단계별 제한 시간(초)" />
-                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                 Width="220"
-                                                 HorizontalAlignment="Left"
-                                                 Text="{Binding StepTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}" />
-                                    </StackPanel>
+                                     <StackPanel Grid.Row="4" Grid.ColumnSpan="3">
+                                         <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="단계별 제한 시간(초)" />
+                                         <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                  Width="220"
+                                                  HorizontalAlignment="Left"
+                                                  Text="{Binding StepTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}" />
+                                     </StackPanel>
 
-                                    <Grid Grid.Row="6" Grid.ColumnSpan="3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="16" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
+                                     <Border Grid.Row="6"
+                                             Grid.ColumnSpan="3"
+                                             Style="{StaticResource SoftCardStyle}"
+                                             Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                         <Grid>
+                                             <Grid.RowDefinitions>
+                                                 <RowDefinition Height="Auto" />
+                                                 <RowDefinition Height="16" />
+                                                 <RowDefinition Height="Auto" />
+                                             </Grid.RowDefinitions>
+                                             <Grid.ColumnDefinitions>
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="20" />
+                                                 <ColumnDefinition Width="220" />
+                                                 <ColumnDefinition Width="20" />
+                                                 <ColumnDefinition Width="220" />
+                                             </Grid.ColumnDefinitions>
+
+                                             <StackPanel Grid.ColumnSpan="5">
+                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="NOL DOM 입력값" />
+                                                 <TextBlock Margin="0,8,0,0"
+                                                            Style="{StaticResource HelperTextStyle}"
+                                                            Text="앱이 여는 NOL 전용 브라우저에서 직접 로그인하고, NOL일 때만 URL/관람일/회차를 사용합니다." />
+                                             </StackPanel>
+
+                                             <StackPanel Grid.Row="2">
+                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="NOL URL" />
+                                                 <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                          Text="{Binding TargetUrl, UpdateSourceTrigger=PropertyChanged}" />
+                                             </StackPanel>
+
+                                             <StackPanel Grid.Row="2" Grid.Column="2">
+                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="관람일" />
+                                                 <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                          Text="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}" />
+                                             </StackPanel>
+
+                                             <StackPanel Grid.Row="2" Grid.Column="4">
+                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="회차" />
+                                                 <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                          Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
+                                             </StackPanel>
+                                         </Grid>
+                                     </Border>
+
+                                     <Grid Grid.Row="8" Grid.ColumnSpan="3">
+                                         <Grid.ColumnDefinitions>
+                                             <ColumnDefinition Width="Auto" />
+                                             <ColumnDefinition Width="16" />
+                                             <ColumnDefinition Width="*" />
+                                         </Grid.ColumnDefinitions>
 
                                         <Button Width="176"
                                                 Style="{StaticResource PrimaryButtonStyle}"
@@ -338,13 +390,16 @@
                             </Grid>
                         </Border>
 
-                        <Border Grid.Row="2" Style="{StaticResource SurfaceCardStyle}">
-                            <StackPanel>
-                                <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="실행 가이드" />
-                                <TextBlock Margin="0,14,0,0" Style="{StaticResource HelperTextStyle}" TextWrapping="Wrap"
-                                           Text="{Binding HotkeyText, StringFormat=전역 핫키({0})로 active 진입 가능. 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png}" />
-                            </StackPanel>
-                        </Border>
+                         <Border Grid.Row="2" Style="{StaticResource SurfaceCardStyle}">
+                             <StackPanel>
+                                 <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="실행 가이드" />
+                                 <TextBlock Margin="0,14,0,0" Style="{StaticResource HelperTextStyle}" TextWrapping="Wrap">
+                                     <Run Text="전역 핫키(" />
+                                     <Run Text="{Binding HotkeyText}" />
+                                     <Run Text=")로 실행 가능. 이미지 모드는 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png, NOL은 URL/관람일/회차 DOM 선택을 사용합니다." />
+                                 </TextBlock>
+                             </StackPanel>
+                         </Border>
 
                         <Border Grid.Row="4" Style="{StaticResource SurfaceCardStyle}" VerticalAlignment="Stretch">
                             <Grid>
