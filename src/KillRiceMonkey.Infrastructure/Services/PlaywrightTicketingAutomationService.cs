@@ -229,6 +229,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var page = await _nolBrowserContext.NewPageAsync();
 
             await page.SetViewportSizeAsync(DefaultNolViewportWidth, DefaultNolViewportHeight);
+            await page.BringToFrontAsync();
             return page;
         }
         finally
@@ -261,13 +262,36 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     continue;
                 }
 
-                await closeButton.ClickAsync();
+                try
+                {
+                    await closeButton.ClickAsync(new LocatorClickOptions
+                    {
+                        Force = true,
+                        Timeout = 1500
+                    });
+                }
+                catch (PlaywrightException)
+                {
+                    await closeButton.EvaluateAsync("button => { button.click(); }");
+                }
+
                 clicked = true;
-                await page.WaitForTimeoutAsync(100);
+                await page.WaitForTimeoutAsync(150);
                 break;
             }
 
             if (!clicked)
+            {
+                return;
+            }
+
+            var popupClosed = await TryDismissVisibleNolPopupsAsync(page);
+            if (popupClosed)
+            {
+                await page.WaitForTimeoutAsync(150);
+            }
+
+            if (await page.Locator(".popup.is-visible").CountAsync() == 0)
             {
                 return;
             }
@@ -397,11 +421,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 {
                     Timeout = (float)Math.Max(1000, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds)
                 });
+                await latestPage.BringToFrontAsync();
                 return latestPage;
             }
 
             if (!string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
             {
+                await page.BringToFrontAsync();
                 return page;
             }
 
@@ -501,6 +527,25 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 string.Equals(targetUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) &&
                targetUri.Host.EndsWith("interpark.com", StringComparison.OrdinalIgnoreCase) &&
                targetUri.AbsolutePath.Contains("/goods/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> TryDismissVisibleNolPopupsAsync(IPage page)
+    {
+        var dismissed = await page.EvaluateAsync<bool>("""
+            () => {
+                const buttons = Array.from(document.querySelectorAll('.popup.is-visible .popupCloseBtn'));
+                for (const button of buttons) {
+                    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    if (typeof button.click === 'function') {
+                        button.click();
+                    }
+                }
+
+                return buttons.length > 0;
+            }
+            """);
+
+        return dismissed;
     }
 
     private static string NormalizeText(string? value)
