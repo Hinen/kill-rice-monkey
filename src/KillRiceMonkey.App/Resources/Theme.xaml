@@ -119,6 +119,9 @@
         <Setter Property="BorderBrush" Value="{StaticResource StrokeBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+        <Setter Property="CaretBrush" Value="{StaticResource PrimaryTextBrush}" />
+        <Setter Property="SelectionBrush" Value="#FFD8E4FF" />
+        <Setter Property="SelectionTextBrush" Value="{StaticResource PrimaryTextBrush}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
@@ -131,6 +134,7 @@
                             CornerRadius="16"
                             SnapsToDevicePixels="True">
                         <ScrollViewer x:Name="PART_ContentHost"
+                                      Foreground="{TemplateBinding Foreground}"
                                       Margin="{TemplateBinding Padding}"
                                       VerticalAlignment="Center" />
                     </Border>
