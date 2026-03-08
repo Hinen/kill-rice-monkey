@@ -13,15 +13,28 @@ public partial class MainWindowViewModel : ObservableObject
 
     private readonly ITicketingAutomationService _ticketingAutomationService;
 
-    public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Booth", "Custom"];
+    public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Booth", "NOL", "Custom"];
 
     [ObservableProperty]
-    private string _selectedTemplate = "Custom";
+    private string? _selectedTemplate;
 
     [ObservableProperty]
     private string _imageDirectory = "button-images";
 
-    public bool IsImageDirectoryEditable => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Custom;
+    public bool IsImageDirectoryEditable => HasSelectedTemplate && ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Custom;
+
+    public bool HasSelectedTemplate => !string.IsNullOrWhiteSpace(SelectedTemplate);
+
+    public bool IsNolTemplate => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Nol;
+
+    [ObservableProperty]
+    private string _targetUrl = string.Empty;
+
+    [ObservableProperty]
+    private string _desiredDate = string.Empty;
+
+    [ObservableProperty]
+    private string _desiredRound = string.Empty;
 
     [ObservableProperty]
     private double _matchThreshold = 0.86;
@@ -36,7 +49,7 @@ public partial class MainWindowViewModel : ObservableObject
     private bool _isRunning;
 
     [ObservableProperty]
-    private string _statusMessage = "준비 완료";
+    private string _statusMessage = "템플릿 선택 필요";
 
     [ObservableProperty]
     private string _lastRunSummary = "자동화 실행 기록이 없습니다.";
@@ -48,7 +61,7 @@ public partial class MainWindowViewModel : ObservableObject
     public MainWindowViewModel(ITicketingAutomationService ticketingAutomationService)
     {
         _ticketingAutomationService = ticketingAutomationService;
-        StartAutomationCommand = new AsyncRelayCommand(StartAutomationAsync, () => !IsRunning);
+        StartAutomationCommand = new AsyncRelayCommand(StartAutomationAsync, () => !IsRunning && HasSelectedTemplate);
     }
 
     public IAsyncRelayCommand StartAutomationCommand { get; }
@@ -72,7 +85,7 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(IsErrorStatus));
     }
 
-    partial void OnSelectedTemplateChanged(string value)
+    partial void OnSelectedTemplateChanged(string? value)
     {
         var templateType = ParseTemplateType(value);
         if (templateType == TicketingTemplateType.Yes24)
@@ -83,14 +96,58 @@ public partial class MainWindowViewModel : ObservableObject
         {
             ImageDirectory = BoothFixedImageDirectory;
         }
+        else if (templateType == TicketingTemplateType.Nol)
+        {
+            ImageDirectory = "button-images";
+        }
+        else if (!HasSelectedTemplate)
+        {
+            ImageDirectory = "button-images";
+            StatusMessage = "템플릿 선택 필요";
+        }
 
         OnPropertyChanged(nameof(IsImageDirectoryEditable));
+        OnPropertyChanged(nameof(HasSelectedTemplate));
+        OnPropertyChanged(nameof(IsNolTemplate));
+        StartAutomationCommand.NotifyCanExecuteChanged();
     }
 
     private async Task StartAutomationAsync()
     {
+        if (!HasSelectedTemplate)
+        {
+            StatusMessage = "템플릿 선택 필요";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 실행 전 템플릿을 선택하세요.";
+            return;
+        }
+
         var mainWindow = System.Windows.Application.Current?.MainWindow;
         var originalState = mainWindow?.WindowState ?? WindowState.Normal;
+        var templateType = ParseTemplateType(SelectedTemplate);
+
+        if (templateType == TicketingTemplateType.Nol)
+        {
+            if (string.IsNullOrWhiteSpace(TargetUrl))
+            {
+                StatusMessage = "입력 확인 필요";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | NOL URL을 입력하세요.";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(DesiredDate))
+            {
+                StatusMessage = "입력 확인 필요";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 관람일을 입력하세요. 예: 2026.04.11";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(DesiredRound))
+            {
+                StatusMessage = "입력 확인 필요";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 회차를 입력하세요. 예: 1회 19:00";
+                return;
+            }
+        }
 
         if (mainWindow is not null)
         {
@@ -98,18 +155,26 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         IsRunning = true;
-        StatusMessage = "active 상태: 다단계 이미지 클릭 실행 중";
+        StatusMessage = templateType == TicketingTemplateType.Nol
+            ? "NOL DOM 자동화 실행 중"
+            : "active 상태: 다단계 이미지 클릭 실행 중";
 
         try
         {
-            var templateType = ParseTemplateType(SelectedTemplate);
             var imageDirectory = templateType switch
             {
                 TicketingTemplateType.Yes24 => Yes24FixedImageDirectory,
                 TicketingTemplateType.Booth => BoothFixedImageDirectory,
                 _ => ImageDirectory
             };
-            var request = new TicketingJobRequest(templateType, imageDirectory, MatchThreshold, StepTimeoutSeconds);
+            var request = new TicketingJobRequest(
+                templateType,
+                imageDirectory,
+                MatchThreshold,
+                StepTimeoutSeconds,
+                IsNolTemplate ? TargetUrl : null,
+                IsNolTemplate ? DesiredDate : null,
+                IsNolTemplate ? DesiredRound : null);
             var result = await _ticketingAutomationService.RunAsync(request, CancellationToken.None);
 
             StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
@@ -132,8 +197,13 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    private static TicketingTemplateType ParseTemplateType(string value)
+    private static TicketingTemplateType ParseTemplateType(string? value)
     {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return TicketingTemplateType.Custom;
+        }
+
         if (value.Equals("Yes24", StringComparison.OrdinalIgnoreCase))
         {
             return TicketingTemplateType.Yes24;
@@ -142,6 +212,11 @@ public partial class MainWindowViewModel : ObservableObject
         if (value.Equals("Booth", StringComparison.OrdinalIgnoreCase))
         {
             return TicketingTemplateType.Booth;
+        }
+
+        if (value.Equals("NOL", StringComparison.OrdinalIgnoreCase))
+        {
+            return TicketingTemplateType.Nol;
         }
 
         return TicketingTemplateType.Custom;
