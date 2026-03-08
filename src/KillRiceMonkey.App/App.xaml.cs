@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
+using System.IO;
 using System.Windows;
 using KillRiceMonkey.Application;
 using KillRiceMonkey.App.ViewModels;
@@ -15,18 +16,29 @@ public partial class App : System.Windows.Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+        Directory.CreateDirectory(logDirectory);
+
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Information()
-            .WriteTo.File("logs/app-.log", rollingInterval: RollingInterval.Day)
+            .Enrich.FromLogContext()
+            .WriteTo.File(
+                Path.Combine(logDirectory, "app-.log"),
+                rollingInterval: RollingInterval.Day,
+                shared: true,
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}")
             .CreateLogger();
+
+        Log.Information("Application log directory: {LogDirectory}", logDirectory);
 
         _host = Host.CreateDefaultBuilder()
             .ConfigureAppConfiguration(config =>
             {
+                config.SetBasePath(AppContext.BaseDirectory);
                 config.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
             })
             .UseSerilog()
-            .ConfigureServices(services =>
+            .ConfigureServices((_, services) =>
             {
                 services.AddApplication();
                 services.AddInfrastructure();
