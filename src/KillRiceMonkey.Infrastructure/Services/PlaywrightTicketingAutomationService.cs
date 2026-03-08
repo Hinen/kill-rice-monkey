@@ -45,6 +45,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private readonly ResiliencePipeline _pipeline;
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
     private IPlaywright? _playwright;
+    private IBrowser? _nolBrowser;
     private IBrowserContext? _nolBrowserContext;
 
     public PlaywrightTicketingAutomationService(ILogger<PlaywrightTicketingAutomationService> logger)
@@ -125,12 +126,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     public async ValueTask DisposeAsync()
     {
-        if (_nolBrowserContext is not null)
-        {
-            await _nolBrowserContext.CloseAsync();
-            _nolBrowserContext = null;
-        }
-
+        await CloseNolBrowserResourcesIfNeededAsync();
         _playwright?.Dispose();
         _playwright = null;
         _nolBrowserLock.Dispose();
@@ -170,29 +166,53 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var desiredRound = NormalizeText(request.DesiredRound);
         var timeout = TimeSpan.FromSeconds(request.StepTimeoutSeconds);
+        IPage? page = null;
+        var runId = Guid.NewGuid().ToString("N");
+        var phase = "browser-launch";
+
+        void SetStage(string stage)
+        {
+            phase = stage;
+            _logger.LogInformation(
+                "NOL stage entered. runId={RunId}, stage={Stage}, url={Url}, date={Date}, round={Round}, logDir={LogDir}",
+                runId,
+                phase,
+                targetUri,
+                desiredDate,
+                desiredRound,
+                GetLogDirectoryPath());
+        }
 
         try
         {
-            var page = await GetFreshNolPageAsync(cancellationToken);
+            SetStage("browser-launch");
+            page = await GetFreshNolPageAsync(cancellationToken);
 
-            _logger.LogInformation("NOL DOM automation started. url={Url}, date={Date}, round={Round}", targetUri, desiredDate, desiredRound);
+            _logger.LogInformation("NOL DOM automation started. runId={RunId}, url={Url}, date={Date}, round={Round}", runId, targetUri, desiredDate, desiredRound);
 
+            SetStage("goto-goods");
             await page.GotoAsync(targetUri.ToString(), new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded,
                 Timeout = (float)timeout.TotalMilliseconds
             });
 
+            SetStage("wait-product-side");
             await page.WaitForSelectorAsync("#productSide", new PageWaitForSelectorOptions
             {
                 State = WaitForSelectorState.Visible,
                 Timeout = (float)timeout.TotalMilliseconds
             });
 
+            SetStage("close-popup");
             await EnsureNolPopupClosedAsync(page, timeout, cancellationToken);
+            SetStage("select-date");
             await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
+            SetStage("select-round");
             await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
+            SetStage("click-booking");
             var bookingResultPage = await ClickNolBookingAsync(page, timeout, cancellationToken);
+            SetStage("completed");
 
             var currentUrl = bookingResultPage.Url;
             var message = currentUrl.Contains("accounts.", StringComparison.OrdinalIgnoreCase)
@@ -202,20 +222,25 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
         catch (TimeoutException ex)
         {
-            _logger.LogWarning(ex, "NOL DOM automation timed out");
-            return new AutomationRunResult(false, $"NOL DOM 자동화 시간 초과: {ex.Message}", DateTimeOffset.Now);
+            await LogNolFailureAsync(ex, runId, phase, targetUri, desiredDate, desiredRound, page);
+            return new AutomationRunResult(false, $"NOL DOM 자동화 시간 초과: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
         }
         catch (PlaywrightException ex)
         {
             if (allowBrowserReset && IsClosedTargetError(ex))
             {
-                _logger.LogWarning(ex, "NOL browser was closed. Resetting browser state and retrying once.");
+                _logger.LogWarning(ex, "NOL browser was closed. runId={RunId}, phase={Phase}. Resetting browser state and retrying once.", runId, phase);
                 await ResetNolBrowserStateAsync();
                 return await RunNolAutomationAsync(request, cancellationToken, allowBrowserReset: false);
             }
 
-            _logger.LogError(ex, "NOL DOM automation failed with Playwright exception");
-            return new AutomationRunResult(false, $"NOL DOM 자동화 실패: {ex.Message}", DateTimeOffset.Now);
+            await LogNolFailureAsync(ex, runId, phase, targetUri, desiredDate, desiredRound, page);
+            return new AutomationRunResult(false, $"NOL DOM 자동화 실패: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
+        }
+        catch (Exception ex)
+        {
+            await LogNolFailureAsync(ex, runId, phase, targetUri, desiredDate, desiredRound, page);
+            return new AutomationRunResult(false, $"NOL DOM 자동화 예외: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
         }
     }
 
@@ -226,19 +251,24 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             _playwright ??= await Playwright.CreateAsync();
 
-            await CloseNolBrowserContextIfNeededAsync();
-            var userDataDir = GetNolUserDataDirectory();
-            Directory.CreateDirectory(userDataDir);
-            _nolBrowserContext = await _playwright.Chromium.LaunchPersistentContextAsync(userDataDir, new BrowserTypeLaunchPersistentContextOptions
+            await CloseNolBrowserResourcesIfNeededAsync();
+            _nolBrowser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
                 Channel = "msedge",
-                Headless = false,
-                Locale = "ko-KR"
+                Headless = false
+            });
+            _nolBrowserContext = await _nolBrowser.NewContextAsync(new BrowserNewContextOptions
+            {
+                Locale = "ko-KR",
+                ViewportSize = new ViewportSize
+                {
+                    Width = DefaultNolViewportWidth,
+                    Height = DefaultNolViewportHeight
+                }
             });
 
             var page = await _nolBrowserContext.NewPageAsync();
 
-            await page.SetViewportSizeAsync(DefaultNolViewportWidth, DefaultNolViewportHeight);
             await page.BringToFrontAsync();
             return page;
         }
@@ -253,7 +283,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         await _nolBrowserLock.WaitAsync();
         try
         {
-            await CloseNolBrowserContextIfNeededAsync();
+            await CloseNolBrowserResourcesIfNeededAsync();
             _playwright?.Dispose();
             _playwright = null;
         }
@@ -263,24 +293,38 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task CloseNolBrowserContextIfNeededAsync()
+    private async Task CloseNolBrowserResourcesIfNeededAsync()
     {
-        if (_nolBrowserContext is null)
+        if (_nolBrowserContext is not null)
         {
-            return;
+            try
+            {
+                await _nolBrowserContext.CloseAsync();
+            }
+            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+            {
+                _logger.LogDebug(ex, "Ignoring closed NOL browser context during cleanup.");
+            }
+            finally
+            {
+                _nolBrowserContext = null;
+            }
         }
 
-        try
+        if (_nolBrowser is not null)
         {
-            await _nolBrowserContext.CloseAsync();
-        }
-        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
-        {
-            _logger.LogDebug(ex, "Ignoring closed NOL browser context during cleanup.");
-        }
-        finally
-        {
-            _nolBrowserContext = null;
+            try
+            {
+                await _nolBrowser.CloseAsync();
+            }
+            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+            {
+                _logger.LogDebug(ex, "Ignoring closed NOL browser during cleanup.");
+            }
+            finally
+            {
+                _nolBrowser = null;
+            }
         }
     }
 
@@ -601,6 +645,77 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                ex.Message.Contains("Target closed", StringComparison.OrdinalIgnoreCase);
     }
 
+    private async Task LogNolFailureAsync(Exception ex, string runId, string phase, Uri targetUri, DateOnly desiredDate, string desiredRound, IPage? page)
+    {
+        var pageState = await DescribeNolPageStateAsync(page);
+        _logger.LogError(
+            ex,
+            "NOL DOM automation failed. runId={RunId}, phase={Phase}, url={Url}, date={Date}, round={Round}, logDir={LogDir}, pageState={PageState}",
+            runId,
+            phase,
+            targetUri,
+            desiredDate,
+            desiredRound,
+            GetLogDirectoryPath(),
+            pageState);
+    }
+
+    private static async Task<string> DescribeNolPageStateAsync(IPage? page)
+    {
+        if (page is null)
+        {
+            return "page=null";
+        }
+
+        try
+        {
+            var popupCount = await page.Locator(".popup.is-visible").CountAsync();
+            var currentUrl = page.Url;
+            var pageCount = page.Context.Pages.Count;
+            var productSideCount = await page.Locator("#productSide").CountAsync();
+            var roundButtonCount = await page.Locator(".sideTimeTable .timeTableLabel[role='button']").CountAsync();
+            var bookingButtonCount = await page.Locator("#productSide a.sideBtn.is-primary").CountAsync();
+            var selectedDateText = await GetLocatorTextOrEmptyAsync(page.Locator("#productSide .containerTop .selectedData .date").First);
+            var selectedRoundText = await GetLocatorTextOrEmptyAsync(page.Locator("#productSide .containerMiddle .selectedData .time").First);
+            var openPages = string.Join(", ",
+                page.Context.Pages.Select((x, index) => $"[{index}]closed={x.IsClosed};url={SafePageUrl(x)}"));
+            return $"pageClosed={page.IsClosed}, url={currentUrl}, popupCount={popupCount}, productSideCount={productSideCount}, roundButtonCount={roundButtonCount}, bookingButtonCount={bookingButtonCount}, selectedDate={selectedDateText}, selectedRound={selectedRoundText}, contextPageCount={pageCount}, openPages={openPages}";
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            return $"page-state-unavailable:{ex.Message}";
+        }
+    }
+
+    private static async Task<string> GetLocatorTextOrEmptyAsync(ILocator locator)
+    {
+        try
+        {
+            if (await locator.CountAsync() == 0)
+            {
+                return string.Empty;
+            }
+
+            return NormalizeText(await locator.InnerTextAsync());
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            return $"unavailable:{ex.Message}";
+        }
+    }
+
+    private static string SafePageUrl(IPage page)
+    {
+        try
+        {
+            return page.Url;
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            return $"unavailable:{ex.Message}";
+        }
+    }
+
     private static string NormalizeText(string? value)
     {
         return string.IsNullOrWhiteSpace(value)
@@ -608,13 +723,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             : Regex.Replace(value, "\\s+", " ").Trim();
     }
 
-    private static string GetNolUserDataDirectory()
+    private static string GetLogDirectoryPath()
     {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "KillRiceMonkey",
-            "Playwright",
-            "NolProfile");
+        return Path.Combine(AppContext.BaseDirectory, "logs");
     }
 
     private async Task<(bool IsSuccess, string Message)> WaitAndClickStepAsync(
