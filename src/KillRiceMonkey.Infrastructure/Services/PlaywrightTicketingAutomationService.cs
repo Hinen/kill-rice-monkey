@@ -653,6 +653,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         round = string.Empty;
         var normalized = NormalizeText(value).Replace("회차", "회", StringComparison.Ordinal);
+        if (Regex.IsMatch(normalized, "^\\d+$", RegexOptions.Compiled))
+        {
+            round = $"{normalized}회";
+            return true;
+        }
+
         var match = Regex.Match(normalized, @"(?<round>\d+\s*회)", RegexOptions.Compiled);
         if (!match.Success)
         {
