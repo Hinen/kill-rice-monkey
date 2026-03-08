@@ -420,7 +420,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 throw new InvalidOperationException($"NOL 달력에서 {desiredDate:yyyy.MM} 월로 이동할 수 없습니다.");
             }
 
-            await nav.First.ClickAsync();
+            await ClickNolElementAsync(nav.First);
             await WaitForConditionAsync(
                 async () => NormalizeText(await calendar.Locator("li[data-view='month current']").InnerTextAsync()) != currentMonthText,
                 timeout,
@@ -440,7 +440,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            await cell.ClickAsync();
+            await ClickNolElementAsync(cell);
             await WaitForConditionAsync(
                 async () => NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
                 timeout,
@@ -470,7 +470,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            await round.ClickAsync();
+            await ClickNolElementAsync(round);
             await WaitForConditionAsync(
                 async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
                 timeout,
@@ -593,6 +593,16 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                    string.Equals(actualTime, desiredTime, StringComparison.Ordinal);
         }
 
+        if (TryParseNolRound(actual, out actualRound, out actualTime) && TryParseNolRoundLabel(desired, out desiredRound))
+        {
+            return string.Equals(actualRound, desiredRound, StringComparison.Ordinal);
+        }
+
+        if (TryParseNolRoundLabel(actual, out actualRound) && TryParseNolRoundLabel(desired, out desiredRound))
+        {
+            return string.Equals(actualRound, desiredRound, StringComparison.Ordinal);
+        }
+
         return string.Equals(NormalizeText(actual), NormalizeText(desired), StringComparison.Ordinal);
     }
 
@@ -609,6 +619,20 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         round = NormalizeText(match.Groups["round"].Value);
         time = NormalizeText(match.Groups["time"].Value);
         return !string.IsNullOrWhiteSpace(round) && !string.IsNullOrWhiteSpace(time);
+    }
+
+    private static bool TryParseNolRoundLabel(string value, out string round)
+    {
+        round = string.Empty;
+        var normalized = NormalizeText(value).Replace("회차", "회", StringComparison.Ordinal);
+        var match = Regex.Match(normalized, @"(?<round>\d+\s*회)", RegexOptions.Compiled);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        round = NormalizeText(match.Groups["round"].Value);
+        return !string.IsNullOrWhiteSpace(round);
     }
 
     private static bool IsAllowedNolTargetUrl(Uri targetUri)
@@ -643,6 +667,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return ex.Message.Contains("Target page, context or browser has been closed", StringComparison.OrdinalIgnoreCase) ||
                ex.Message.Contains("Browser has been closed", StringComparison.OrdinalIgnoreCase) ||
                ex.Message.Contains("Target closed", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task ClickNolElementAsync(ILocator locator)
+    {
+        try
+        {
+            await locator.ClickAsync(new LocatorClickOptions
+            {
+                Force = true,
+                Timeout = 1500
+            });
+        }
+        catch (PlaywrightException)
+        {
+            await locator.EvaluateAsync("element => { element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
+        }
     }
 
     private async Task LogNolFailureAsync(Exception ex, string runId, string phase, Uri targetUri, DateOnly desiredDate, string desiredRound, IPage? page)
