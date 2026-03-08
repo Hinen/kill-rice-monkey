@@ -41,6 +41,10 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string _lastRunSummary = "자동화 실행 기록이 없습니다.";
 
+    public bool IsSuccessStatus => string.Equals(StatusMessage, "성공 종료", StringComparison.Ordinal);
+
+    public bool IsErrorStatus => string.Equals(StatusMessage, "예외 종료", StringComparison.Ordinal);
+
     public MainWindowViewModel(ITicketingAutomationService ticketingAutomationService)
     {
         _ticketingAutomationService = ticketingAutomationService;
@@ -60,6 +64,12 @@ public partial class MainWindowViewModel : ObservableObject
     partial void OnIsRunningChanged(bool value)
     {
         StartAutomationCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnStatusMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsSuccessStatus));
+        OnPropertyChanged(nameof(IsErrorStatus));
     }
 
     partial void OnSelectedTemplateChanged(string value)
