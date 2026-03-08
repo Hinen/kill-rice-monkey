@@ -138,6 +138,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
     {
+        return await RunNolAutomationAsync(request, cancellationToken, allowBrowserReset: true);
+    }
+
+    private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken, bool allowBrowserReset)
+    {
         if (string.IsNullOrWhiteSpace(request.TargetUrl))
         {
             return new AutomationRunResult(false, "NOL URL이 비어 있습니다.", DateTimeOffset.Now);
@@ -202,6 +207,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
         catch (PlaywrightException ex)
         {
+            if (allowBrowserReset && IsClosedTargetError(ex))
+            {
+                _logger.LogWarning(ex, "NOL browser was closed. Resetting browser state and retrying once.");
+                await ResetNolBrowserStateAsync();
+                return await RunNolAutomationAsync(request, cancellationToken, allowBrowserReset: false);
+            }
+
             _logger.LogError(ex, "NOL DOM automation failed with Playwright exception");
             return new AutomationRunResult(false, $"NOL DOM 자동화 실패: {ex.Message}", DateTimeOffset.Now);
         }
@@ -214,8 +226,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             _playwright ??= await Playwright.CreateAsync();
 
-            if (_nolBrowserContext is null)
+            if (_nolBrowserContext is null || !await IsUsableNolBrowserContextAsync(_nolBrowserContext))
             {
+                await CloseNolBrowserContextIfNeededAsync();
                 var userDataDir = GetNolUserDataDirectory();
                 Directory.CreateDirectory(userDataDir);
                 _nolBrowserContext = await _playwright.Chromium.LaunchPersistentContextAsync(userDataDir, new BrowserTypeLaunchPersistentContextOptions
@@ -235,6 +248,63 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         finally
         {
             _nolBrowserLock.Release();
+        }
+    }
+
+    private async Task ResetNolBrowserStateAsync()
+    {
+        await _nolBrowserLock.WaitAsync();
+        try
+        {
+            await CloseNolBrowserContextIfNeededAsync();
+            _playwright?.Dispose();
+            _playwright = null;
+        }
+        finally
+        {
+            _nolBrowserLock.Release();
+        }
+    }
+
+    private async Task CloseNolBrowserContextIfNeededAsync()
+    {
+        if (_nolBrowserContext is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _nolBrowserContext.CloseAsync();
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            _logger.LogDebug(ex, "Ignoring closed NOL browser context during cleanup.");
+        }
+        finally
+        {
+            _nolBrowserContext = null;
+        }
+    }
+
+    private static async Task<bool> IsUsableNolBrowserContextAsync(IBrowserContext browserContext)
+    {
+        try
+        {
+            var probePage = browserContext.Pages.FirstOrDefault(x => !x.IsClosed);
+            if (probePage is not null)
+            {
+                var probeUrl = probePage.Url;
+                return true;
+            }
+
+            var tempPage = await browserContext.NewPageAsync();
+            await tempPage.CloseAsync();
+            return true;
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            return false;
         }
     }
 
@@ -546,6 +616,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             """);
 
         return dismissed;
+    }
+
+    private static bool IsClosedTargetError(PlaywrightException ex)
+    {
+        return ex.Message.Contains("Target page, context or browser has been closed", StringComparison.OrdinalIgnoreCase) ||
+               ex.Message.Contains("Browser has been closed", StringComparison.OrdinalIgnoreCase) ||
+               ex.Message.Contains("Target closed", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeText(string? value)
