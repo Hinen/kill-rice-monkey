@@ -441,6 +441,14 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
 
             await ClickNolElementAsync(cell);
+            if (!await TryWaitForConditionAsync(
+                    async () => NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
+                    TimeSpan.FromMilliseconds(800),
+                    cancellationToken))
+            {
+                await cell.EvaluateAsync("element => { element.scrollIntoView({ block: 'center', inline: 'center' }); element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window })); element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window })); element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
+            }
+
             await WaitForConditionAsync(
                 async () => NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
                 timeout,
@@ -546,6 +554,26 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         throw new TimeoutException(errorMessage);
+    }
+
+    private static async Task<bool> TryWaitForConditionAsync(
+        Func<Task<bool>> condition,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(100, cancellationToken);
+        }
+
+        return false;
     }
 
     private static bool TryParseDesiredDate(string? value, out DateOnly date)
