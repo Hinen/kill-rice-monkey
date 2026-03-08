@@ -500,11 +500,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         var beforeUrl = page.Url;
-        var beforePageCount = page.Context.Pages.Count;
-        await bookingButton.ClickAsync(new LocatorClickOptions
-        {
-            Timeout = (float)timeout.TotalMilliseconds
-        });
+        var beforePages = page.Context.Pages.Where(x => !x.IsClosed).ToHashSet();
+        await bookingButton.ScrollIntoViewIfNeededAsync();
+        await ClickNolElementAsync(bookingButton);
 
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
@@ -512,21 +510,28 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             cancellationToken.ThrowIfCancellationRequested();
 
             var openPages = page.Context.Pages.Where(x => !x.IsClosed).ToList();
-            if (openPages.Count > beforePageCount)
+            var newPage = openPages.FirstOrDefault(x => !beforePages.Contains(x));
+            if (newPage is not null)
             {
-                var latestPage = openPages[^1];
-                await latestPage.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions
+                await newPage.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions
                 {
                     Timeout = (float)Math.Max(1000, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds)
                 });
-                await latestPage.BringToFrontAsync();
-                return latestPage;
+                await newPage.BringToFrontAsync();
+                return newPage;
             }
 
-            if (!string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
+            if (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
             {
                 await page.BringToFrontAsync();
                 return page;
+            }
+
+            if (page.IsClosed && openPages.Count > 0)
+            {
+                var fallbackPage = openPages[^1];
+                await fallbackPage.BringToFrontAsync();
+                return fallbackPage;
             }
 
             await Task.Delay(100, cancellationToken);
