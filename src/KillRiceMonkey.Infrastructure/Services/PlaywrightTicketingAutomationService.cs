@@ -1,7 +1,9 @@
+using Microsoft.Playwright;
 using Microsoft.Extensions.Logging;
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
 using Polly;
+using System.Globalization;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -10,10 +12,12 @@ using KillRiceMonkey.Application.Models;
 
 namespace KillRiceMonkey.Infrastructure.Services;
 
-public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationService
+public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationService, IAsyncDisposable
 {
     private const string EmbeddedTemplatePrefix = "KillRiceMonkey.Infrastructure.TemplateImages.";
     private static readonly Regex StepPattern = new("^(?<step>\\d+)(?:-(?<suffix>[a-zA-Z0-9]+))?\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex DigitsOnlyPattern = new("\\D", RegexOptions.Compiled);
+    private static readonly Regex NolRoundPattern = new(@"(?<round>\d+\s*회).*?(?<time>\d{1,2}:\d{2})", RegexOptions.Compiled);
     private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
     private const int SeatSelectionOffset = 5;
     private const int Yes24LegendPaddingX = 8;
@@ -34,9 +38,14 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private const int InputMouse = 0;
     private const uint MouseeventfLeftdown = 0x0002;
     private const uint MouseeventfLeftup = 0x0004;
+    private const int DefaultNolViewportWidth = 1440;
+    private const int DefaultNolViewportHeight = 1200;
 
     private readonly ILogger<PlaywrightTicketingAutomationService> _logger;
     private readonly ResiliencePipeline _pipeline;
+    private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
+    private IPlaywright? _playwright;
+    private IBrowserContext? _nolBrowserContext;
 
     public PlaywrightTicketingAutomationService(ILogger<PlaywrightTicketingAutomationService> logger)
     {
@@ -56,6 +65,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             return await _pipeline.ExecuteAsync(async token =>
             {
+                if (request.TemplateType == TicketingTemplateType.Nol)
+                {
+                    return await RunNolAutomationAsync(request, token);
+                }
+
                 if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
                 {
                     return new AutomationRunResult(false, "매칭 임계값은 0보다 크고 1 이하여야 합니다.", DateTimeOffset.Now);
@@ -107,6 +121,402 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             _logger.LogError(ex, "Automation failed with exception");
             return new AutomationRunResult(false, $"예외 발생: {ex.Message}", DateTimeOffset.Now);
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_nolBrowserContext is not null)
+        {
+            await _nolBrowserContext.CloseAsync();
+            _nolBrowserContext = null;
+        }
+
+        _playwright?.Dispose();
+        _playwright = null;
+        _nolBrowserLock.Dispose();
+    }
+
+    private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.TargetUrl))
+        {
+            return new AutomationRunResult(false, "NOL URL이 비어 있습니다.", DateTimeOffset.Now);
+        }
+
+        if (!Uri.TryCreate(request.TargetUrl, UriKind.Absolute, out var targetUri))
+        {
+            return new AutomationRunResult(false, "NOL URL 형식이 올바르지 않습니다.", DateTimeOffset.Now);
+        }
+
+        if (!IsAllowedNolTargetUrl(targetUri))
+        {
+            return new AutomationRunResult(false, "NOL URL은 Interpark 상품 상세(goods) 페이지여야 합니다.", DateTimeOffset.Now);
+        }
+
+        if (!TryParseDesiredDate(request.DesiredDate, out var desiredDate))
+        {
+            return new AutomationRunResult(false, "관람일 형식이 올바르지 않습니다. 예: 2026.04.11", DateTimeOffset.Now);
+        }
+
+        if (string.IsNullOrWhiteSpace(request.DesiredRound))
+        {
+            return new AutomationRunResult(false, "회차 값이 비어 있습니다. 예: 1회 19:00", DateTimeOffset.Now);
+        }
+
+        var desiredRound = NormalizeText(request.DesiredRound);
+        var timeout = TimeSpan.FromSeconds(request.StepTimeoutSeconds);
+
+        try
+        {
+            var page = await GetOrCreateNolPageAsync(cancellationToken);
+
+            _logger.LogInformation("NOL DOM automation started. url={Url}, date={Date}, round={Round}", targetUri, desiredDate, desiredRound);
+
+            await page.GotoAsync(targetUri.ToString(), new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = (float)timeout.TotalMilliseconds
+            });
+
+            await page.WaitForSelectorAsync("#productSide", new PageWaitForSelectorOptions
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = (float)timeout.TotalMilliseconds
+            });
+
+            await EnsureNolPopupClosedAsync(page, timeout, cancellationToken);
+            await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
+            await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
+            var bookingResultPage = await ClickNolBookingAsync(page, timeout, cancellationToken);
+
+            var currentUrl = bookingResultPage.Url;
+            var message = currentUrl.Contains("accounts.", StringComparison.OrdinalIgnoreCase)
+                ? $"NOL DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택 후 예매하기 클릭 완료 (앱이 연 NOL 전용 브라우저에서 직접 로그인하세요)."
+                : $"NOL DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택 후 예매하기 클릭 완료.";
+            return new AutomationRunResult(true, message, DateTimeOffset.Now);
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogWarning(ex, "NOL DOM automation timed out");
+            return new AutomationRunResult(false, $"NOL DOM 자동화 시간 초과: {ex.Message}", DateTimeOffset.Now);
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger.LogError(ex, "NOL DOM automation failed with Playwright exception");
+            return new AutomationRunResult(false, $"NOL DOM 자동화 실패: {ex.Message}", DateTimeOffset.Now);
+        }
+    }
+
+    private async Task<IPage> GetOrCreateNolPageAsync(CancellationToken cancellationToken)
+    {
+        await _nolBrowserLock.WaitAsync(cancellationToken);
+        try
+        {
+            _playwright ??= await Playwright.CreateAsync();
+
+            if (_nolBrowserContext is null)
+            {
+                var userDataDir = GetNolUserDataDirectory();
+                Directory.CreateDirectory(userDataDir);
+                _nolBrowserContext = await _playwright.Chromium.LaunchPersistentContextAsync(userDataDir, new BrowserTypeLaunchPersistentContextOptions
+                {
+                    Channel = "msedge",
+                    Headless = false,
+                    Locale = "ko-KR"
+                });
+            }
+
+            var page = await _nolBrowserContext.NewPageAsync();
+
+            await page.SetViewportSizeAsync(DefaultNolViewportWidth, DefaultNolViewportHeight);
+            return page;
+        }
+        finally
+        {
+            _nolBrowserLock.Release();
+        }
+    }
+
+    private static async Task EnsureNolPopupClosedAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var closeButtons = page.Locator(".popup.is-visible .popupCloseBtn");
+            var buttonCount = await closeButtons.CountAsync();
+            if (buttonCount == 0)
+            {
+                return;
+            }
+
+            var clicked = false;
+            for (var index = 0; index < buttonCount; index++)
+            {
+                var closeButton = closeButtons.Nth(index);
+                if (!await closeButton.IsVisibleAsync())
+                {
+                    continue;
+                }
+
+                await closeButton.ClickAsync();
+                clicked = true;
+                await page.WaitForTimeoutAsync(100);
+                break;
+            }
+
+            if (!clicked)
+            {
+                return;
+            }
+        }
+
+        throw new TimeoutException("NOL 안내 팝업을 닫지 못했습니다.");
+    }
+
+    private static async Task SelectNolDateAsync(IPage page, DateOnly desiredDate, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var side = page.Locator("#productSide");
+        var calendar = side.Locator(".sideCalendar");
+        var desiredMonth = new DateOnly(desiredDate.Year, desiredDate.Month, 1);
+
+        await WaitForConditionAsync(async () => await calendar.CountAsync() > 0, timeout, cancellationToken, "NOL 달력 영역을 찾지 못했습니다.");
+
+        for (var attempt = 0; attempt < 24; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentMonthText = NormalizeText(await calendar.Locator("li[data-view='month current']").InnerTextAsync());
+            if (!TryParseMonth(currentMonthText, out var currentMonth))
+            {
+                throw new InvalidOperationException($"NOL 달력 월 텍스트를 해석하지 못했습니다: {currentMonthText}");
+            }
+
+            if (currentMonth == desiredMonth)
+            {
+                break;
+            }
+
+            var direction = currentMonth < desiredMonth ? "next" : "prev";
+            var nav = calendar.Locator($"li[data-view='month {direction}']:not(.disabled)");
+            if (await nav.CountAsync() == 0)
+            {
+                throw new InvalidOperationException($"NOL 달력에서 {desiredDate:yyyy.MM} 월로 이동할 수 없습니다.");
+            }
+
+            await nav.First.ClickAsync();
+            await WaitForConditionAsync(
+                async () => NormalizeText(await calendar.Locator("li[data-view='month current']").InnerTextAsync()) != currentMonthText,
+                timeout,
+                cancellationToken,
+                "NOL 달력 월 전환을 확인하지 못했습니다.");
+        }
+
+        var days = calendar.Locator("ul[data-view='days'] > li");
+        var count = await days.CountAsync();
+        for (var index = 0; index < count; index++)
+        {
+            var cell = days.Nth(index);
+            var dayText = NormalizeText(await cell.InnerTextAsync());
+            var className = await cell.GetAttributeAsync("class") ?? string.Empty;
+            if (dayText != desiredDate.Day.ToString(CultureInfo.InvariantCulture) || IsNolDisabledClass(className))
+            {
+                continue;
+            }
+
+            await cell.ClickAsync();
+            await WaitForConditionAsync(
+                async () => NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
+                timeout,
+                cancellationToken,
+                "NOL 관람일 선택 반영을 확인하지 못했습니다.");
+            return;
+        }
+
+        throw new InvalidOperationException($"NOL 달력에서 선택 가능한 관람일을 찾지 못했습니다: {desiredDate:yyyy.MM.dd}");
+    }
+
+    private static async Task SelectNolRoundAsync(IPage page, string desiredRound, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var side = page.Locator("#productSide");
+        var rounds = side.Locator(".sideTimeTable .timeTableLabel[role='button']");
+
+        await WaitForConditionAsync(async () => await rounds.CountAsync() > 0, timeout, cancellationToken, "NOL 회차 목록을 찾지 못했습니다.");
+
+        var count = await rounds.CountAsync();
+        for (var index = 0; index < count; index++)
+        {
+            var round = rounds.Nth(index);
+            var roundText = NormalizeText(await round.InnerTextAsync());
+            var className = await round.GetAttributeAsync("class") ?? string.Empty;
+            if (!IsMatchingNolRound(roundText, desiredRound) || IsNolDisabledClass(className))
+            {
+                continue;
+            }
+
+            await round.ClickAsync();
+            await WaitForConditionAsync(
+                async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
+                timeout,
+                cancellationToken,
+                "NOL 회차 선택 반영을 확인하지 못했습니다.");
+            return;
+        }
+
+        throw new InvalidOperationException($"NOL 회차를 찾지 못했습니다: {desiredRound}");
+    }
+
+    private static async Task<IPage> ClickNolBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var bookingButton = page.Locator("#productSide a.sideBtn.is-primary").First;
+        if (await bookingButton.CountAsync() == 0)
+        {
+            throw new InvalidOperationException("NOL 예매하기 버튼을 찾지 못했습니다.");
+        }
+
+        var beforeUrl = page.Url;
+        var beforePageCount = page.Context.Pages.Count;
+        await bookingButton.ClickAsync(new LocatorClickOptions
+        {
+            Timeout = (float)timeout.TotalMilliseconds
+        });
+
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var openPages = page.Context.Pages.Where(x => !x.IsClosed).ToList();
+            if (openPages.Count > beforePageCount)
+            {
+                var latestPage = openPages[^1];
+                await latestPage.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions
+                {
+                    Timeout = (float)Math.Max(1000, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds)
+                });
+                return latestPage;
+            }
+
+            if (!string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                return page;
+            }
+
+            await Task.Delay(100, cancellationToken);
+        }
+
+        throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
+    }
+
+    private static async Task WaitForConditionAsync(
+        Func<Task<bool>> condition,
+        TimeSpan timeout,
+        CancellationToken cancellationToken,
+        string errorMessage)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(100, cancellationToken);
+        }
+
+        throw new TimeoutException(errorMessage);
+    }
+
+    private static bool TryParseDesiredDate(string? value, out DateOnly date)
+    {
+        date = default;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var digits = DigitsOnlyPattern.Replace(value, string.Empty);
+        return DateOnly.TryParseExact(digits, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+    }
+
+    private static bool TryParseMonth(string value, out DateOnly month)
+    {
+        month = default;
+        var digits = DigitsOnlyPattern.Replace(value, string.Empty);
+        if (digits.Length != 6 || !int.TryParse(digits[..4], out var year) || !int.TryParse(digits[4..], out var monthValue))
+        {
+            return false;
+        }
+
+        if (monthValue < 1 || monthValue > 12)
+        {
+            return false;
+        }
+
+        month = new DateOnly(year, monthValue, 1);
+        return true;
+    }
+
+    private static bool IsNolDisabledClass(string className)
+    {
+        return className.Contains("disabled", StringComparison.OrdinalIgnoreCase) ||
+               className.Contains("muted", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsMatchingNolRound(string actual, string desired)
+    {
+        if (TryParseNolRound(actual, out var actualRound, out var actualTime) &&
+            TryParseNolRound(desired, out var desiredRound, out var desiredTime))
+        {
+            return string.Equals(actualRound, desiredRound, StringComparison.Ordinal) &&
+                   string.Equals(actualTime, desiredTime, StringComparison.Ordinal);
+        }
+
+        return string.Equals(NormalizeText(actual), NormalizeText(desired), StringComparison.Ordinal);
+    }
+
+    private static bool TryParseNolRound(string value, out string round, out string time)
+    {
+        round = string.Empty;
+        time = string.Empty;
+        var match = NolRoundPattern.Match(NormalizeText(value));
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        round = NormalizeText(match.Groups["round"].Value);
+        time = NormalizeText(match.Groups["time"].Value);
+        return !string.IsNullOrWhiteSpace(round) && !string.IsNullOrWhiteSpace(time);
+    }
+
+    private static bool IsAllowedNolTargetUrl(Uri targetUri)
+    {
+        return (string.Equals(targetUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(targetUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) &&
+               targetUri.Host.EndsWith("interpark.com", StringComparison.OrdinalIgnoreCase) &&
+               targetUri.AbsolutePath.Contains("/goods/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeText(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : Regex.Replace(value, "\\s+", " ").Trim();
+    }
+
+    private static string GetNolUserDataDirectory()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "KillRiceMonkey",
+            "Playwright",
+            "NolProfile");
     }
 
     private async Task<(bool IsSuccess, string Message)> WaitAndClickStepAsync(
@@ -219,7 +629,19 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return (LoadStepGroupsFromDirectory(resolvedDirectory), null);
         }
 
-        return LoadStepGroupsFromEmbeddedResources(request.TemplateType);
+        var embeddedResult = LoadStepGroupsFromEmbeddedResources(request.TemplateType);
+        if (embeddedResult.Error is null)
+        {
+            return embeddedResult;
+        }
+
+        var resolvedFallbackDirectory = ResolveImageDirectory(request.ImageDirectory);
+        if (resolvedFallbackDirectory is null)
+        {
+            return embeddedResult;
+        }
+
+        return (LoadStepGroupsFromDirectory(resolvedFallbackDirectory), null);
     }
 
     private static IReadOnlyList<StepGroup> LoadStepGroupsFromDirectory(string directory)
