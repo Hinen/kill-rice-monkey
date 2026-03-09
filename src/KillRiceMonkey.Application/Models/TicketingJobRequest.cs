@@ -5,6 +5,5 @@ public sealed record TicketingJobRequest(
     string ImageDirectory,
     double MatchThreshold,
     int StepTimeoutSeconds,
-    string? TargetUrl = null,
     string? DesiredDate = null,
     string? DesiredRound = null);
