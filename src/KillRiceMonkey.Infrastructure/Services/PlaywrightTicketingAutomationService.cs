@@ -85,6 +85,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
     private static readonly HttpClient NolHttpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
     private static OcrEngine? _nolOcrEngine;
+    private static OcrEngine? _nolOcrEngineEn;
     private IPlaywright? _playwright;
     private IBrowser? _preparedNolConnectedBrowser;
     private IPage? _preparedNolPage;
@@ -775,6 +776,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return _nolOcrEngine ?? throw new InvalidOperationException("Windows OCR 엔진을 초기화하지 못했습니다. OCR 언어 팩 설치를 확인하세요.");
+    }
+
+    private static OcrEngine GetNolOcrEngineForCaptcha()
+    {
+        if (_nolOcrEngineEn is not null)
+        {
+            return _nolOcrEngineEn;
+        }
+
+        var englishLanguage = new Language("en-US");
+        if (OcrEngine.IsLanguageSupported(englishLanguage))
+        {
+            _nolOcrEngineEn = OcrEngine.TryCreateFromLanguage(englishLanguage);
+        }
+
+        _nolOcrEngineEn ??= GetNolOcrEngine();
+        return _nolOcrEngineEn;
     }
 
     private static string NormalizeNolRoundOcrText(string value)
