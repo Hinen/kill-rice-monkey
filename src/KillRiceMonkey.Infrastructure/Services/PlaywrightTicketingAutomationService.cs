@@ -85,7 +85,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
     private static readonly HttpClient NolHttpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
     private static OcrEngine? _nolOcrEngine;
-    private static OcrEngine? _nolOcrEngineEn;
     private IPlaywright? _playwright;
     private IBrowser? _preparedNolConnectedBrowser;
     private IPage? _preparedNolPage;
@@ -880,7 +879,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (source.Empty())
             return string.Empty;
 
-        var rawText = await RunOcrOnMatAsync(source, cancellationToken);
+        var rawText = RunCaptchaOcrOnMat(source);
         var rawFiltered = FilterCaptchaText(rawText);
         _logger.LogInformation("CAPTCHA OCR raw: ocrText={OcrText}, filtered={Filtered}", rawText, rawFiltered);
 
@@ -894,7 +893,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             for (var vi = 0; vi < variants.Count; vi++)
             {
                 SaveCaptchaDebugImage(variants[vi], $"captcha-variant{vi}");
-                var varText = await RunOcrOnMatAsync(variants[vi], cancellationToken);
+                var varText = RunCaptchaOcrOnMat(variants[vi]);
                 var varFiltered = FilterCaptchaText(varText);
                 _logger.LogInformation("CAPTCHA OCR variant{Index}: ocrText={OcrText}, filtered={Filtered}",
                     vi, varText, varFiltered);
@@ -914,26 +913,39 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return bestText;
     }
 
-    private static async Task<string> RunOcrOnMatAsync(Mat source, CancellationToken cancellationToken)
+    private static string RunCaptchaOcrOnMat(Mat source)
     {
-        using var bgra = new Mat();
-        if (source.Channels() == 1)
-            Cv2.CvtColor(source, bgra, ColorConversionCodes.GRAY2BGRA);
-        else
-            Cv2.CvtColor(source, bgra, ColorConversionCodes.BGR2BGRA);
+        var tessDataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata");
+        Cv2.ImEncode(".png", source, out var pngBytes);
 
-        var size = checked((int)(bgra.Total() * bgra.ElemSize()));
-        var bytes = new byte[size];
-        Marshal.Copy(bgra.Data, bytes, 0, size);
+        var psmModes = new[]
+        {
+            TesseractOCR.Enums.PageSegMode.SingleLine,
+            TesseractOCR.Enums.PageSegMode.SingleWord,
+            TesseractOCR.Enums.PageSegMode.Auto,
+        };
 
-        using var writer = new DataWriter();
-        writer.WriteBytes(bytes);
-        var buffer = writer.DetachBuffer();
-        using var softwareBitmap = SoftwareBitmap.CreateCopyFromBuffer(buffer, BitmapPixelFormat.Bgra8, bgra.Width, bgra.Height, BitmapAlphaMode.Premultiplied);
+        var best = string.Empty;
 
-        var result = await GetNolOcrEngineForCaptcha().RecognizeAsync(softwareBitmap);
-        cancellationToken.ThrowIfCancellationRequested();
-        return result.Text;
+        foreach (var psm in psmModes)
+        {
+            using var engine = new TesseractOCR.Engine(tessDataPath, TesseractOCR.Enums.Language.English, TesseractOCR.Enums.EngineMode.Default);
+            engine.SetVariable("tessedit_char_whitelist", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+            engine.SetVariable("tessedit_load_system_dawg", "0");
+            engine.SetVariable("tessedit_load_freq_dawg", "0");
+
+            using var img = TesseractOCR.Pix.Image.LoadFromMemory(pngBytes);
+            using var page = engine.Process(img, psm);
+            var text = page.Text?.Trim() ?? string.Empty;
+
+            if (text.Length > best.Length)
+                best = text;
+
+            if (best.Length >= 4)
+                return best;
+        }
+
+        return best;
     }
 
     private static async Task<ILocator?> FindCaptchaImageAsync(ILocator inputLocator, IPage page, IFrame? captchaFrame)
@@ -1163,23 +1175,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return _nolOcrEngine ?? throw new InvalidOperationException("Windows OCR 엔진을 초기화하지 못했습니다. OCR 언어 팩 설치를 확인하세요.");
-    }
-
-    private static OcrEngine GetNolOcrEngineForCaptcha()
-    {
-        if (_nolOcrEngineEn is not null)
-        {
-            return _nolOcrEngineEn;
-        }
-
-        var englishLanguage = new Language("en-US");
-        if (OcrEngine.IsLanguageSupported(englishLanguage))
-        {
-            _nolOcrEngineEn = OcrEngine.TryCreateFromLanguage(englishLanguage);
-        }
-
-        _nolOcrEngineEn ??= GetNolOcrEngine();
-        return _nolOcrEngineEn;
     }
 
     private static string NormalizeNolRoundOcrText(string value)
