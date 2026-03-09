@@ -5,10 +5,16 @@ using OpenCvSharp.Extensions;
 using Polly;
 using System.Globalization;
 using System.Drawing;
+using System.Diagnostics;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
+using Windows.Globalization;
+using Windows.Graphics.Imaging;
+using Windows.Media.Ocr;
+using Windows.Storage.Streams;
 
 namespace KillRiceMonkey.Infrastructure.Services;
 
@@ -17,7 +23,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private const string EmbeddedTemplatePrefix = "KillRiceMonkey.Infrastructure.TemplateImages.";
     private static readonly Regex StepPattern = new("^(?<step>\\d+)(?:-(?<suffix>[a-zA-Z0-9]+))?\\.png$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex DigitsOnlyPattern = new("\\D", RegexOptions.Compiled);
-    private static readonly Regex NolRoundPattern = new(@"(?<round>\d+\s*회).*?(?<time>\d{1,2}:\d{2})", RegexOptions.Compiled);
+    private static readonly Regex NolRoundPattern = new(@"^\D*(?<round>\d{1,2})\s*(?:회차|회|희|히|외)?\s*(?<time>\d{1,2}(?::|\.|,)?\d{2})", RegexOptions.Compiled);
     private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
     private const int SeatSelectionOffset = 5;
     private const int Yes24LegendPaddingX = 8;
@@ -40,13 +46,52 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private const uint MouseeventfLeftup = 0x0004;
     private const int DefaultNolViewportWidth = 1440;
     private const int DefaultNolViewportHeight = 1200;
+    private const string NolRemoteDebugLaunchUrl = "https://tickets.interpark.com/";
+    private const string NolCdpEndpoint = "http://127.0.0.1:9222/";
+    private const string NolTemplateResourcePrefix = EmbeddedTemplatePrefix + "Nol.";
+    private static readonly string[] NolBrowserExecutableCandidates =
+    [
+        @"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        @"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+    ];
+    private const string NolPopupCloseTemplateFileName = "popup-close.png";
+    private const string NolCalendarHeaderTemplateFileName = "calendar-header.png";
+    private const string NolRoundHeaderTemplateFileName = "round-header.png";
+    private const string NolBookingButtonTemplateFileName = "booking-button.png";
+    private const double NolPanelToggleWidth = 290;
+    private const double NolCalendarLeftOffset = 11;
+    private const double NolCalendarTopOffset = 39;
+    private const double NolCalendarWidth = 290;
+    private const double NolCalendarHeight = 237;
+    private const double NolCalendarMonthHeaderHeight = 28;
+    private const double NolCalendarPrevArrowCenterX = 74;
+    private const double NolCalendarNextArrowCenterX = 214;
+    private const double NolCalendarArrowCenterY = 11;
+    private const double NolCalendarGridLeftOffset = 14;
+    private const double NolCalendarGridTopOffset = 66;
+    private const double NolCalendarCellSize = 32;
+    private const double NolCalendarColumnStep = 38;
+    private const double NolCalendarRowStep = 34;
+    private const double NolRoundListLeftOffset = 11;
+    private const double NolRoundListTopOffset = 29;
+    private const double NolRoundListWidth = 290;
+    private const double NolRoundRowHeight = 45;
+    private const int NolRoundMaxRows = 8;
+    private const int NolMonthNavigationLimit = 24;
+    private const int NolOcrScaleFactor = 3;
 
     private readonly ILogger<PlaywrightTicketingAutomationService> _logger;
     private readonly ResiliencePipeline _pipeline;
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
+    private static readonly HttpClient NolHttpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private static OcrEngine? _nolOcrEngine;
     private IPlaywright? _playwright;
     private IBrowser? _nolBrowser;
     private IBrowserContext? _nolBrowserContext;
+    private IBrowser? _preparedNolConnectedBrowser;
+    private IPage? _preparedNolPage;
 
     public PlaywrightTicketingAutomationService(ILogger<PlaywrightTicketingAutomationService> logger)
     {
@@ -127,9 +172,85 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     public async ValueTask DisposeAsync()
     {
         await CloseNolBrowserResourcesIfNeededAsync();
+        await ReleasePreparedNolConnectionAsync();
         _playwright?.Dispose();
         _playwright = null;
         _nolBrowserLock.Dispose();
+    }
+
+    public async Task<bool> IsNolRemoteDebugBrowserAvailableAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return await IsNolCdpEndpointAvailableAsync(NolCdpEndpoint, cancellationToken);
+    }
+
+    public async Task<bool> IsNolAutomationPreparedAsync(CancellationToken cancellationToken)
+    {
+        return await TryGetPreparedNolPageAsync(cancellationToken) is not null;
+    }
+
+    public async Task<string> LaunchNolRemoteDebugBrowserAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (await IsNolCdpEndpointAvailableAsync(NolCdpEndpoint, cancellationToken))
+        {
+            return $"이미 remote debug 브라우저가 열려 있습니다: {NolCdpEndpoint}";
+        }
+
+        var executablePath = NolBrowserExecutableCandidates.FirstOrDefault(File.Exists);
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            throw new InvalidOperationException("Edge 또는 Chrome 실행 파일을 찾지 못했습니다.");
+        }
+
+        var profileDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "KillRiceMonkey",
+            "NolRemoteDebugProfile");
+        Directory.CreateDirectory(profileDirectory);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executablePath,
+            Arguments = $"--remote-debugging-port=9222 --user-data-dir=\"{profileDirectory}\" --new-window \"{NolRemoteDebugLaunchUrl}\"",
+            UseShellExecute = true
+        };
+
+        Process.Start(startInfo);
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await IsNolCdpEndpointAvailableAsync(NolCdpEndpoint, cancellationToken))
+            {
+                return $"remote debug 브라우저를 열었습니다: {NolRemoteDebugLaunchUrl}";
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        return $"브라우저 실행은 요청했지만 remote debug 포트 확인이 지연되고 있습니다. 직접 확인: {NolCdpEndpoint}";
+    }
+
+    public async Task<string> PrepareNolAutomationAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await IsNolRemoteDebugBrowserAvailableAsync(cancellationToken))
+        {
+            throw new InvalidOperationException("먼저 NOL Remote Debug 브라우저를 실행하세요.");
+        }
+
+        var page = await EnsurePreparedNolConnectedPageAsync(cancellationToken);
+        if (page is null)
+        {
+            throw new InvalidOperationException("준비할 NOL 상품 페이지를 찾지 못했습니다. 상품 페이지를 연 뒤 다시 시도하세요.");
+        }
+
+        await page.BringToFrontAsync();
+        var snapshot = await DescribeNolPageStateAsync(page);
+        _logger.LogInformation("Prepared NOL automation state. {State}", snapshot);
+        return $"NOL 준비 완료: {SafePageUrl(page)}";
     }
 
     private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
@@ -139,19 +260,16 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken, bool allowBrowserReset)
     {
-        if (string.IsNullOrWhiteSpace(request.TargetUrl))
+        _ = allowBrowserReset;
+
+        if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
         {
-            return new AutomationRunResult(false, "NOL URL이 비어 있습니다.", DateTimeOffset.Now);
+            return new AutomationRunResult(false, "매칭 임계값은 0보다 크고 1 이하여야 합니다.", DateTimeOffset.Now);
         }
 
-        if (!Uri.TryCreate(request.TargetUrl, UriKind.Absolute, out var targetUri))
+        if (request.StepTimeoutSeconds <= 0)
         {
-            return new AutomationRunResult(false, "NOL URL 형식이 올바르지 않습니다.", DateTimeOffset.Now);
-        }
-
-        if (!IsAllowedNolTargetUrl(targetUri))
-        {
-            return new AutomationRunResult(false, "NOL URL은 Interpark 상품 상세(goods) 페이지여야 합니다.", DateTimeOffset.Now);
+            return new AutomationRunResult(false, "단계별 제한 시간은 1초 이상이어야 합니다.", DateTimeOffset.Now);
         }
 
         if (!TryParseDesiredDate(request.DesiredDate, out var desiredDate))
@@ -166,18 +284,17 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var desiredRound = NormalizeText(request.DesiredRound);
         var timeout = TimeSpan.FromSeconds(request.StepTimeoutSeconds);
-        IPage? page = null;
         var runId = Guid.NewGuid().ToString("N");
-        var phase = "browser-launch";
+        var phase = "screen-start";
+        var threshold = request.MatchThreshold;
 
         void SetStage(string stage)
         {
             phase = stage;
             _logger.LogInformation(
-                "NOL stage entered. runId={RunId}, stage={Stage}, url={Url}, date={Date}, round={Round}, logDir={LogDir}",
+                "NOL stage entered. runId={RunId}, stage={Stage}, date={Date}, round={Round}, logDir={LogDir}",
                 runId,
                 phase,
-                targetUri,
                 desiredDate,
                 desiredRound,
                 GetLogDirectoryPath());
@@ -185,62 +302,750 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         try
         {
-            SetStage("browser-launch");
-            page = await GetFreshNolPageAsync(cancellationToken);
+            _logger.LogInformation("NOL screen automation started. runId={RunId}, date={Date}, round={Round}", runId, desiredDate, desiredRound);
 
-            _logger.LogInformation("NOL DOM automation started. runId={RunId}, url={Url}, date={Date}, round={Round}", runId, targetUri, desiredDate, desiredRound);
-
-            SetStage("goto-goods");
-            await page.GotoAsync(targetUri.ToString(), new PageGotoOptions
+            SetStage("attach-existing-browser");
+            var cdpResult = await TryRunNolAutomationViaConnectedBrowserAsync(desiredDate, desiredRound, timeout, cancellationToken);
+            if (cdpResult is not null)
             {
-                WaitUntil = WaitUntilState.DOMContentLoaded,
-                Timeout = (float)timeout.TotalMilliseconds
-            });
-
-            SetStage("wait-product-side");
-            await page.WaitForSelectorAsync("#productSide", new PageWaitForSelectorOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = (float)timeout.TotalMilliseconds
-            });
+                return cdpResult;
+            }
 
             SetStage("close-popup");
-            await EnsureNolPopupClosedAsync(page, timeout, cancellationToken);
+            await TryClickNolScreenTemplateAsync(NolPopupCloseTemplateFileName, Math.Min(threshold, 0.80), TimeSpan.FromSeconds(2), cancellationToken);
+
             SetStage("select-date");
-            await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
+            await SelectNolDateByScreenAsync(desiredDate, Math.Min(threshold, 0.82), timeout, cancellationToken);
+
             SetStage("select-round");
-            await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
+            var selectedRound = await SelectNolRoundByScreenAsync(desiredRound, Math.Min(threshold, 0.78), timeout, cancellationToken);
+
             SetStage("click-booking");
-            var bookingResultPage = await ClickNolBookingAsync(page, timeout, cancellationToken);
+            await ClickNolScreenTemplateAsync(NolBookingButtonTemplateFileName, Math.Min(threshold, 0.82), timeout, cancellationToken, "예매하기 버튼");
             SetStage("completed");
 
-            var currentUrl = bookingResultPage.Url;
-            var message = currentUrl.Contains("accounts.", StringComparison.OrdinalIgnoreCase)
-                ? $"NOL DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택 후 예매하기 클릭 완료 (앱이 연 NOL 전용 브라우저에서 직접 로그인하세요)."
-                : $"NOL DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택 후 예매하기 클릭 완료.";
+            var message = $"NOL 화면 자동화 완료: {desiredDate:yyyy.MM.dd} / {selectedRound} 선택 후 예매하기 클릭 완료.";
             return new AutomationRunResult(true, message, DateTimeOffset.Now);
         }
         catch (TimeoutException ex)
         {
-            await LogNolFailureAsync(ex, runId, phase, targetUri, desiredDate, desiredRound, page);
-            return new AutomationRunResult(false, $"NOL DOM 자동화 시간 초과: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
-        }
-        catch (PlaywrightException ex)
-        {
-            if (allowBrowserReset && IsClosedTargetError(ex))
-            {
-                _logger.LogWarning(ex, "NOL browser was closed. runId={RunId}, phase={Phase}. Resetting browser state and retrying once.", runId, phase);
-                await ResetNolBrowserStateAsync();
-                return await RunNolAutomationAsync(request, cancellationToken, allowBrowserReset: false);
-            }
-
-            await LogNolFailureAsync(ex, runId, phase, targetUri, desiredDate, desiredRound, page);
-            return new AutomationRunResult(false, $"NOL DOM 자동화 실패: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
+            _logger.LogError(ex, "NOL screen automation failed. runId={RunId}, phase={Phase}, date={Date}, round={Round}, logDir={LogDir}", runId, phase, desiredDate, desiredRound, GetLogDirectoryPath());
+            return new AutomationRunResult(false, $"NOL 화면 자동화 시간 초과: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
         }
         catch (Exception ex)
         {
-            await LogNolFailureAsync(ex, runId, phase, targetUri, desiredDate, desiredRound, page);
-            return new AutomationRunResult(false, $"NOL DOM 자동화 예외: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
+            _logger.LogError(ex, "NOL screen automation failed. runId={RunId}, phase={Phase}, date={Date}, round={Round}, logDir={LogDir}", runId, phase, desiredDate, desiredRound, GetLogDirectoryPath());
+            return new AutomationRunResult(false, $"NOL 화면 자동화 예외: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
+        }
+    }
+
+    private async Task<AutomationRunResult?> TryRunNolAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredRound, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        IPage? page = null;
+        try
+        {
+            page = await EnsurePreparedNolConnectedPageAsync(cancellationToken);
+            if (page is null)
+            {
+                _logger.LogInformation("No existing Chromium browser with CDP endpoint was found. Falling back to screen automation.");
+                return null;
+            }
+
+            _logger.LogInformation("Connected-browser NOL automation selected page. url={Url}", SafePageUrl(page));
+            await page.BringToFrontAsync();
+            await EnsureNolPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+            await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
+            await LogConnectedNolRoundStateAsync(page, cancellationToken);
+            await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
+            _ = await ClickNolBookingAsync(page, timeout, cancellationToken);
+            return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택 후 예매하기 클릭 완료.", DateTimeOffset.Now);
+        }
+        catch (Exception ex)
+        {
+            if (page is not null)
+            {
+                throw new InvalidOperationException($"NOL 기존 브라우저 DOM 자동화 실패: {ex.Message}", ex);
+            }
+
+            _logger.LogWarning(ex, "Connected-browser NOL automation failed. Falling back to screen automation.");
+            return null;
+        }
+        finally
+        {
+        }
+    }
+
+    private async Task<IPage?> TryGetPreparedNolPageAsync(CancellationToken cancellationToken)
+    {
+        await _nolBrowserLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (await IsPreparedNolPageReusableAsync(_preparedNolPage, cancellationToken))
+            {
+                return _preparedNolPage;
+            }
+
+            if (_preparedNolConnectedBrowser is not null)
+            {
+                var refreshedPage = await FindConnectedNolPageAsync(_preparedNolConnectedBrowser, cancellationToken);
+                if (await IsPreparedNolPageReusableAsync(refreshedPage, cancellationToken))
+                {
+                    _preparedNolPage = refreshedPage;
+                    return refreshedPage;
+                }
+            }
+
+            return null;
+        }
+        finally
+        {
+            _nolBrowserLock.Release();
+        }
+    }
+
+    private async Task<IPage?> EnsurePreparedNolConnectedPageAsync(CancellationToken cancellationToken)
+    {
+        await _nolBrowserLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (await IsPreparedNolPageReusableAsync(_preparedNolPage, cancellationToken))
+            {
+                return _preparedNolPage;
+            }
+
+            if (_preparedNolConnectedBrowser is not null)
+            {
+                var existingPage = await FindConnectedNolPageAsync(_preparedNolConnectedBrowser, cancellationToken);
+                if (await IsPreparedNolPageReusableAsync(existingPage, cancellationToken))
+                {
+                    _preparedNolPage = existingPage;
+                    return existingPage;
+                }
+            }
+
+            _playwright ??= await Playwright.CreateAsync();
+            _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, cancellationToken);
+            if (_preparedNolConnectedBrowser is null)
+            {
+                _preparedNolPage = null;
+                return null;
+            }
+
+            _preparedNolPage = await FindConnectedNolPageAsync(_preparedNolConnectedBrowser, cancellationToken);
+            return _preparedNolPage;
+        }
+        finally
+        {
+            _nolBrowserLock.Release();
+        }
+    }
+
+    private static async Task<bool> IsPreparedNolPageReusableAsync(IPage? page, CancellationToken cancellationToken)
+    {
+        if (page is null || page.IsClosed)
+        {
+            return false;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            return SafePageUrl(page).Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase) &&
+                   await page.Locator("#productSide").CountAsync() > 0;
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            return false;
+        }
+    }
+
+    private Task ReleasePreparedNolConnectionAsync()
+    {
+        _preparedNolPage = null;
+        _preparedNolConnectedBrowser = null;
+        return Task.CompletedTask;
+    }
+
+    private static async Task<bool> IsNolCdpEndpointAvailableAsync(string endpoint, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await NolHttpClient.GetAsync(new Uri(new Uri(endpoint), "json/version"), cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task LogConnectedNolRoundStateAsync(IPage page, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var roundLabels = page.Locator(".sideTimeTable .timeTableLabel[role='button']");
+        var count = await roundLabels.CountAsync();
+        var texts = new List<string>();
+        for (var index = 0; index < Math.Min(5, count); index++)
+        {
+            texts.Add(NormalizeText(await roundLabels.Nth(index).InnerTextAsync()));
+        }
+
+        var selectedTimeLocator = page.Locator(".containerMiddle .selectedData .time").First;
+        string selectedTime;
+        try
+        {
+            selectedTime = await selectedTimeLocator.InnerTextAsync().ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+            selectedTime = string.Empty;
+        }
+
+        _logger.LogInformation(
+            "Connected-browser NOL round state. count={Count}, selectedTime={SelectedTime}, roundTexts={RoundTexts}",
+            count,
+            string.IsNullOrWhiteSpace(selectedTime) ? "없음" : NormalizeText(selectedTime),
+            texts.Count == 0 ? "없음" : string.Join(" | ", texts));
+    }
+
+    private static async Task<IBrowser?> TryConnectToExistingChromiumBrowserAsync(IPlaywright playwright, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            return await playwright.Chromium.ConnectOverCDPAsync(NolCdpEndpoint);
+        }
+        catch (PlaywrightException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<IPage?> FindConnectedNolPageAsync(IBrowser browser, CancellationToken cancellationToken)
+    {
+        var candidates = new List<(IPage Page, int Score)>();
+        foreach (var page in browser.Contexts.SelectMany(x => x.Pages).Where(x => !x.IsClosed))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var url = SafePageUrl(page);
+            var score = 0;
+            if (url.Contains("tickets.interpark.com", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 2;
+            }
+
+            if (url.Contains("/goods/", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 4;
+            }
+
+            if (await TryWaitForConditionAsync(async () => await page.Locator("#productSide").CountAsync() > 0, TimeSpan.FromMilliseconds(400), cancellationToken))
+            {
+                score += 10;
+            }
+
+            try
+            {
+                if (await page.EvaluateAsync<bool>("() => document.visibilityState === 'visible'"))
+                {
+                    score += 3;
+                }
+
+                if (await page.EvaluateAsync<bool>("() => document.hasFocus()"))
+                {
+                    score += 3;
+                }
+            }
+            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+            {
+                continue;
+            }
+
+            if (score > 0)
+            {
+                candidates.Add((page, score));
+            }
+        }
+
+        return candidates
+            .OrderByDescending(x => x.Score)
+            .Select(x => x.Page)
+            .FirstOrDefault();
+    }
+
+    private static async Task SelectNolDateByScreenAsync(DateOnly desiredDate, double threshold, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var template = LoadNolScreenTemplate(NolCalendarHeaderTemplateFileName);
+        try
+        {
+            var deadline = DateTimeOffset.UtcNow + timeout;
+            var navigationCount = 0;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                using var frame = CaptureScreen();
+                using var grayFrame = ToGray(frame.Image);
+                var anchor = TryFindTemplateBounds(grayFrame, template, threshold, out _);
+                if (anchor is null)
+                {
+                    await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                    continue;
+                }
+
+                var scale = GetNolTemplateScale(anchor.Value, NolPanelToggleWidth);
+                var calendarRect = CreateNolRect(anchor.Value.Left + (int)Math.Round(NolCalendarLeftOffset * scale), anchor.Value.Top + (int)Math.Round(NolCalendarTopOffset * scale), (int)Math.Round(NolCalendarWidth * scale), (int)Math.Round(NolCalendarHeight * scale), frame.Image.Width, frame.Image.Height);
+                var monthRect = CreateNolRect(calendarRect.Left, calendarRect.Top, calendarRect.Width, (int)Math.Round(NolCalendarMonthHeaderHeight * scale), frame.Image.Width, frame.Image.Height);
+                var monthText = await ReadNolOcrTextAsync(frame.Image, monthRect, cancellationToken);
+                if (!TryParseMonth(monthText, out var displayedMonth))
+                {
+                    await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                    continue;
+                }
+
+                var targetMonth = new DateOnly(desiredDate.Year, desiredDate.Month, 1);
+                var monthDifference = GetMonthDifference(displayedMonth, targetMonth);
+                if (monthDifference == 0)
+                {
+                    var cellCenter = GetNolCalendarCellCenter(calendarRect, desiredDate, scale);
+                    ClickAt(frame.OffsetX + cellCenter.X, frame.OffsetY + cellCenter.Y);
+                    await Task.Delay(200, cancellationToken);
+                    return;
+                }
+
+                if (++navigationCount > NolMonthNavigationLimit)
+                {
+                    throw new TimeoutException($"관람일 {desiredDate:yyyy.MM.dd} 이 있는 달로 이동하지 못했습니다.");
+                }
+
+                var arrowX = monthDifference > 0
+                    ? calendarRect.Left + (int)Math.Round(NolCalendarNextArrowCenterX * scale)
+                    : calendarRect.Left + (int)Math.Round(NolCalendarPrevArrowCenterX * scale);
+                var arrowY = calendarRect.Top + (int)Math.Round(NolCalendarArrowCenterY * scale);
+                ClickAt(frame.OffsetX + arrowX, frame.OffsetY + arrowY);
+                await Task.Delay(250, cancellationToken);
+            }
+
+            throw new TimeoutException($"관람일 {desiredDate:yyyy.MM.dd} 선택에 실패했습니다.");
+        }
+        finally
+        {
+            DisposeStepTemplate(template);
+        }
+    }
+
+    private static async Task<string> SelectNolRoundByScreenAsync(string desiredRound, double threshold, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var roundHeaderTemplate = LoadNolScreenTemplate(NolRoundHeaderTemplateFileName);
+        var bookingButtonTemplate = LoadNolScreenTemplate(NolBookingButtonTemplateFileName);
+        var observedRoundTexts = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            var deadline = DateTimeOffset.UtcNow + timeout;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                using var frame = CaptureScreen();
+                using var grayFrame = ToGray(frame.Image);
+                var anchor = TryFindTemplateBounds(grayFrame, roundHeaderTemplate, threshold, out _);
+                if (anchor is null)
+                {
+                    await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                    continue;
+                }
+
+                var scale = GetNolTemplateScale(anchor.Value, NolPanelToggleWidth);
+                var bookingBounds = TryFindTemplateBounds(grayFrame, bookingButtonTemplate, Math.Min(0.82, threshold + 0.02), out _);
+                var roundTop = anchor.Value.Top + (int)Math.Round(NolRoundListTopOffset * scale);
+                var roundBottom = bookingBounds is not null
+                    ? bookingBounds.Value.Top - (int)Math.Round(12 * scale)
+                    : roundTop + (int)Math.Round(NolRoundRowHeight * NolRoundMaxRows * scale);
+                var roundHeight = Math.Max((int)Math.Round(NolRoundRowHeight * scale), roundBottom - roundTop);
+                var roundArea = CreateNolRect(anchor.Value.Left + (int)Math.Round(NolRoundListLeftOffset * scale), roundTop, (int)Math.Round(NolRoundListWidth * scale), roundHeight, frame.Image.Width, frame.Image.Height);
+                var maxRows = Math.Max(1, (int)Math.Ceiling(roundArea.Height / Math.Max(1, NolRoundRowHeight * scale)));
+
+                for (var rowIndex = 0; rowIndex < maxRows; rowIndex++)
+                {
+                    var rowRect = CreateNolRect(roundArea.Left, roundArea.Top + (int)Math.Round(rowIndex * NolRoundRowHeight * scale), roundArea.Width, (int)Math.Round(NolRoundRowHeight * scale), frame.Image.Width, frame.Image.Height);
+                    if (rowRect.Width <= 0 || rowRect.Height <= 0)
+                    {
+                        continue;
+                    }
+
+                    var recognizedText = NormalizeNolRoundOcrText(await ReadNolOcrTextAsync(frame.Image, rowRect, cancellationToken));
+                    if (string.IsNullOrWhiteSpace(recognizedText))
+                    {
+                        continue;
+                    }
+
+                    if (observedRoundTexts.Count < 8)
+                    {
+                        observedRoundTexts.Add(recognizedText);
+                    }
+
+                    if (!IsMatchingNolRound(recognizedText, desiredRound))
+                    {
+                        continue;
+                    }
+
+                    ClickAt(frame.OffsetX + rowRect.Left + (rowRect.Width / 2), frame.OffsetY + rowRect.Top + (rowRect.Height / 2));
+                    await Task.Delay(200, cancellationToken);
+                    return recognizedText;
+                }
+
+                if (observedRoundTexts.Count == 0 &&
+                    TryClickNolRoundByOrder(frame.Image, frame.OffsetX, frame.OffsetY, roundArea, desiredRound, scale, out var fallbackRound))
+                {
+                    await Task.Delay(200, cancellationToken);
+                    return fallbackRound;
+                }
+
+                if (observedRoundTexts.Count == 0 &&
+                    TryClickNolRoundRowByIndex(frame.OffsetX, frame.OffsetY, roundArea, desiredRound, scale, maxRows, frame.Image.Width, frame.Image.Height, out fallbackRound))
+                {
+                    await Task.Delay(200, cancellationToken);
+                    return fallbackRound;
+                }
+
+                await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            }
+
+            var observedCandidates = observedRoundTexts.Count == 0
+                ? "없음"
+                : string.Join(" | ", observedRoundTexts);
+            throw new TimeoutException($"NOL 화면에서 회차 {desiredRound} 를 찾지 못했습니다. OCR 후보: {observedCandidates}");
+        }
+        finally
+        {
+            DisposeStepTemplate(roundHeaderTemplate);
+            DisposeStepTemplate(bookingButtonTemplate);
+        }
+    }
+
+    private static async Task<string> ReadNolOcrTextAsync(Mat source, OpenCvSharp.Rect rect, CancellationToken cancellationToken)
+    {
+        if (rect.Width <= 0 || rect.Height <= 0)
+        {
+            return string.Empty;
+        }
+
+        using var roi = new Mat(source, rect);
+        var text = await RecognizeNolTextAsync(roi, applyThreshold: false, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            return text;
+        }
+
+        return await RecognizeNolTextAsync(roi, applyThreshold: true, cancellationToken);
+    }
+
+    private static async Task<string> RecognizeNolTextAsync(Mat source, bool applyThreshold, CancellationToken cancellationToken)
+    {
+        using var prepared = PrepareNolOcrMat(source, applyThreshold);
+        using var bgra = new Mat();
+        if (prepared.Channels() == 4)
+        {
+            prepared.CopyTo(bgra);
+        }
+        else if (prepared.Channels() == 3)
+        {
+            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.BGR2BGRA);
+        }
+        else
+        {
+            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.GRAY2BGRA);
+        }
+
+        var size = checked((int)(bgra.Total() * bgra.ElemSize()));
+        var bytes = new byte[size];
+        Marshal.Copy(bgra.Data, bytes, 0, size);
+
+        using var writer = new DataWriter();
+        writer.WriteBytes(bytes);
+        var buffer = writer.DetachBuffer();
+        using var softwareBitmap = SoftwareBitmap.CreateCopyFromBuffer(buffer, BitmapPixelFormat.Bgra8, bgra.Width, bgra.Height, BitmapAlphaMode.Premultiplied);
+        var result = await GetNolOcrEngine().RecognizeAsync(softwareBitmap);
+        cancellationToken.ThrowIfCancellationRequested();
+        return NormalizeText(result.Text);
+    }
+
+    private static Mat PrepareNolOcrMat(Mat source, bool applyThreshold)
+    {
+        using var gray = ToGray(source);
+        var resized = new Mat();
+        Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor), interpolation: InterpolationFlags.Linear);
+        if (!applyThreshold)
+        {
+            return resized;
+        }
+
+        var binary = new Mat();
+        Cv2.GaussianBlur(resized, resized, new OpenCvSharp.Size(3, 3), 0);
+        Cv2.Threshold(resized, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+        resized.Dispose();
+        return binary;
+    }
+
+    private static OcrEngine GetNolOcrEngine()
+    {
+        if (_nolOcrEngine is not null)
+        {
+            return _nolOcrEngine;
+        }
+
+        var preferredLanguage = new Language("ko-KR");
+        if (OcrEngine.IsLanguageSupported(preferredLanguage))
+        {
+            _nolOcrEngine = OcrEngine.TryCreateFromLanguage(preferredLanguage);
+        }
+
+        _nolOcrEngine ??= OcrEngine.TryCreateFromUserProfileLanguages();
+        if (_nolOcrEngine is null)
+        {
+            var fallbackLanguage = OcrEngine.AvailableRecognizerLanguages.FirstOrDefault();
+            if (fallbackLanguage is not null)
+            {
+                _nolOcrEngine = OcrEngine.TryCreateFromLanguage(fallbackLanguage);
+            }
+        }
+
+        return _nolOcrEngine ?? throw new InvalidOperationException("Windows OCR 엔진을 초기화하지 못했습니다. OCR 언어 팩 설치를 확인하세요.");
+    }
+
+    private static string NormalizeNolRoundOcrText(string value)
+    {
+        var normalized = NormalizeText(value)
+            .Replace("회차", "회", StringComparison.Ordinal)
+            .Replace('희', '회')
+            .Replace('히', '회')
+            .Replace('외', '회');
+
+        if (TryParseNolRound(normalized, out var round, out var time))
+        {
+            return $"{round} {time}";
+        }
+
+        return normalized;
+    }
+
+    private static bool TryClickNolRoundByOrder(Mat source, int offsetX, int offsetY, OpenCvSharp.Rect roundArea, string desiredRound, double scale, out string selectedRound)
+    {
+        selectedRound = string.Empty;
+        if (!TryExtractLeadingRoundNumber(desiredRound, out var roundNumber) ||
+            !int.TryParse(roundNumber, NumberStyles.None, CultureInfo.InvariantCulture, out var roundIndex) ||
+            roundIndex < 1)
+        {
+            return false;
+        }
+
+        var candidates = FindNolRoundButtonCandidates(source, roundArea, scale);
+        if (roundIndex > candidates.Count)
+        {
+            return false;
+        }
+
+        var target = candidates[roundIndex - 1];
+        ClickAt(offsetX + target.CenterX, offsetY + target.CenterY);
+        selectedRound = $"{roundIndex}회";
+        return true;
+    }
+
+    private static bool TryClickNolRoundRowByIndex(int offsetX, int offsetY, OpenCvSharp.Rect roundArea, string desiredRound, double scale, int maxRows, int maxWidth, int maxHeight, out string selectedRound)
+    {
+        selectedRound = string.Empty;
+        if (!TryExtractLeadingRoundNumber(desiredRound, out var roundNumber) ||
+            !int.TryParse(roundNumber, NumberStyles.None, CultureInfo.InvariantCulture, out var roundIndex) ||
+            roundIndex < 1 ||
+            roundIndex > maxRows ||
+            roundIndex != 1)
+        {
+            return false;
+        }
+
+        var rowRect = CreateNolRect(
+            roundArea.Left,
+            roundArea.Top + (int)Math.Round((roundIndex - 1) * NolRoundRowHeight * scale),
+            roundArea.Width,
+            (int)Math.Round(NolRoundRowHeight * scale),
+            maxWidth,
+            maxHeight);
+
+        if (rowRect.Width <= 0 || rowRect.Height <= 0)
+        {
+            return false;
+        }
+
+        ClickAt(offsetX + rowRect.Left + (rowRect.Width / 2), offsetY + rowRect.Top + (rowRect.Height / 2));
+        selectedRound = $"{roundIndex}회";
+        return true;
+    }
+
+    private static IReadOnlyList<TemplateBounds> FindNolRoundButtonCandidates(Mat source, OpenCvSharp.Rect roundArea, double scale)
+    {
+        if (roundArea.Width <= 0 || roundArea.Height <= 0)
+        {
+            return [];
+        }
+
+        using var roi = new Mat(source, roundArea);
+        using var gray = ToGray(roi);
+        using var blurred = new Mat();
+        Cv2.GaussianBlur(gray, blurred, new OpenCvSharp.Size(5, 5), 0);
+        using var edges = new Mat();
+        Cv2.Canny(blurred, edges, 50, 150);
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+        using var dilated = new Mat();
+        Cv2.Dilate(edges, dilated, kernel, iterations: 2);
+
+        Cv2.FindContours(dilated, out var contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+
+        var minWidth = Math.Max(40, (int)Math.Round(roundArea.Width * 0.28));
+        var minHeight = Math.Max(20, (int)Math.Round(NolRoundRowHeight * scale * 0.45));
+        var maxHeight = Math.Max(minHeight, (int)Math.Round(NolRoundRowHeight * scale * 1.8));
+        var candidates = new List<TemplateBounds>();
+
+        foreach (var contour in contours)
+        {
+            var rect = Cv2.BoundingRect(contour);
+            if (rect.Width < minWidth || rect.Height < minHeight || rect.Height > maxHeight)
+            {
+                continue;
+            }
+
+            if (rect.Width > roundArea.Width || rect.Height > roundArea.Height)
+            {
+                continue;
+            }
+
+            var aspectRatio = rect.Width / (double)Math.Max(1, rect.Height);
+            if (aspectRatio < 1.4)
+            {
+                continue;
+            }
+
+            candidates.Add(new TemplateBounds(roundArea.Left + rect.Left, roundArea.Top + rect.Top, rect.Width, rect.Height, 1));
+        }
+
+        if (candidates.Count == 0)
+        {
+            return [];
+        }
+
+        candidates.Sort((left, right) =>
+        {
+            var topComparison = left.Top.CompareTo(right.Top);
+            return topComparison != 0 ? topComparison : left.Left.CompareTo(right.Left);
+        });
+
+        var deduplicated = new List<TemplateBounds>();
+        foreach (var candidate in candidates)
+        {
+            if (deduplicated.Any(existing => Math.Abs(existing.CenterX - candidate.CenterX) <= Math.Max(8, candidate.Width / 5) &&
+                                            Math.Abs(existing.CenterY - candidate.CenterY) <= Math.Max(8, candidate.Height / 2)))
+            {
+                continue;
+            }
+
+            deduplicated.Add(candidate);
+        }
+
+        return deduplicated;
+    }
+
+    private static int GetMonthDifference(DateOnly currentMonth, DateOnly targetMonth)
+    {
+        return ((targetMonth.Year - currentMonth.Year) * 12) + targetMonth.Month - currentMonth.Month;
+    }
+
+    private static System.Drawing.Point GetNolCalendarCellCenter(OpenCvSharp.Rect calendarRect, DateOnly desiredDate, double scale)
+    {
+        var firstDay = new DateOnly(desiredDate.Year, desiredDate.Month, 1);
+        var startColumn = (int)firstDay.DayOfWeek;
+        var index = startColumn + desiredDate.Day - 1;
+        var row = index / 7;
+        var column = index % 7;
+        var x = calendarRect.Left + (int)Math.Round((NolCalendarGridLeftOffset + (column * NolCalendarColumnStep) + (NolCalendarCellSize / 2.0)) * scale);
+        var y = calendarRect.Top + (int)Math.Round((NolCalendarGridTopOffset + (row * NolCalendarRowStep) + (NolCalendarCellSize / 2.0)) * scale);
+        return new System.Drawing.Point(x, y);
+    }
+
+    private static double GetNolTemplateScale(TemplateBounds bounds, double baseWidth)
+    {
+        return bounds.Width / baseWidth;
+    }
+
+    private static OpenCvSharp.Rect CreateNolRect(int left, int top, int width, int height, int maxWidth, int maxHeight)
+    {
+        var clampedLeft = Math.Clamp(left, 0, Math.Max(0, maxWidth - 1));
+        var clampedTop = Math.Clamp(top, 0, Math.Max(0, maxHeight - 1));
+        var clampedWidth = Math.Clamp(width, 0, maxWidth - clampedLeft);
+        var clampedHeight = Math.Clamp(height, 0, maxHeight - clampedTop);
+        return new OpenCvSharp.Rect(clampedLeft, clampedTop, clampedWidth, clampedHeight);
+    }
+
+    private static async Task ClickNolScreenTemplateAsync(string fileName, double threshold, TimeSpan timeout, CancellationToken cancellationToken, string description)
+    {
+        var clicked = await TryClickNolScreenTemplateAsync(fileName, threshold, timeout, cancellationToken);
+        if (!clicked)
+        {
+            throw new TimeoutException($"NOL 화면에서 {description} 템플릿을 찾지 못했습니다: {fileName}");
+        }
+    }
+
+    private static async Task<bool> TryClickNolScreenTemplateAsync(string fileName, double threshold, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var template = LoadNolScreenTemplate(fileName);
+        try
+        {
+            var deadline = DateTimeOffset.UtcNow + timeout;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                using var frame = CaptureScreen();
+                using var grayFrame = ToGray(frame.Image);
+                var match = TryFindTemplateBounds(grayFrame, template, threshold, out _);
+                if (match is not null)
+                {
+                    ClickAt(frame.OffsetX + match.Value.CenterX, frame.OffsetY + match.Value.CenterY);
+                    return true;
+                }
+
+                await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            }
+
+            return false;
+        }
+        finally
+        {
+            DisposeStepTemplate(template);
+        }
+    }
+
+    private static StepTemplate LoadNolScreenTemplate(string fileName)
+    {
+        var assembly = typeof(PlaywrightTicketingAutomationService).Assembly;
+        var resourceName = NolTemplateResourcePrefix + fileName;
+        using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new FileNotFoundException($"NOL 템플릿 리소스를 찾지 못했습니다: {resourceName}");
+        using var memory = new MemoryStream();
+        stream.CopyTo(memory);
+        using var encoded = Cv2.ImDecode(memory.ToArray(), ImreadModes.Grayscale);
+        if (encoded.Empty())
+        {
+            throw new InvalidOperationException($"NOL 템플릿 이미지를 읽지 못했습니다: {resourceName}");
+        }
+
+        return new StepTemplate("single", null, false, BuildScaledTemplates(encoded));
+    }
+
+    private static void DisposeStepTemplate(StepTemplate template)
+    {
+        foreach (var scaledTemplate in template.ScaledTemplates)
+        {
+            scaledTemplate.Dispose();
         }
     }
 
@@ -509,9 +1314,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         var beforeUrl = page.Url;
+        var beforeTitle = await GetPageTitleOrEmptyAsync(page);
         var beforePages = page.Context.Pages.Where(x => !x.IsClosed).ToHashSet();
         await bookingButton.ScrollIntoViewIfNeededAsync();
-        await ClickNolElementAsync(bookingButton);
+        await ClickNolBookingButtonAsync(bookingButton, timeout);
 
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
@@ -522,31 +1328,93 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var newPage = openPages.FirstOrDefault(x => !beforePages.Contains(x));
             if (newPage is not null)
             {
-                await newPage.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions
-                {
-                    Timeout = (float)Math.Max(1000, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds)
-                });
-                await newPage.BringToFrontAsync();
-                return newPage;
+                return await PrepareNolBookingResultPageAsync(newPage, deadline);
             }
 
-            if (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
+            if (!page.IsClosed && await HasNolBookingResultAppearedAsync(page, beforeUrl, beforeTitle))
             {
-                await page.BringToFrontAsync();
-                return page;
+                return await PrepareNolBookingResultPageAsync(page, deadline);
             }
 
             if (page.IsClosed && openPages.Count > 0)
             {
                 var fallbackPage = openPages[^1];
-                await fallbackPage.BringToFrontAsync();
-                return fallbackPage;
+                return await PrepareNolBookingResultPageAsync(fallbackPage, deadline);
             }
 
             await Task.Delay(100, cancellationToken);
         }
 
         throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
+    }
+
+    private static async Task ClickNolBookingButtonAsync(ILocator bookingButton, TimeSpan timeout)
+    {
+        var clickTimeout = (float)Math.Min(timeout.TotalMilliseconds, 5000);
+        PlaywrightException? firstClickException = null;
+
+        try
+        {
+            await bookingButton.ClickAsync(new LocatorClickOptions
+            {
+                Timeout = clickTimeout
+            });
+            return;
+        }
+        catch (PlaywrightException ex)
+        {
+            firstClickException = ex;
+        }
+
+        try
+        {
+            await bookingButton.ClickAsync(new LocatorClickOptions
+            {
+                Force = true,
+                Timeout = clickTimeout
+            });
+        }
+        catch (PlaywrightException ex) when (firstClickException is not null)
+        {
+            throw new InvalidOperationException(
+                $"NOL 예매하기 버튼 클릭에 실패했습니다. firstAttempt={firstClickException.Message}; secondAttempt={ex.Message}",
+                ex);
+        }
+    }
+
+    private static async Task<IPage> PrepareNolBookingResultPageAsync(IPage page, DateTimeOffset deadline)
+    {
+        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions
+        {
+            Timeout = (float)Math.Max(1000, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds)
+        });
+        await page.BringToFrontAsync();
+        return page;
+    }
+
+    private static async Task<bool> HasNolBookingResultAppearedAsync(IPage page, string beforeUrl, string beforeTitle)
+    {
+        if (!string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var currentTitle = await GetPageTitleOrEmptyAsync(page);
+        return !string.IsNullOrWhiteSpace(currentTitle) &&
+               !string.Equals(currentTitle, beforeTitle, StringComparison.Ordinal) &&
+               await page.Locator("#productSide").CountAsync() == 0;
+    }
+
+    private static async Task<string> GetPageTitleOrEmptyAsync(IPage page)
+    {
+        try
+        {
+            return await page.TitleAsync();
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            return string.Empty;
+        }
     }
 
     private static async Task WaitForConditionAsync(
@@ -628,38 +1496,52 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private static bool IsMatchingNolRound(string actual, string desired)
     {
-        if (TryParseNolRound(actual, out var actualRound, out var actualTime) &&
-            TryParseNolRound(desired, out var desiredRound, out var desiredTime))
+        var normalizedActual = NormalizeNolRoundOcrText(actual);
+        var normalizedDesired = NormalizeNolRoundOcrText(desired);
+
+        if (TryParseNolRound(normalizedActual, out var actualRound, out var actualTime) &&
+            TryParseNolRound(normalizedDesired, out var desiredRound, out var desiredTime))
         {
             return string.Equals(actualRound, desiredRound, StringComparison.Ordinal) &&
                    string.Equals(actualTime, desiredTime, StringComparison.Ordinal);
         }
 
-        if (TryParseNolRound(actual, out actualRound, out actualTime) && TryParseNolRoundLabel(desired, out desiredRound))
+        if (TryParseNolRound(normalizedActual, out actualRound, out actualTime) && TryParseNolRoundLabel(normalizedDesired, out desiredRound))
         {
             return string.Equals(actualRound, desiredRound, StringComparison.Ordinal);
         }
 
-        if (TryParseNolRoundLabel(actual, out actualRound) && TryParseNolRoundLabel(desired, out desiredRound))
+        if (TryParseNolRoundLabel(normalizedActual, out actualRound) && TryParseNolRoundLabel(normalizedDesired, out desiredRound))
         {
             return string.Equals(actualRound, desiredRound, StringComparison.Ordinal);
         }
 
-        return string.Equals(NormalizeText(actual), NormalizeText(desired), StringComparison.Ordinal);
+        if (TryExtractLeadingRoundNumber(normalizedActual, out var actualRoundNumber) &&
+            TryExtractLeadingRoundNumber(normalizedDesired, out var desiredRoundNumber))
+        {
+            return string.Equals(actualRoundNumber, desiredRoundNumber, StringComparison.Ordinal);
+        }
+
+        return string.Equals(NormalizeText(normalizedActual), NormalizeText(normalizedDesired), StringComparison.Ordinal);
     }
 
     private static bool TryParseNolRound(string value, out string round, out string time)
     {
         round = string.Empty;
         time = string.Empty;
-        var match = NolRoundPattern.Match(NormalizeText(value));
+        var normalized = NormalizeText(value)
+            .Replace("회차", "회", StringComparison.Ordinal)
+            .Replace('희', '회')
+            .Replace('히', '회')
+            .Replace('외', '회');
+        var match = NolRoundPattern.Match(normalized);
         if (!match.Success)
         {
             return false;
         }
 
-        round = NormalizeText(match.Groups["round"].Value);
-        time = NormalizeText(match.Groups["time"].Value);
+        round = $"{NormalizeText(match.Groups["round"].Value)}회";
+        time = NormalizeNolTime(match.Groups["time"].Value);
         return !string.IsNullOrWhiteSpace(round) && !string.IsNullOrWhiteSpace(time);
     }
 
@@ -683,12 +1565,33 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return !string.IsNullOrWhiteSpace(round);
     }
 
-    private static bool IsAllowedNolTargetUrl(Uri targetUri)
+    private static bool TryExtractLeadingRoundNumber(string value, out string roundNumber)
     {
-        return (string.Equals(targetUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(targetUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) &&
-               targetUri.Host.EndsWith("interpark.com", StringComparison.OrdinalIgnoreCase) &&
-               targetUri.AbsolutePath.Contains("/goods/", StringComparison.OrdinalIgnoreCase);
+        roundNumber = string.Empty;
+        var match = Regex.Match(NormalizeText(value), @"^\D*(?<round>\d{1,2})(?:\D|$)", RegexOptions.Compiled);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        roundNumber = NormalizeText(match.Groups["round"].Value);
+        return !string.IsNullOrWhiteSpace(roundNumber);
+    }
+
+    private static string NormalizeNolTime(string value)
+    {
+        var digits = DigitsOnlyPattern.Replace(value, string.Empty);
+        if (digits.Length == 3)
+        {
+            return $"{digits[0]}:{digits[1..]}";
+        }
+
+        if (digits.Length == 4)
+        {
+            return $"{digits[..2]}:{digits[2..]}";
+        }
+
+        return NormalizeText(value).Replace('.', ':').Replace(',', ':');
     }
 
     private static async Task<bool> TryDismissVisibleNolPopupsAsync(IPage page)
@@ -738,7 +1641,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var pageState = await DescribeNolPageStateAsync(page);
         _logger.LogError(
             ex,
-            "NOL DOM automation failed. runId={RunId}, phase={Phase}, url={Url}, date={Date}, round={Round}, logDir={LogDir}, pageState={PageState}",
+            "NOL automation failed. runId={RunId}, phase={Phase}, url={Url}, date={Date}, round={Round}, logDir={LogDir}, pageState={PageState}",
             runId,
             phase,
             targetUri,
@@ -759,6 +1662,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             var popupCount = await page.Locator(".popup.is-visible").CountAsync();
             var currentUrl = page.Url;
+            var currentTitle = await GetPageTitleOrEmptyAsync(page);
             var pageCount = page.Context.Pages.Count;
             var productSideCount = await page.Locator("#productSide").CountAsync();
             var roundButtonCount = await page.Locator(".sideTimeTable .timeTableLabel[role='button']").CountAsync();
@@ -767,7 +1671,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var selectedRoundText = await GetLocatorTextOrEmptyAsync(page.Locator("#productSide .containerMiddle .selectedData .time").First);
             var openPages = string.Join(", ",
                 page.Context.Pages.Select((x, index) => $"[{index}]closed={x.IsClosed};url={SafePageUrl(x)}"));
-            return $"pageClosed={page.IsClosed}, url={currentUrl}, popupCount={popupCount}, productSideCount={productSideCount}, roundButtonCount={roundButtonCount}, bookingButtonCount={bookingButtonCount}, selectedDate={selectedDateText}, selectedRound={selectedRoundText}, contextPageCount={pageCount}, openPages={openPages}";
+            return $"pageClosed={page.IsClosed}, url={currentUrl}, title={currentTitle}, popupCount={popupCount}, productSideCount={productSideCount}, roundButtonCount={roundButtonCount}, bookingButtonCount={bookingButtonCount}, selectedDate={selectedDateText}, selectedRound={selectedRoundText}, contextPageCount={pageCount}, openPages={openPages}";
         }
         catch (PlaywrightException ex) when (IsClosedTargetError(ex))
         {
@@ -1392,6 +2296,36 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return null;
     }
 
+    private static TemplateBounds? TryFindTemplateBounds(
+        Mat grayScreenshot,
+        StepTemplate template,
+        double threshold,
+        out double bestScore)
+    {
+        bestScore = double.NegativeInfinity;
+
+        foreach (var scaledTemplate in template.ScaledTemplates)
+        {
+            if (grayScreenshot.Width < scaledTemplate.Width || grayScreenshot.Height < scaledTemplate.Height)
+            {
+                continue;
+            }
+
+            using var result = new Mat();
+            Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
+            Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
+            bestScore = Math.Max(bestScore, maxValue);
+            if (maxValue < threshold)
+            {
+                continue;
+            }
+
+            return new TemplateBounds(maxLocation.X, maxLocation.Y, scaledTemplate.Width, scaledTemplate.Height, maxValue);
+        }
+
+        return null;
+    }
+
     private static IReadOnlyList<Mat> BuildScaledTemplates(Mat source)
     {
         var results = new List<Mat>();
@@ -1617,6 +2551,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             Image.Dispose();
         }
+    }
+
+    private readonly record struct TemplateBounds(int Left, int Top, int Width, int Height, double Score)
+    {
+        public int CenterX => Left + (Width / 2);
+        public int CenterY => Top + (Height / 2);
     }
 
     private readonly record struct MatchHit(string State, int X, int Y, double Score);
