@@ -774,31 +774,38 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static string FilterCaptchaText(string raw)
         => new(raw.Where(char.IsLetter).Select(char.ToUpperInvariant).ToArray());
 
-    private static async Task<string> RecognizeCaptchaTextAsync(IPage page, CancellationToken cancellationToken)
+    private static async Task<string> RecognizeCaptchaTextAsync(ILocator inputLocator, CancellationToken cancellationToken)
     {
-        var imgLocator = page.Locator("img").First;
-        if (await imgLocator.CountAsync() == 0)
+        ILocator? imgLocator = null;
+        for (var level = 1; level <= 5; level++)
         {
-            return string.Empty;
+            var xpath = string.Join("/", Enumerable.Repeat("..", level));
+            var candidate = inputLocator.Locator($"xpath={xpath}").Locator("img").First;
+            try
+            {
+                if (await candidate.CountAsync() > 0)
+                {
+                    imgLocator = candidate;
+                    break;
+                }
+            }
+            catch (PlaywrightException) { }
         }
+
+        if (imgLocator is null)
+            return string.Empty;
 
         var screenshotBytes = await imgLocator.ScreenshotAsync();
         using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
         if (source.Empty())
-        {
             return string.Empty;
-        }
 
         using var prepared = PrepareNolCaptchaOcrMat(source);
         using var bgra = new Mat();
         if (prepared.Channels() == 1)
-        {
             Cv2.CvtColor(prepared, bgra, ColorConversionCodes.GRAY2BGRA);
-        }
         else
-        {
             Cv2.CvtColor(prepared, bgra, ColorConversionCodes.BGR2BGRA);
-        }
 
         var size = checked((int)(bgra.Total() * bgra.ElemSize()));
         var bytes = new byte[size];
@@ -814,7 +821,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return FilterCaptchaText(result.Text);
     }
 
-    private static async Task SolveCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task SolveCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         const int maxAttempts = 3;
         const int expectedLength = 6;
@@ -828,16 +835,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
         catch (TimeoutException) { }
 
-        var inputLocator = page.Locator("input[placeholder*='문자']");
-        if (!await TryWaitForConditionAsync(
-                async () =>
-                {
-                    try { return await inputLocator.CountAsync() > 0; }
-                    catch (PlaywrightException) { return false; }
-                },
-                timeout,
-                cancellationToken))
+        var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, timeout, cancellationToken);
+        if (inputLocator is null)
         {
+            _logger.LogWarning("CAPTCHA input not found. url={Url}, frameCount={FrameCount}",
+                SafePageUrl(page), page.Frames.Count);
             return;
         }
 
@@ -845,7 +847,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var text = await RecognizeCaptchaTextAsync(page, cancellationToken);
+            var text = await RecognizeCaptchaTextAsync(inputLocator, cancellationToken);
+            _logger.LogInformation("CAPTCHA OCR attempt {Attempt}: recognized={Text}", attempt, text);
             if (text.Length != expectedLength)
             {
                 await Task.Delay(500, cancellationToken);
@@ -855,7 +858,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             await inputLocator.First.FillAsync(string.Empty);
             await inputLocator.First.PressSequentiallyAsync(text, new LocatorPressSequentiallyOptions { Delay = 30 });
 
-            var submitLocator = page.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First;
+            var submitLocator = captchaFrame is not null
+                ? captchaFrame.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First
+                : page.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First;
             await submitLocator.ClickAsync();
 
             var submitted = await TryWaitForConditionAsync(
@@ -869,11 +874,48 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (submitted)
             {
+                _logger.LogInformation("CAPTCHA solved on attempt {Attempt}", attempt);
                 return;
             }
         }
 
         throw new InvalidOperationException($"CAPTCHA 자동 인식 실패 ({maxAttempts}회 시도).");
+    }
+
+    private static async Task<(ILocator? inputLocator, IFrame? frame)> FindCaptchaInputAsync(
+        IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        const string inputSelector = "input[placeholder*='문자']";
+        var deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var mainInput = page.Locator(inputSelector);
+                if (await mainInput.CountAsync() > 0)
+                    return (mainInput, null);
+            }
+            catch (PlaywrightException) { }
+
+            foreach (var frame in page.Frames)
+            {
+                if (frame == page.MainFrame) continue;
+                try
+                {
+                    var frameInput = frame.Locator(inputSelector);
+                    if (await frameInput.CountAsync() > 0)
+                        return (frameInput, frame);
+                }
+                catch (PlaywrightException) { }
+            }
+
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+        }
+
+        return (null, null);
     }
 
     private static OcrEngine GetNolOcrEngine()
