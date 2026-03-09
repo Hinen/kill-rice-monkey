@@ -343,7 +343,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             await page.BringToFrontAsync();
             await EnsureNolPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
             await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
-            await LogConnectedNolRoundStateAsync(page, cancellationToken);
             await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
             _ = await ClickNolBookingAsync(page, timeout, cancellationToken);
             return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택 후 예매하기 클릭 완료.", DateTimeOffset.Now);
@@ -462,35 +461,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             return false;
         }
-    }
-
-    private async Task LogConnectedNolRoundStateAsync(IPage page, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var roundLabels = page.Locator(".sideTimeTable .timeTableLabel[role='button']");
-        var count = await roundLabels.CountAsync();
-        var texts = new List<string>();
-        for (var index = 0; index < Math.Min(5, count); index++)
-        {
-            texts.Add(NormalizeText(await roundLabels.Nth(index).InnerTextAsync()));
-        }
-
-        var selectedTimeLocator = page.Locator(".containerMiddle .selectedData .time").First;
-        string selectedTime;
-        try
-        {
-            selectedTime = await selectedTimeLocator.InnerTextAsync().ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            selectedTime = string.Empty;
-        }
-
-        _logger.LogInformation(
-            "Connected-browser NOL round state. count={Count}, selectedTime={SelectedTime}, roundTexts={RoundTexts}",
-            count,
-            string.IsNullOrWhiteSpace(selectedTime) ? "없음" : NormalizeText(selectedTime),
-            texts.Count == 0 ? "없음" : string.Join(" | ", texts));
     }
 
     private static async Task<IBrowser?> TryConnectToExistingChromiumBrowserAsync(IPlaywright playwright, CancellationToken cancellationToken)
