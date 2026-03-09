@@ -773,6 +773,46 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static string FilterCaptchaText(string raw)
         => new(raw.Where(char.IsLetter).Select(char.ToUpperInvariant).ToArray());
 
+    private static async Task<string> RecognizeCaptchaTextAsync(IPage page, CancellationToken cancellationToken)
+    {
+        var imgLocator = page.Locator("img").First;
+        if (await imgLocator.CountAsync() == 0)
+        {
+            return string.Empty;
+        }
+
+        var screenshotBytes = await imgLocator.ScreenshotAsync();
+        using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
+        if (source.Empty())
+        {
+            return string.Empty;
+        }
+
+        using var prepared = PrepareNolCaptchaOcrMat(source);
+        using var bgra = new Mat();
+        if (prepared.Channels() == 1)
+        {
+            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.GRAY2BGRA);
+        }
+        else
+        {
+            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.BGR2BGRA);
+        }
+
+        var size = checked((int)(bgra.Total() * bgra.ElemSize()));
+        var bytes = new byte[size];
+        Marshal.Copy(bgra.Data, bytes, 0, size);
+
+        using var writer = new DataWriter();
+        writer.WriteBytes(bytes);
+        var buffer = writer.DetachBuffer();
+        using var softwareBitmap = SoftwareBitmap.CreateCopyFromBuffer(buffer, BitmapPixelFormat.Bgra8, bgra.Width, bgra.Height, BitmapAlphaMode.Premultiplied);
+
+        var result = await GetNolOcrEngineForCaptcha().RecognizeAsync(softwareBitmap);
+        cancellationToken.ThrowIfCancellationRequested();
+        return FilterCaptchaText(result.Text);
+    }
+
     private static OcrEngine GetNolOcrEngine()
     {
         if (_nolOcrEngine is not null)
