@@ -29,3 +29,4 @@ This file stores repository-level persistent instructions for the coding agent a
 - 커밋은 작업 단위를 작게 나누어 단계별로 수행한다.
 - 커밋 메시지는 한국어로 작성하고, 변수명/기술 용어는 영어를 유지한다.
 - 검증(가능한 범위의 build/test/lint) 후 커밋한다.
+- 실제 작업 요청으로 변경이 발생했다면, 작업 종료 전에 `dotnet publish` 기준의 릴리즈 산출물까지 생성하고 확인한다.
