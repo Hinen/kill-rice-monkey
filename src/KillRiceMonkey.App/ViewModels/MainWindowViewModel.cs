@@ -23,6 +23,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool _isRunning;
     private string _statusMessage = "템플릿 선택 필요";
     private string _lastRunSummary = "자동화 실행 기록이 없습니다.";
+    private DateTimeOffset _nolAutomationReadyAt;
 
     public MainWindowViewModel(ITicketingAutomationService ticketingAutomationService)
     {
@@ -176,18 +177,22 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 return;
             }
 
-            if (!await _ticketingAutomationService.IsNolRemoteDebugBrowserAvailableAsync(CancellationToken.None))
+            var readyCacheValid = (DateTimeOffset.UtcNow - _nolAutomationReadyAt).TotalMinutes < 10;
+            if (!readyCacheValid)
             {
-                StatusMessage = "remote debug 필요";
-                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 먼저 'NOL Remote Debug 열기' 버튼으로 브라우저를 실행하세요.";
-                return;
-            }
+                if (!await _ticketingAutomationService.IsNolRemoteDebugBrowserAvailableAsync(CancellationToken.None))
+                {
+                    StatusMessage = "remote debug 필요";
+                    LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 먼저 'NOL Remote Debug 열기' 버튼으로 브라우저를 실행하세요.";
+                    return;
+                }
 
-            if (!await _ticketingAutomationService.IsNolAutomationPreparedAsync(CancellationToken.None))
-            {
-                StatusMessage = "NOL 준비 필요";
-                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 상품 페이지를 연 뒤 'NOL 준비' 버튼으로 연결을 미리 준비하세요.";
-                return;
+                if (!await _ticketingAutomationService.IsNolAutomationPreparedAsync(CancellationToken.None))
+                {
+                    StatusMessage = "NOL 준비 필요";
+                    LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 상품 페이지를 연 뒤 'NOL 준비' 버튼으로 연결을 미리 준비하세요.";
+                    return;
+                }
             }
         }
 
@@ -279,6 +284,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         try
         {
             var message = await _ticketingAutomationService.PrepareNolAutomationAsync(CancellationToken.None);
+            _nolAutomationReadyAt = DateTimeOffset.UtcNow;
             StatusMessage = "성공 종료";
             LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
         }
