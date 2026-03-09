@@ -88,6 +88,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private IPlaywright? _playwright;
     private IBrowser? _preparedNolConnectedBrowser;
     private IPage? _preparedNolPage;
+    private bool _popupClosedDuringPrepare;
 
     public PlaywrightTicketingAutomationService(ILogger<PlaywrightTicketingAutomationService> logger)
     {
@@ -243,6 +244,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         await page.BringToFrontAsync();
+        await EnsureNolPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+        _popupClosedDuringPrepare = true;
         var snapshot = await DescribeNolPageStateAsync(page);
         _logger.LogInformation("Prepared NOL automation state. {State}", snapshot);
         return $"NOL 준비 완료: {SafePageUrl(page)}";
@@ -341,7 +344,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             _logger.LogInformation("Connected-browser NOL automation selected page. url={Url}", SafePageUrl(page));
             await page.BringToFrontAsync();
-            await EnsureNolPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+            if (!_popupClosedDuringPrepare)
+            {
+                await EnsureNolPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+            }
+            _popupClosedDuringPrepare = false;
             await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
             await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
             _ = await ClickNolBookingAsync(page, timeout, cancellationToken);
@@ -447,6 +454,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         _preparedNolPage = null;
         _preparedNolConnectedBrowser = null;
+        _popupClosedDuringPrepare = false;
         return Task.CompletedTask;
     }
 
