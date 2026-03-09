@@ -24,10 +24,13 @@
     <EmbeddedResource Include="..\..\button-images\booth\*.png">
       <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Booth.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="..\..\button-images\nol\*.png">
+      <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Nol.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
