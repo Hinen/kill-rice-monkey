@@ -752,6 +752,27 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return binary;
     }
 
+    private static Mat PrepareNolCaptchaOcrMat(Mat source)
+    {
+        using var gray = ToGray(source);
+        var resized = new Mat();
+        Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor),
+            interpolation: InterpolationFlags.Lanczos4);
+
+        var binary = new Mat();
+        Cv2.GaussianBlur(resized, resized, new OpenCvSharp.Size(3, 3), 0);
+        Cv2.AdaptiveThreshold(resized, binary, 255,
+            AdaptiveThresholdTypes.GaussianC, ThresholdTypes.Binary, 31, 3);
+        resized.Dispose();
+
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(2, 2));
+        Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel);
+        return binary;
+    }
+
+    private static string FilterCaptchaText(string raw)
+        => new(raw.Where(char.IsLetter).Select(char.ToUpperInvariant).ToArray());
+
     private static OcrEngine GetNolOcrEngine()
     {
         if (_nolOcrEngine is not null)
