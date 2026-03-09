@@ -307,33 +307,25 @@
                                                  <ColumnDefinition Width="*" />
                                                  <ColumnDefinition Width="20" />
                                                  <ColumnDefinition Width="220" />
-                                                 <ColumnDefinition Width="20" />
-                                                 <ColumnDefinition Width="220" />
                                              </Grid.ColumnDefinitions>
 
-                                             <StackPanel Grid.ColumnSpan="5">
-                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="NOL DOM 입력값" />
-                                                 <TextBlock Margin="0,8,0,0"
-                                                            Style="{StaticResource HelperTextStyle}"
-                                                            Text="앱이 여는 NOL 전용 브라우저에서 직접 로그인하고, NOL일 때만 URL/관람일/회차를 사용합니다." />
-                                             </StackPanel>
+                                              <StackPanel Grid.ColumnSpan="3">
+                                                  <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="NOL 화면 입력값" />
+                                                  <TextBlock Margin="0,8,0,0"
+                                                             Style="{StaticResource HelperTextStyle}"
+                                                             Text="먼저 remote debug 브라우저를 열고 로그인한 뒤, 관람일과 회차를 선택해 자동화를 실행합니다." />
+                                              </StackPanel>
 
                                              <StackPanel Grid.Row="2">
-                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="NOL URL" />
+                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="관람일" />
                                                  <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                          Text="{Binding TargetUrl, UpdateSourceTrigger=PropertyChanged}" />
+                                                           Text="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}" />
                                              </StackPanel>
 
                                              <StackPanel Grid.Row="2" Grid.Column="2">
-                                                 <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="관람일" />
-                                                 <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                          Text="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}" />
-                                             </StackPanel>
-
-                                             <StackPanel Grid.Row="2" Grid.Column="4">
                                                  <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="회차" />
                                                  <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                          Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
+                                                           Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
                                              </StackPanel>
                                          </Grid>
                                      </Border>
@@ -345,14 +337,36 @@
                                              <ColumnDefinition Width="*" />
                                          </Grid.ColumnDefinitions>
 
-                                        <Button Width="176"
-                                                Style="{StaticResource PrimaryButtonStyle}"
-                                                Command="{Binding StartAutomationCommand}">
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Foreground="White" Text="RUN" />
-                                                <TextBlock Margin="8,0,0,0" FontSize="15" Foreground="White" Text="자동화 실행" />
-                                            </StackPanel>
-                                        </Button>
+                                         <StackPanel Width="220">
+                                             <Button Margin="0,0,0,12"
+                                                     Style="{StaticResource PrimaryButtonStyle}"
+                                                     Command="{Binding LaunchNolRemoteDebugCommand}"
+                                                     Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                     <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="OPEN" />
+                                                     <TextBlock Margin="8,0,0,0" FontSize="15" Text="NOL Remote Debug 열기" />
+                                                 </StackPanel>
+                                             </Button>
+
+                                             <Button Margin="0,0,0,12"
+                                                     Style="{StaticResource PrimaryButtonStyle}"
+                                                     Command="{Binding PrepareNolAutomationCommand}"
+                                                     Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                     <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="READY" />
+                                                     <TextBlock Margin="8,0,0,0" FontSize="15" Text="NOL 준비" />
+                                                 </StackPanel>
+                                             </Button>
+
+                                             <Button Width="176"
+                                                     Style="{StaticResource PrimaryButtonStyle}"
+                                                     Command="{Binding StartAutomationCommand}">
+                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                     <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Foreground="White" Text="RUN" />
+                                                     <TextBlock Margin="8,0,0,0" FontSize="15" Foreground="White" Text="자동화 실행" />
+                                                 </StackPanel>
+                                             </Button>
+                                         </StackPanel>
 
                                         <Border Grid.Column="2" Style="{StaticResource SoftCardStyle}" VerticalAlignment="Stretch">
                                             <Grid>
@@ -393,13 +407,13 @@
                          <Border Grid.Row="2" Style="{StaticResource SurfaceCardStyle}">
                              <StackPanel>
                                  <TextBlock Style="{StaticResource SectionTitleTextStyle}" Text="실행 가이드" />
-                                 <TextBlock Margin="0,14,0,0" Style="{StaticResource HelperTextStyle}" TextWrapping="Wrap">
-                                     <Run Text="전역 핫키(" />
-                                     <Run Text="{Binding HotkeyText}" />
-                                     <Run Text=")로 실행 가능. 이미지 모드는 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png, NOL은 URL/관람일/회차 DOM 선택을 사용합니다." />
-                                 </TextBlock>
-                             </StackPanel>
-                         </Border>
+                                  <TextBlock Margin="0,14,0,0" Style="{StaticResource HelperTextStyle}" TextWrapping="Wrap">
+                                      <Run Text="전역 핫키(" />
+                                      <Run Text="{Binding HotkeyText}" />
+                                      <Run Text=")로 실행 가능. 이미지 모드는 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png, NOL은 먼저 remote debug 브라우저를 열고 로그인한 뒤 자동화를 실행합니다." />
+                                  </TextBlock>
+                              </StackPanel>
+                          </Border>
 
                         <Border Grid.Row="4" Style="{StaticResource SurfaceCardStyle}" VerticalAlignment="Stretch">
                             <Grid>
