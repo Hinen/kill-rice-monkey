@@ -352,8 +352,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             _popupClosedDuringPrepare = false;
             await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
             await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
-            _ = await ClickNolBookingAsync(page, timeout, cancellationToken);
-            return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택 후 예매하기 클릭 완료.", DateTimeOffset.Now);
+            var captchaPage = await ClickNolBookingAsync(page, timeout, cancellationToken);
+            await SolveCaptchaAsync(captchaPage, timeout, cancellationToken);
+            return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택, CAPTCHA 입력 완료.", DateTimeOffset.Now);
         }
         catch (Exception ex)
         {
