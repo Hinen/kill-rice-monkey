@@ -1185,7 +1185,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         throw new InvalidOperationException($"NOL 회차를 찾지 못했습니다: {desiredRound}");
     }
 
-    private sealed record NolRoundItem(string Text, string ClassName, int Index);
+    private sealed class NolRoundItem
+    {
+        public string Text { get; set; } = string.Empty;
+        public string ClassName { get; set; } = string.Empty;
+        public int Index { get; set; }
+    }
 
     private static async Task<IPage> ClickNolBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
