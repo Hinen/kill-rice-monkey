@@ -44,8 +44,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private const int InputMouse = 0;
     private const uint MouseeventfLeftdown = 0x0002;
     private const uint MouseeventfLeftup = 0x0004;
-    private const int DefaultNolViewportWidth = 1440;
-    private const int DefaultNolViewportHeight = 1200;
     private const string NolRemoteDebugLaunchUrl = "https://tickets.interpark.com/";
     private const string NolCdpEndpoint = "http://127.0.0.1:9222/";
     private const string NolTemplateResourcePrefix = EmbeddedTemplatePrefix + "Nol.";
@@ -88,8 +86,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static readonly HttpClient NolHttpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
     private static OcrEngine? _nolOcrEngine;
     private IPlaywright? _playwright;
-    private IBrowser? _nolBrowser;
-    private IBrowserContext? _nolBrowserContext;
     private IBrowser? _preparedNolConnectedBrowser;
     private IPage? _preparedNolPage;
 
@@ -171,7 +167,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     public async ValueTask DisposeAsync()
     {
-        await CloseNolBrowserResourcesIfNeededAsync();
         await ReleasePreparedNolConnectionAsync();
         _playwright?.Dispose();
         _playwright = null;
@@ -255,13 +250,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
     {
-        return await RunNolAutomationAsync(request, cancellationToken, allowBrowserReset: true);
-    }
-
-    private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken, bool allowBrowserReset)
-    {
-        _ = allowBrowserReset;
-
         if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
         {
             return new AutomationRunResult(false, "매칭 임계값은 0보다 크고 1 이하여야 합니다.", DateTimeOffset.Now);
@@ -369,9 +357,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             _logger.LogWarning(ex, "Connected-browser NOL automation failed. Falling back to screen automation.");
             return null;
-        }
-        finally
-        {
         }
     }
 
@@ -1049,90 +1034,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task<IPage> GetFreshNolPageAsync(CancellationToken cancellationToken)
-    {
-        await _nolBrowserLock.WaitAsync(cancellationToken);
-        try
-        {
-            _playwright ??= await Playwright.CreateAsync();
-
-            await CloseNolBrowserResourcesIfNeededAsync();
-            _nolBrowser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-            {
-                Channel = "msedge",
-                Headless = false
-            });
-            _nolBrowserContext = await _nolBrowser.NewContextAsync(new BrowserNewContextOptions
-            {
-                Locale = "ko-KR",
-                ViewportSize = new ViewportSize
-                {
-                    Width = DefaultNolViewportWidth,
-                    Height = DefaultNolViewportHeight
-                }
-            });
-
-            var page = await _nolBrowserContext.NewPageAsync();
-
-            await page.BringToFrontAsync();
-            return page;
-        }
-        finally
-        {
-            _nolBrowserLock.Release();
-        }
-    }
-
-    private async Task ResetNolBrowserStateAsync()
-    {
-        await _nolBrowserLock.WaitAsync();
-        try
-        {
-            await CloseNolBrowserResourcesIfNeededAsync();
-            _playwright?.Dispose();
-            _playwright = null;
-        }
-        finally
-        {
-            _nolBrowserLock.Release();
-        }
-    }
-
-    private async Task CloseNolBrowserResourcesIfNeededAsync()
-    {
-        if (_nolBrowserContext is not null)
-        {
-            try
-            {
-                await _nolBrowserContext.CloseAsync();
-            }
-            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
-            {
-                _logger.LogDebug(ex, "Ignoring closed NOL browser context during cleanup.");
-            }
-            finally
-            {
-                _nolBrowserContext = null;
-            }
-        }
-
-        if (_nolBrowser is not null)
-        {
-            try
-            {
-                await _nolBrowser.CloseAsync();
-            }
-            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
-            {
-                _logger.LogDebug(ex, "Ignoring closed NOL browser during cleanup.");
-            }
-            finally
-            {
-                _nolBrowser = null;
-            }
-        }
-    }
-
     private static async Task EnsureNolPopupClosedAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -1636,20 +1537,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task LogNolFailureAsync(Exception ex, string runId, string phase, Uri targetUri, DateOnly desiredDate, string desiredRound, IPage? page)
-    {
-        var pageState = await DescribeNolPageStateAsync(page);
-        _logger.LogError(
-            ex,
-            "NOL automation failed. runId={RunId}, phase={Phase}, url={Url}, date={Date}, round={Round}, logDir={LogDir}, pageState={PageState}",
-            runId,
-            phase,
-            targetUri,
-            desiredDate,
-            desiredRound,
-            GetLogDirectoryPath(),
-            pageState);
-    }
+
 
     private static async Task<string> DescribeNolPageStateAsync(IPage? page)
     {
