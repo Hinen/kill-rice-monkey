@@ -819,10 +819,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         const int maxAttempts = 3;
         const int expectedLength = 6;
 
+        try
+        {
+            await page.WaitForLoadStateAsync(LoadState.Load, new PageWaitForLoadStateOptions
+            {
+                Timeout = (float)timeout.TotalMilliseconds
+            });
+        }
+        catch (TimeoutException) { }
+
         var inputLocator = page.Locator("input[placeholder*='문자']");
         if (!await TryWaitForConditionAsync(
-                async () => await inputLocator.CountAsync() > 0,
-                TimeSpan.FromSeconds(5),
+                async () =>
+                {
+                    try { return await inputLocator.CountAsync() > 0; }
+                    catch (PlaywrightException) { return false; }
+                },
+                timeout,
                 cancellationToken))
         {
             return;
@@ -846,7 +859,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             await submitLocator.ClickAsync();
 
             var submitted = await TryWaitForConditionAsync(
-                async () => await inputLocator.CountAsync() == 0,
+                async () =>
+                {
+                    try { return await inputLocator.CountAsync() == 0; }
+                    catch (PlaywrightException) { return false; }
+                },
                 timeout,
                 cancellationToken);
 
