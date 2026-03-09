@@ -1139,22 +1139,24 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static async Task SelectNolRoundAsync(IPage page, string desiredRound, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var side = page.Locator("#productSide");
-        var rounds = side.Locator(".sideTimeTable .timeTableLabel[role='button']");
+        var roundsLocator = side.Locator(".sideTimeTable .timeTableLabel[role='button']");
 
-        await WaitForConditionAsync(async () => await rounds.CountAsync() > 0, timeout, cancellationToken, "NOL 회차 목록을 찾지 못했습니다.");
+        await WaitForConditionAsync(async () => await roundsLocator.CountAsync() > 0, timeout, cancellationToken, "NOL 회차 목록을 찾지 못했습니다.");
 
-        var count = await rounds.CountAsync();
-        for (var index = 0; index < count; index++)
+        var roundItems = await page.EvaluateAsync<NolRoundItem[]>("""
+            () => [...document.querySelectorAll('#productSide .sideTimeTable .timeTableLabel[role="button"]')]
+                  .map((el, i) => ({ text: el.innerText, className: el.className, index: i }))
+            """);
+
+        foreach (var item in roundItems ?? [])
         {
-            var round = rounds.Nth(index);
-            var roundText = NormalizeText(await round.InnerTextAsync());
-            var className = await round.GetAttributeAsync("class") ?? string.Empty;
-            if (!IsMatchingNolRound(roundText, desiredRound) || IsNolDisabledClass(className))
+            var roundText = NormalizeText(item.Text);
+            if (!IsMatchingNolRound(roundText, desiredRound) || IsNolDisabledClass(item.ClassName))
             {
                 continue;
             }
 
-            if (className.Contains("is-toggled", StringComparison.OrdinalIgnoreCase) &&
+            if (item.ClassName.Contains("is-toggled", StringComparison.OrdinalIgnoreCase) &&
                 await TryWaitForConditionAsync(
                     async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
                     TimeSpan.FromMilliseconds(300),
@@ -1163,7 +1165,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return;
             }
 
-            await ClickNolElementAsync(round);
+            await ClickNolElementAsync(roundsLocator.Nth(item.Index));
             await WaitForConditionAsync(
                 async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
                 timeout,
@@ -1174,6 +1176,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         throw new InvalidOperationException($"NOL 회차를 찾지 못했습니다: {desiredRound}");
     }
+
+    private sealed record NolRoundItem(string Text, string ClassName, int Index);
 
     private static async Task<IPage> ClickNolBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
