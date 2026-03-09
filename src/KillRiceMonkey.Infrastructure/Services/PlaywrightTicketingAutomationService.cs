@@ -813,6 +813,51 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return FilterCaptchaText(result.Text);
     }
 
+    private static async Task SolveCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        const int expectedLength = 6;
+
+        var inputLocator = page.Locator("input[placeholder*='문자']");
+        if (!await TryWaitForConditionAsync(
+                async () => await inputLocator.CountAsync() > 0,
+                TimeSpan.FromSeconds(5),
+                cancellationToken))
+        {
+            return;
+        }
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var text = await RecognizeCaptchaTextAsync(page, cancellationToken);
+            if (text.Length != expectedLength)
+            {
+                await Task.Delay(500, cancellationToken);
+                continue;
+            }
+
+            await inputLocator.First.FillAsync(string.Empty);
+            await inputLocator.First.PressSequentiallyAsync(text, new LocatorPressSequentiallyOptions { Delay = 30 });
+
+            var submitLocator = page.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First;
+            await submitLocator.ClickAsync();
+
+            var submitted = await TryWaitForConditionAsync(
+                async () => await inputLocator.CountAsync() == 0,
+                timeout,
+                cancellationToken);
+
+            if (submitted)
+            {
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"CAPTCHA 자동 인식 실패 ({maxAttempts}회 시도).");
+    }
+
     private static OcrEngine GetNolOcrEngine()
     {
         if (_nolOcrEngine is not null)
