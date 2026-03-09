@@ -753,22 +753,84 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return binary;
     }
 
-    private static Mat PrepareNolCaptchaOcrMat(Mat source)
+    private static List<Mat> PrepareNolCaptchaOcrVariants(Mat source)
     {
+        var variants = new List<Mat>();
+
         using var gray = ToGray(source);
-        var resized = new Mat();
-        Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor),
-            interpolation: InterpolationFlags.Lanczos4);
 
-        var binary = new Mat();
-        Cv2.GaussianBlur(resized, resized, new OpenCvSharp.Size(3, 3), 0);
-        Cv2.AdaptiveThreshold(resized, binary, 255,
-            AdaptiveThresholdTypes.GaussianC, ThresholdTypes.Binary, 31, 3);
-        resized.Dispose();
+        {
+            var resized = new Mat();
+            Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor),
+                interpolation: InterpolationFlags.Lanczos4);
+            var inverted = new Mat();
+            Cv2.BitwiseNot(resized, inverted);
+            resized.Dispose();
+            var binary = new Mat();
+            Cv2.Threshold(inverted, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+            inverted.Dispose();
+            RemoveSmallComponents(binary, minArea: 30);
+            using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+            Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel);
+            variants.Add(binary);
+        }
 
-        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(2, 2));
-        Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel);
-        return binary;
+        {
+            var resized = new Mat();
+            Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor),
+                interpolation: InterpolationFlags.Lanczos4);
+            var blurred = new Mat();
+            Cv2.MedianBlur(resized, blurred, 3);
+            resized.Dispose();
+            var inverted = new Mat();
+            Cv2.BitwiseNot(blurred, inverted);
+            blurred.Dispose();
+            var binary = new Mat();
+            Cv2.Threshold(inverted, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+            inverted.Dispose();
+            RemoveSmallComponents(binary, minArea: 50);
+            variants.Add(binary);
+        }
+
+        {
+            using var hsv = new Mat();
+            Cv2.CvtColor(source, hsv, ColorConversionCodes.BGR2HSV);
+            var channels = Cv2.Split(hsv);
+            var vChannel = channels[2];
+            channels[0].Dispose();
+            channels[1].Dispose();
+            var resized = new Mat();
+            Cv2.Resize(vChannel, resized, new OpenCvSharp.Size(vChannel.Width * NolOcrScaleFactor, vChannel.Height * NolOcrScaleFactor),
+                interpolation: InterpolationFlags.Lanczos4);
+            vChannel.Dispose();
+            var binary = new Mat();
+            Cv2.Threshold(resized, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+            resized.Dispose();
+            RemoveSmallComponents(binary, minArea: 40);
+            variants.Add(binary);
+        }
+
+        return variants;
+    }
+
+    private static void RemoveSmallComponents(Mat binary, int minArea)
+    {
+        using var labels = new Mat();
+        using var stats = new Mat();
+        using var centroids = new Mat();
+        var numLabels = Cv2.ConnectedComponentsWithStats(binary, labels, stats, centroids);
+
+        for (var i = 1; i < numLabels; i++)
+        {
+            var area = stats.At<int>(i, 4);
+            if (area >= minArea)
+                continue;
+            var left = stats.At<int>(i, 0);
+            var top = stats.At<int>(i, 1);
+            var w = stats.At<int>(i, 2);
+            var h = stats.At<int>(i, 3);
+            Cv2.Rectangle(binary, new OpenCvSharp.Rect(left, top, w, h), Scalar.Black, -1);
+        }
     }
 
     private static string FilterCaptchaText(string raw)
@@ -825,14 +887,31 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (rawFiltered.Length >= 4)
             return rawFiltered;
 
-        using var prepared = PrepareNolCaptchaOcrMat(source);
-        SaveCaptchaDebugImage(prepared, "captcha-preprocessed");
+        var bestText = rawFiltered;
+        var variants = PrepareNolCaptchaOcrVariants(source);
+        try
+        {
+            for (var vi = 0; vi < variants.Count; vi++)
+            {
+                SaveCaptchaDebugImage(variants[vi], $"captcha-variant{vi}");
+                var varText = await RunOcrOnMatAsync(variants[vi], cancellationToken);
+                var varFiltered = FilterCaptchaText(varText);
+                _logger.LogInformation("CAPTCHA OCR variant{Index}: ocrText={OcrText}, filtered={Filtered}",
+                    vi, varText, varFiltered);
 
-        var preparedText = await RunOcrOnMatAsync(prepared, cancellationToken);
-        var preparedFiltered = FilterCaptchaText(preparedText);
-        _logger.LogInformation("CAPTCHA OCR preprocessed: ocrText={OcrText}, filtered={Filtered}", preparedText, preparedFiltered);
+                if (varFiltered.Length > bestText.Length)
+                    bestText = varFiltered;
 
-        return preparedFiltered.Length >= rawFiltered.Length ? preparedFiltered : rawFiltered;
+                if (bestText.Length >= 4)
+                    break;
+            }
+        }
+        finally
+        {
+            foreach (var v in variants) v.Dispose();
+        }
+
+        return bestText;
     }
 
     private static async Task<string> RunOcrOnMatAsync(Mat source, CancellationToken cancellationToken)
@@ -959,6 +1038,20 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, timeout, cancellationToken);
         if (inputLocator is null)
         {
+            foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
+            {
+                _logger.LogInformation("CAPTCHA input not on main page, searching popup. url={Url}", SafePageUrl(contextPage));
+                (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, TimeSpan.FromSeconds(3), cancellationToken);
+                if (inputLocator is not null)
+                {
+                    page = contextPage;
+                    break;
+                }
+            }
+        }
+
+        if (inputLocator is null)
+        {
             _logger.LogWarning("CAPTCHA input not found. url={Url}, frameCount={FrameCount}",
                 SafePageUrl(page), page.Frames.Count);
             return;
@@ -1013,7 +1106,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static async Task<(ILocator? inputLocator, IFrame? frame)> FindCaptchaInputAsync(
         IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        const string inputSelector = "input[placeholder*='문자']";
+        const string inputSelector = "input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
         var deadline = DateTimeOffset.UtcNow + timeout;
 
         while (DateTimeOffset.UtcNow < deadline)
