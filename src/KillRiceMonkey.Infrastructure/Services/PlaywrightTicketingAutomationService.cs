@@ -1243,7 +1243,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return await PrepareNolBookingResultPageAsync(fallbackPage, deadline);
             }
 
-            await Task.Delay(100, cancellationToken);
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
         }
 
         throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
@@ -1333,7 +1333,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return;
             }
 
-            await Task.Delay(100, cancellationToken);
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
         }
 
         throw new TimeoutException(errorMessage);
@@ -1353,7 +1353,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return true;
             }
 
-            await Task.Delay(100, cancellationToken);
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
         }
 
         return false;
