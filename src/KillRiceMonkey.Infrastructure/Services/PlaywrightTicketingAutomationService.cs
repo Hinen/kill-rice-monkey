@@ -772,40 +772,76 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     }
 
     private static string FilterCaptchaText(string raw)
-        => new(raw.Where(char.IsLetter).Select(char.ToUpperInvariant).ToArray());
+        => new(raw.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
-    private static async Task<string> RecognizeCaptchaTextAsync(ILocator inputLocator, CancellationToken cancellationToken)
+    private async Task<string> RecognizeCaptchaTextAsync(ILocator inputLocator, IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
     {
-        ILocator? imgLocator = null;
-        for (var level = 1; level <= 5; level++)
+        var imgLocator = await FindCaptchaImageAsync(inputLocator, page, captchaFrame);
+        if (imgLocator is null)
         {
-            var xpath = string.Join("/", Enumerable.Repeat("..", level));
-            var candidate = inputLocator.Locator($"xpath={xpath}").Locator("img").First;
-            try
-            {
-                if (await candidate.CountAsync() > 0)
-                {
-                    imgLocator = candidate;
-                    break;
-                }
-            }
-            catch (PlaywrightException) { }
+            _logger.LogWarning("CAPTCHA image element not found near input");
+            return string.Empty;
         }
 
-        if (imgLocator is null)
-            return string.Empty;
+        try
+        {
+            var tagName = await imgLocator.EvaluateAsync<string>("el => el.tagName.toLowerCase()");
+            var src = await imgLocator.EvaluateAsync<string>("el => el.src || el.currentSrc || ''");
+            var box = await imgLocator.BoundingBoxAsync();
+            _logger.LogInformation("CAPTCHA image found: tag={Tag}, src={Src}, width={W}, height={H}",
+                tagName, src?.Length > 120 ? src[..120] : src, box?.Width, box?.Height);
 
-        var screenshotBytes = await imgLocator.ScreenshotAsync();
+            if (box is not null && (box.Width > 500 || box.Height > 200 || box.Width < 20 || box.Height < 10))
+            {
+                _logger.LogWarning("CAPTCHA image dimensions suspicious: {W}x{H}, likely wrong element", box.Width, box.Height);
+            }
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger.LogDebug(ex, "Failed to read CAPTCHA image attributes");
+        }
+
+        byte[] screenshotBytes;
+        try
+        {
+            screenshotBytes = await imgLocator.ScreenshotAsync();
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger.LogWarning(ex, "Failed to screenshot CAPTCHA image element");
+            return string.Empty;
+        }
+
+        SaveCaptchaDebugImage(screenshotBytes, "captcha-raw");
+
         using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
         if (source.Empty())
             return string.Empty;
 
+        var rawText = await RunOcrOnMatAsync(source, cancellationToken);
+        var rawFiltered = FilterCaptchaText(rawText);
+        _logger.LogInformation("CAPTCHA OCR raw: ocrText={OcrText}, filtered={Filtered}", rawText, rawFiltered);
+
+        if (rawFiltered.Length >= 4)
+            return rawFiltered;
+
         using var prepared = PrepareNolCaptchaOcrMat(source);
+        SaveCaptchaDebugImage(prepared, "captcha-preprocessed");
+
+        var preparedText = await RunOcrOnMatAsync(prepared, cancellationToken);
+        var preparedFiltered = FilterCaptchaText(preparedText);
+        _logger.LogInformation("CAPTCHA OCR preprocessed: ocrText={OcrText}, filtered={Filtered}", preparedText, preparedFiltered);
+
+        return preparedFiltered.Length >= rawFiltered.Length ? preparedFiltered : rawFiltered;
+    }
+
+    private static async Task<string> RunOcrOnMatAsync(Mat source, CancellationToken cancellationToken)
+    {
         using var bgra = new Mat();
-        if (prepared.Channels() == 1)
-            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.GRAY2BGRA);
+        if (source.Channels() == 1)
+            Cv2.CvtColor(source, bgra, ColorConversionCodes.GRAY2BGRA);
         else
-            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.BGR2BGRA);
+            Cv2.CvtColor(source, bgra, ColorConversionCodes.BGR2BGRA);
 
         var size = checked((int)(bgra.Total() * bgra.ElemSize()));
         var bytes = new byte[size];
@@ -818,13 +854,98 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var result = await GetNolOcrEngineForCaptcha().RecognizeAsync(softwareBitmap);
         cancellationToken.ThrowIfCancellationRequested();
-        return FilterCaptchaText(result.Text);
+        return result.Text;
+    }
+
+    private static async Task<ILocator?> FindCaptchaImageAsync(ILocator inputLocator, IPage page, IFrame? captchaFrame)
+    {
+        for (var level = 1; level <= 2; level++)
+        {
+            var xpath = string.Join("/", Enumerable.Repeat("..", level));
+            var container = inputLocator.Locator($"xpath={xpath}");
+
+            var hinted = container.Locator("img[src*='captcha' i], img[src*='cap_img' i]");
+            try { if (await hinted.CountAsync() > 0) return hinted.First; } catch (PlaywrightException) { }
+
+            var canvas = container.Locator("canvas");
+            try { if (await canvas.CountAsync() > 0) return canvas.First; } catch (PlaywrightException) { }
+
+            var imgs = container.Locator("img");
+            try
+            {
+                var count = await imgs.CountAsync();
+                for (var i = 0; i < count; i++)
+                {
+                    var img = imgs.Nth(i);
+                    var box = await img.BoundingBoxAsync();
+                    if (box is not null && box.Width >= 60 && box.Width <= 400 && box.Height >= 20 && box.Height <= 120)
+                        return img;
+                }
+            }
+            catch (PlaywrightException) { }
+        }
+
+        ILocator FrameOrPage(string selector) =>
+            captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
+
+        var frameHinted = FrameOrPage("img[src*='captcha' i], img[src*='cap_img' i]");
+        try { if (await frameHinted.CountAsync() > 0) return frameHinted.First; } catch (PlaywrightException) { }
+
+        var frameCanvas = FrameOrPage("canvas");
+        try { if (await frameCanvas.CountAsync() > 0) return frameCanvas.First; } catch (PlaywrightException) { }
+
+        var frameImgs = FrameOrPage("img");
+        try
+        {
+            var count = await frameImgs.CountAsync();
+            for (var i = 0; i < count; i++)
+            {
+                var img = frameImgs.Nth(i);
+                var box = await img.BoundingBoxAsync();
+                if (box is not null && box.Width >= 60 && box.Width <= 400 && box.Height >= 20 && box.Height <= 120)
+                    return img;
+            }
+        }
+        catch (PlaywrightException) { }
+
+        return null;
+    }
+
+    private void SaveCaptchaDebugImage(byte[] imageBytes, string label)
+    {
+        try
+        {
+            var dir = Path.Combine(GetLogDirectoryPath(), "captcha-debug");
+            Directory.CreateDirectory(dir);
+            var fileName = $"{label}-{DateTimeOffset.Now:yyyyMMdd-HHmmss-fff}.png";
+            File.WriteAllBytes(Path.Combine(dir, fileName), imageBytes);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to save CAPTCHA debug image");
+        }
+    }
+
+    private void SaveCaptchaDebugImage(Mat mat, string label)
+    {
+        try
+        {
+            var dir = Path.Combine(GetLogDirectoryPath(), "captcha-debug");
+            Directory.CreateDirectory(dir);
+            var fileName = $"{label}-{DateTimeOffset.Now:yyyyMMdd-HHmmss-fff}.png";
+            Cv2.ImWrite(Path.Combine(dir, fileName), mat);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to save CAPTCHA debug image");
+        }
     }
 
     private async Task SolveCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         const int maxAttempts = 3;
-        const int expectedLength = 6;
+        const int minLength = 4;
+        const int maxLength = 8;
 
         try
         {
@@ -843,14 +964,21 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return;
         }
 
+        _logger.LogInformation("CAPTCHA input found. url={Url}, inFrame={InFrame}",
+            SafePageUrl(page), captchaFrame is not null);
+
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var text = await RecognizeCaptchaTextAsync(inputLocator, cancellationToken);
-            _logger.LogInformation("CAPTCHA OCR attempt {Attempt}: recognized={Text}", attempt, text);
-            if (text.Length != expectedLength)
+            var text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
+            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} (len={Len})",
+                attempt, maxAttempts, text, text.Length);
+
+            if (text.Length < minLength || text.Length > maxLength)
             {
+                _logger.LogWarning("CAPTCHA text length {Len} out of range [{Min},{Max}], retrying",
+                    text.Length, minLength, maxLength);
                 await Task.Delay(500, cancellationToken);
                 continue;
             }
