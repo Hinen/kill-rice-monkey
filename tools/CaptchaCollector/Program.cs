@@ -4,7 +4,7 @@ using Microsoft.Playwright;
 
 const string CdpEndpoint = "http://localhost:9222";
 const string ImageSelector = "#imgCaptcha, img[src*='captcha' i], img[src*='cap_img' i]";
-const string RefreshSelector = ".refreshBtn, #divRecaptcha .capchaBtns a:nth-child(2), [class*='refresh' i]";
+const string RefreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn";
 
 var targetCount = args.Length > 0 && int.TryParse(args[0], out var c) ? c : 1000;
 var captchaType = args.Length > 1 ? args[1].ToLowerInvariant() : "new";
@@ -189,10 +189,23 @@ static async Task TryRefreshAsync(IPage page, CancellationToken ct)
 {
     try
     {
+        var jsResult = await page.EvaluateAsync<bool>(@"() => {
+            if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
+            if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
+            if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
+            if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
+            return false;
+        }");
+        if (jsResult) { await Task.Delay(200, ct); return; }
+    }
+    catch { }
+
+    try
+    {
         var refreshLoc = page.Locator(RefreshSelector);
         if (await refreshLoc.CountAsync() > 0)
         {
-            await refreshLoc.First.ClickAsync(new LocatorClickOptions { Timeout = 2000, Force = true });
+            await refreshLoc.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
             await Task.Delay(200, ct);
             return;
         }
@@ -202,11 +215,10 @@ static async Task TryRefreshAsync(IPage page, CancellationToken ct)
     try
     {
         await page.EvaluateAsync(@"() => {
-            if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return; }
-            if (typeof fnRefresh === 'function') { fnRefresh(); return; }
-            var imgs = document.querySelectorAll('#imgCaptcha, img[src*=""captcha"" i]');
+            var imgs = document.querySelectorAll('#imgCaptcha, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
             for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
         }");
+        await Task.Delay(200, ct);
     }
     catch { }
 }
