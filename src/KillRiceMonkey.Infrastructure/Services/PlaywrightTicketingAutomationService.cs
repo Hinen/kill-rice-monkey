@@ -879,30 +879,27 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (source.Empty())
             return string.Empty;
 
-        var rawText = RunCaptchaOcrOnMat(source);
+        var candidates = new List<(string text, float confidence, string source)>();
+
+        var (rawText, rawConf) = RunCaptchaOcrOnMat(source);
         var rawFiltered = FilterCaptchaText(rawText);
-        _logger.LogInformation("CAPTCHA OCR raw: ocrText={OcrText}, filtered={Filtered}", rawText, rawFiltered);
-
+        _logger.LogInformation("CAPTCHA OCR raw: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
+            rawText, rawFiltered, rawConf);
         if (rawFiltered.Length >= 4)
-            return rawFiltered;
+            candidates.Add((rawFiltered, rawConf, "raw"));
 
-        var bestText = rawFiltered;
         var variants = PrepareNolCaptchaOcrVariants(source);
         try
         {
             for (var vi = 0; vi < variants.Count; vi++)
             {
                 SaveCaptchaDebugImage(variants[vi], $"captcha-variant{vi}");
-                var varText = RunCaptchaOcrOnMat(variants[vi]);
+                var (varText, varConf) = RunCaptchaOcrOnMat(variants[vi]);
                 var varFiltered = FilterCaptchaText(varText);
-                _logger.LogInformation("CAPTCHA OCR variant{Index}: ocrText={OcrText}, filtered={Filtered}",
-                    vi, varText, varFiltered);
-
-                if (varFiltered.Length > bestText.Length)
-                    bestText = varFiltered;
-
-                if (bestText.Length >= 4)
-                    break;
+                _logger.LogInformation("CAPTCHA OCR variant{Index}: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
+                    vi, varText, varFiltered, varConf);
+                if (varFiltered.Length >= 4)
+                    candidates.Add((varFiltered, varConf, $"variant{vi}"));
             }
         }
         finally
@@ -910,10 +907,26 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             foreach (var v in variants) v.Dispose();
         }
 
-        return bestText;
+        if (candidates.Count == 0)
+        {
+            var fallback = rawFiltered;
+            _logger.LogWarning("CAPTCHA OCR: no candidate with ≥4 chars, fallback={Fallback}", fallback);
+            return fallback;
+        }
+
+        var selected = candidates
+            .GroupBy(c => c.text)
+            .OrderByDescending(g => g.Count())
+            .ThenByDescending(g => g.Max(c => c.confidence))
+            .First();
+
+        _logger.LogInformation("CAPTCHA OCR selected: text={Text}, votes={Votes}, sources={Sources}",
+            selected.Key, selected.Count(), string.Join(",", selected.Select(c => c.source)));
+
+        return selected.Key;
     }
 
-    private static string RunCaptchaOcrOnMat(Mat source)
+    private static (string text, float confidence) RunCaptchaOcrOnMat(Mat source)
     {
         var tessDataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata");
         Cv2.ImEncode(".png", source, out var pngBytes);
@@ -925,7 +938,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             TesseractOCR.Enums.PageSegMode.Auto,
         };
 
-        var best = string.Empty;
+        var best = (text: string.Empty, confidence: 0f);
 
         foreach (var psm in psmModes)
         {
@@ -937,12 +950,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             using var img = TesseractOCR.Pix.Image.LoadFromMemory(pngBytes);
             using var page = engine.Process(img, psm);
             var text = page.Text?.Trim() ?? string.Empty;
+            var conf = page.MeanConfidence;
 
-            if (text.Length > best.Length)
-                best = text;
+            if (text.Length > best.text.Length || (text.Length == best.text.Length && conf > best.confidence))
+                best = (text, conf);
 
-            if (best.Length >= 4)
-                return best;
+            if (best.text.Length >= 4 && conf > 0.5f)
+                break;
         }
 
         return best;
@@ -1088,13 +1102,33 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            await inputLocator.First.FillAsync(string.Empty);
-            await inputLocator.First.PressSequentiallyAsync(text, new LocatorPressSequentiallyOptions { Delay = 30 });
+            try
+            {
+                await inputLocator.First.FillAsync(string.Empty, new LocatorFillOptions { Timeout = 3000 });
+                await inputLocator.First.PressSequentiallyAsync(text, new LocatorPressSequentiallyOptions { Delay = 30 });
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("CAPTCHA input fill timed out (element not visible), using JS fallback");
+                await inputLocator.First.EvaluateAsync(@"(el, val) => {
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }", text);
+            }
 
             var submitLocator = captchaFrame is not null
                 ? captchaFrame.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First
                 : page.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First;
-            await submitLocator.ClickAsync();
+            try
+            {
+                await submitLocator.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("CAPTCHA submit click timed out, using JS fallback");
+                await submitLocator.EvaluateAsync("el => el.click()");
+            }
 
             var submitted = await TryWaitForConditionAsync(
                 async () =>
@@ -1102,7 +1136,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     try { return await inputLocator.CountAsync() == 0; }
                     catch (PlaywrightException) { return false; }
                 },
-                timeout,
+                TimeSpan.FromSeconds(8),
                 cancellationToken);
 
             if (submitted)
