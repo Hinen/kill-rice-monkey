@@ -1308,18 +1308,19 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             await page.WaitForLoadStateAsync(LoadState.Load, new PageWaitForLoadStateOptions
             {
-                Timeout = (float)timeout.TotalMilliseconds
+                Timeout = 5000
             });
         }
         catch (TimeoutException) { }
 
-        var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, timeout, cancellationToken);
+        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (무한 대기, F9로 취소). url={Url}", SafePageUrl(page));
+        var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, Timeout.InfiniteTimeSpan, cancellationToken);
         if (inputLocator is null)
         {
             foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
             {
                 _logger.LogInformation("CAPTCHA input not on main page, searching popup. url={Url}", SafePageUrl(contextPage));
-                (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, TimeSpan.FromSeconds(3), cancellationToken);
+                (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, Timeout.InfiniteTimeSpan, cancellationToken);
                 if (inputLocator is not null)
                 {
                     page = contextPage;
@@ -1330,7 +1331,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         if (inputLocator is null)
         {
-            _logger.LogWarning("CAPTCHA input not found. url={Url}, frameCount={FrameCount}",
+            _logger.LogWarning("CAPTCHA input not found (cancelled). url={Url}, frameCount={FrameCount}",
                 SafePageUrl(page), page.Frames.Count);
             return;
         }
@@ -1492,7 +1493,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         const string inputSelector = "input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        var infinite = timeout == Timeout.InfiniteTimeSpan;
+        var deadline = infinite ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow + timeout;
 
         while (DateTimeOffset.UtcNow < deadline)
         {

@@ -7,9 +7,11 @@ namespace KillRiceMonkey.App;
 
 public partial class MainWindow : Window
 {
-    private const int HotkeyId = 8100;
+    private const int StartHotkeyId = 8100;
+    private const int CancelHotkeyId = 8101;
     private const uint ModNone = 0x0000;
     private const uint VkF8 = 0x77;
+    private const uint VkF9 = 0x78;
     private const int WmHotkey = 0x0312;
 
     private readonly MainWindowViewModel _viewModel;
@@ -29,22 +31,33 @@ public partial class MainWindow : Window
         var helper = new WindowInteropHelper(this);
         _hwndSource = HwndSource.FromHwnd(helper.Handle);
         _hwndSource?.AddHook(WndProc);
-        RegisterHotKey(helper.Handle, HotkeyId, ModNone, VkF8);
+        RegisterHotKey(helper.Handle, StartHotkeyId, ModNone, VkF8);
+        RegisterHotKey(helper.Handle, CancelHotkeyId, ModNone, VkF9);
     }
 
     private void OnClosed(object? sender, EventArgs e)
     {
         var helper = new WindowInteropHelper(this);
-        UnregisterHotKey(helper.Handle, HotkeyId);
+        UnregisterHotKey(helper.Handle, StartHotkeyId);
+        UnregisterHotKey(helper.Handle, CancelHotkeyId);
         _hwndSource?.RemoveHook(WndProc);
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
+        if (msg == WmHotkey)
         {
-            _ = _viewModel.HandleHotkeyAsync();
-            handled = true;
+            var id = wParam.ToInt32();
+            if (id == StartHotkeyId)
+            {
+                _ = _viewModel.HandleHotkeyAsync();
+                handled = true;
+            }
+            else if (id == CancelHotkeyId)
+            {
+                _viewModel.CancelAutomation();
+                handled = true;
+            }
         }
 
         return IntPtr.Zero;
