@@ -4,13 +4,22 @@ using OpenCvSharp;
 
 const int ScaleFactor = 3;
 
+var captchaType = args.Length > 0 ? args[0].ToLowerInvariant() : "new";
+if (captchaType is not ("new" or "old"))
+{
+    Console.Error.WriteLine("Usage: CaptchaBenchmark [new|old]");
+    return 1;
+}
+
 var projectDir = AppDomain.CurrentDomain.BaseDirectory;
 var repoRoot = Path.GetFullPath(Path.Combine(projectDir, "..", "..", "..", "..", ".."));
-var samplesDir = Path.Combine(repoRoot, "captcha-samples", "new");
+var samplesDir = Path.Combine(repoRoot, "captcha-samples", captchaType);
 var resultsCsvPath = Path.Combine(samplesDir, "benchmark_results.csv");
 var compareCsvPath = Path.Combine(samplesDir, "benchmark_results_compare.csv");
 var groundTruthCsvPath = Path.Combine(samplesDir, "ground_truth.csv");
 var tessDataPath = Path.Combine(projectDir, "tessdata");
+
+Console.WriteLine($"CAPTCHA type: {captchaType.ToUpperInvariant()}");
 
 if (!Directory.Exists(samplesDir))
 {
