@@ -7,3 +7,5 @@ artifacts/
 playwright.ps1
 playwright.cmd
 playwright.sh
+*.onnx
+nul

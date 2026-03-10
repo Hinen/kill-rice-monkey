@@ -1,3 +1,4 @@
+using DdddOcrSharp;
 using Microsoft.Playwright;
 using Microsoft.Extensions.Logging;
 using OpenCvSharp;
@@ -85,7 +86,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private readonly ResiliencePipeline _pipeline;
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
     private static readonly HttpClient NolHttpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
-    private static readonly HttpClient VisionApiClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly HttpClient VisionApiClient = new() { Timeout = TimeSpan.FromSeconds(4) };
+    private static Action<Exception, string>? _captchaWarningLogger;
     private static OcrEngine? _nolOcrEngine;
     private IPlaywright? _playwright;
     private IBrowser? _preparedNolConnectedBrowser;
@@ -95,6 +97,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     public PlaywrightTicketingAutomationService(ILogger<PlaywrightTicketingAutomationService> logger)
     {
         _logger = logger;
+        _captchaWarningLogger = (ex, message) => logger.LogWarning(ex, message);
         _pipeline = new ResiliencePipelineBuilder()
             .AddRetry(new Polly.Retry.RetryStrategyOptions
             {
@@ -993,6 +996,15 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return visionResult;
         }
 
+        var ddddocrResult = RunDdddOcrOnBytes(screenshotBytes);
+        var ddddocrFiltered = FilterCaptchaText(ddddocrResult);
+        _logger.LogInformation("CAPTCHA OCR ddddocr: raw={Raw}, filtered={Filtered}", ddddocrResult, ddddocrFiltered);
+        if (Regex.IsMatch(ddddocrFiltered, "^[A-Z0-9]{6}$"))
+        {
+            _logger.LogInformation("CAPTCHA solved via ddddocr: {Text}", ddddocrFiltered);
+            return ddddocrFiltered;
+        }
+
         _logger.LogInformation("Vision API unavailable or failed, falling back to local OCR");
 
         using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
@@ -1087,6 +1099,20 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return best;
     }
 
+    private static string RunDdddOcrOnBytes(byte[] imageBytes)
+    {
+        try
+        {
+            using var ocr = new DDDDOCR(DdddOcrMode.ClassifyBeta);
+            return ocr.Classify(imageBytes) ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _captchaWarningLogger?.Invoke(ex, "Failed to initialize or run ddddocr for CAPTCHA");
+            return string.Empty;
+        }
+    }
+
     private async Task<string> RecognizeCaptchaWithVisionApiAsync(byte[] imageBytes, CancellationToken ct)
     {
         var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
@@ -1101,7 +1127,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             try
             {
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+                timeoutCts.CancelAfter(TimeSpan.FromSeconds(4));
 
                 var requestBody = new
                 {
@@ -1316,14 +1342,14 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             {
                 _logger.LogWarning("CAPTCHA text length {Len} out of range [{Min},{Max}], retrying",
                     text.Length, minLength, maxLength);
-                await Task.Delay(500, cancellationToken);
+                await Task.Delay(100, cancellationToken);
                 continue;
             }
 
             try
             {
                 await inputLocator.First.FillAsync(string.Empty, new LocatorFillOptions { Timeout = 3000 });
-                await inputLocator.First.PressSequentiallyAsync(text, new LocatorPressSequentiallyOptions { Delay = 30 });
+                await inputLocator.First.PressSequentiallyAsync(text, new LocatorPressSequentiallyOptions { Delay = 10 });
             }
             catch (TimeoutException)
             {
@@ -1357,7 +1383,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             if (string.IsNullOrEmpty(filledValue))
             {
                 _logger.LogWarning("CAPTCHA fill verification failed: input is empty after fill, retrying");
-                await Task.Delay(300, cancellationToken);
+                await Task.Delay(100, cancellationToken);
                 continue;
             }
 
@@ -1441,7 +1467,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     try { return await inputLocator.CountAsync() == 0; }
                     catch (PlaywrightException) { return false; }
                 },
-                TimeSpan.FromSeconds(8),
+                TimeSpan.FromSeconds(3),
                 cancellationToken);
 
             if (submitted)

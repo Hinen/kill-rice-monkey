@@ -6,6 +6,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="DdddOcrSharp" Version="0.24.11" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
     <PackageReference Include="Microsoft.Playwright" Version="1.52.0" />
@@ -39,6 +40,14 @@
     <None Include="tessdata\eng.traineddata">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>tessdata\eng.traineddata</Link>
+    </None>
+    <None Include="onnxs\common.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>onnxs\common.onnx</Link>
+    </None>
+    <None Include="onnxs\common_old.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>onnxs\common_old.onnx</Link>
     </None>
   </ItemGroup>
 
