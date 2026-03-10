@@ -8,6 +8,7 @@ var projectDir = AppDomain.CurrentDomain.BaseDirectory;
 var repoRoot = Path.GetFullPath(Path.Combine(projectDir, "..", "..", "..", "..", ".."));
 var samplesDir = Path.Combine(repoRoot, "captcha-samples", "new");
 var resultsCsvPath = Path.Combine(samplesDir, "benchmark_results.csv");
+var compareCsvPath = Path.Combine(samplesDir, "benchmark_results_compare.csv");
 var groundTruthCsvPath = Path.Combine(samplesDir, "ground_truth.csv");
 var tessDataPath = Path.Combine(projectDir, "tessdata");
 
@@ -61,68 +62,93 @@ Console.WriteLine();
 
 using var httpClient = useVisionApi ? new HttpClient { Timeout = TimeSpan.FromSeconds(15) } : null;
 
-var results = new List<(string filename, string visionLabel, string ocrResult, bool match)>();
-var csvLines = new List<string> { "filename,vision_label,kmeans_tesseract_result,match" };
+var results = new List<(string filename, string gt, string kmeans, string hsvAuto, string hsvOtsu, string hsvSatVal)>();
+var csvLines = new List<string> { "filename,ground_truth,kmeans_result,hsv_auto_result,hsv_otsu_result,hsv_satval_result" };
 
 foreach (var (filePath, idx) in files.Select((f, i) => (f, i)))
 {
     var filename = Path.GetFileName(filePath);
     Console.Write($"[{idx + 1}/{files.Count}] {filename} ... ");
 
-    string visionLabel;
+    string gt;
     if (useVisionApi)
     {
-        visionLabel = await CallVisionApiAsync(httpClient!, apiKey!, filePath);
+        gt = await CallVisionApiAsync(httpClient!, apiKey!, filePath);
         await Task.Delay(500);
     }
     else
     {
-        groundTruth.TryGetValue(filename, out var gt);
-        visionLabel = gt ?? string.Empty;
+        groundTruth.TryGetValue(filename, out var label);
+        gt = label ?? string.Empty;
     }
 
-    var ocrResult = RunKMeansTesseractOcr(filePath, tessDataPath);
+    var kmeans = RunOcrWithMask(filePath, tessDataPath, PrepareKMeansCaptchaMask);
+    var hsvAuto = RunOcrWithMask(filePath, tessDataPath, PrepareHsvCaptchaMask);
+    var hsvOtsu = RunOcrWithMask(filePath, tessDataPath, PrepareHsvOtsuCaptchaMask);
+    var hsvSatVal = RunOcrWithMask(filePath, tessDataPath, PrepareHsvSatValueCaptchaMask);
 
-    var match = !string.IsNullOrEmpty(visionLabel) && !string.IsNullOrEmpty(ocrResult)
-        && string.Equals(visionLabel, ocrResult, StringComparison.OrdinalIgnoreCase);
-    results.Add((filename, visionLabel, ocrResult, match));
-    csvLines.Add($"{filename},{visionLabel},{ocrResult},{match}");
+    results.Add((filename, gt, kmeans, hsvAuto, hsvOtsu, hsvSatVal));
+    csvLines.Add($"{filename},{gt},{kmeans},{hsvAuto},{hsvOtsu},{hsvSatVal}");
 
-    Console.WriteLine($"Vision={visionLabel,-8} OCR={ocrResult,-8} {(match ? "OK" : "MISS")}");
+    var km = MatchTag(gt, kmeans);
+    var ha = MatchTag(gt, hsvAuto);
+    var ho = MatchTag(gt, hsvOtsu);
+    var hs = MatchTag(gt, hsvSatVal);
+    Console.WriteLine($"GT={gt,-8} KM={kmeans,-8}{km}  HA={hsvAuto,-8}{ha}  HO={hsvOtsu,-8}{ho}  HS={hsvSatVal,-8}{hs}");
 }
 
-await File.WriteAllLinesAsync(resultsCsvPath, csvLines);
-Console.WriteLine($"\nResults saved to: {resultsCsvPath}");
+await File.WriteAllLinesAsync(compareCsvPath, csvLines);
+Console.WriteLine($"\nResults saved to: {compareCsvPath}");
 
-var total = results.Count;
-var correct = results.Count(r => r.match);
-var visionEmpty = results.Count(r => string.IsNullOrEmpty(r.visionLabel));
-var ocrEmpty = results.Count(r => string.IsNullOrEmpty(r.ocrResult));
-var withBothLabels = results.Count(r => !string.IsNullOrEmpty(r.visionLabel) && !string.IsNullOrEmpty(r.ocrResult));
-var accuracy = withBothLabels > 0 ? (double)correct / withBothLabels * 100 : 0;
+PrintSummary("K-means", results.Select(r => (r.gt, r.kmeans)).ToList());
+PrintSummary("HSV Auto-Threshold", results.Select(r => (r.gt, r.hsvAuto)).ToList());
+PrintSummary("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
+PrintSummary("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
 
 Console.WriteLine();
-Console.WriteLine("=== BENCHMARK SUMMARY ===");
-Console.WriteLine($"Total images:        {total}");
-Console.WriteLine($"Vision API empty:    {visionEmpty}");
-Console.WriteLine($"OCR empty:           {ocrEmpty}");
-Console.WriteLine($"Both have labels:    {withBothLabels}");
-Console.WriteLine($"Exact matches:       {correct}");
-Console.WriteLine($"Accuracy:            {accuracy:F1}%");
-Console.WriteLine("=========================");
+Console.WriteLine("=== ACCURACY COMPARISON ===");
+Console.WriteLine($"{"Method",-22} {"Correct",8} {"Total",6} {"Accuracy",10}");
+Console.WriteLine(new string('-', 48));
+PrintAccuracyLine("K-means", results.Select(r => (r.gt, r.kmeans)).ToList());
+PrintAccuracyLine("HSV Auto-Threshold", results.Select(r => (r.gt, r.hsvAuto)).ToList());
+PrintAccuracyLine("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
+PrintAccuracyLine("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
+Console.WriteLine(new string('=', 48));
 
 return 0;
 
-// --- Functions ---
+// --- Helper functions ---
 
-static string RunKMeansTesseractOcr(string imagePath, string tessDataPath)
+static string MatchTag(string gt, string result)
+    => !string.IsNullOrEmpty(gt) && string.Equals(gt, result, StringComparison.OrdinalIgnoreCase) ? "OK" : "  ";
+
+static void PrintAccuracyLine(string name, List<(string gt, string result)> pairs)
+{
+    var withBoth = pairs.Count(p => !string.IsNullOrEmpty(p.gt) && !string.IsNullOrEmpty(p.result));
+    var correct = pairs.Count(p => !string.IsNullOrEmpty(p.gt) && string.Equals(p.gt, p.result, StringComparison.OrdinalIgnoreCase));
+    var total = pairs.Count(p => !string.IsNullOrEmpty(p.gt));
+    var accuracy = total > 0 ? (double)correct / total * 100 : 0;
+    Console.WriteLine($"{name,-22} {correct,8} {total,6} {accuracy,9:F1}%");
+}
+
+static void PrintSummary(string name, List<(string gt, string result)> pairs)
+{
+    var total = pairs.Count(p => !string.IsNullOrEmpty(p.gt));
+    var correct = pairs.Count(p => !string.IsNullOrEmpty(p.gt) && string.Equals(p.gt, p.result, StringComparison.OrdinalIgnoreCase));
+    var empty = pairs.Count(p => string.IsNullOrEmpty(p.result));
+    var accuracy = total > 0 ? (double)correct / total * 100 : 0;
+    Console.WriteLine($"\n--- {name} ---");
+    Console.WriteLine($"  Correct: {correct}/{total}  Accuracy: {accuracy:F1}%  Empty: {empty}");
+}
+
+static string RunOcrWithMask(string imagePath, string tessDataPath, Func<Mat, Mat> prepareMask)
 {
     try
     {
         using var source = Cv2.ImRead(imagePath, ImreadModes.Color);
         if (source.Empty()) return string.Empty;
 
-        using var mask = PrepareKMeansCaptchaMask(source);
+        using var mask = prepareMask(source);
         var (text, _) = RunCaptchaOcrOnMat(mask, tessDataPath);
         return FilterCaptchaText(text);
     }
@@ -187,6 +213,125 @@ static Mat PrepareKMeansCaptchaMask(Mat source)
     centers.Dispose();
     resized.Dispose();
 
+    ApplyConnectedComponentsFilter(mask, 300, 20000);
+
+    return mask;
+}
+
+static Mat PrepareHsvCaptchaMask(Mat source)
+{
+    using var resized = new Mat();
+    Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * ScaleFactor, source.Height * ScaleFactor),
+        interpolation: InterpolationFlags.Lanczos4);
+
+    using var hsv = new Mat();
+    Cv2.CvtColor(resized, hsv, ColorConversionCodes.BGR2HSV);
+
+    var channels = Cv2.Split(hsv);
+    using var hChannel = channels[0];
+    using var sChannel = channels[1];
+    var vChannel = channels[2];
+
+    int[] thresholds = [150, 160, 170, 180, 190, 200];
+    var bestThreshold = 180;
+    var bestDiff = int.MaxValue;
+
+    foreach (var thresh in thresholds)
+    {
+        using var testMask = new Mat();
+        Cv2.Threshold(vChannel, testMask, thresh, 255, ThresholdTypes.Binary);
+
+        using var ccLabels = new Mat();
+        using var ccStats = new Mat();
+        using var ccCentroids = new Mat();
+        var numLabels = Cv2.ConnectedComponentsWithStats(testMask, ccLabels, ccStats, ccCentroids);
+
+        var validComponents = 0;
+        for (var i = 1; i < numLabels; i++)
+        {
+            var area = ccStats.At<int>(i, 4);
+            if (area >= 300 && area <= 20000)
+                validComponents++;
+        }
+
+        var diff = Math.Abs(validComponents - 6);
+        if (diff < bestDiff)
+        {
+            bestDiff = diff;
+            bestThreshold = thresh;
+        }
+    }
+
+    var mask = new Mat();
+    Cv2.Threshold(vChannel, mask, bestThreshold, 255, ThresholdTypes.Binary);
+    vChannel.Dispose();
+
+    ApplyConnectedComponentsFilter(mask, 300, 20000);
+
+    using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+    Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
+
+    return mask;
+}
+
+static Mat PrepareHsvOtsuCaptchaMask(Mat source)
+{
+    using var resized = new Mat();
+    Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * ScaleFactor, source.Height * ScaleFactor),
+        interpolation: InterpolationFlags.Lanczos4);
+
+    using var hsv = new Mat();
+    Cv2.CvtColor(resized, hsv, ColorConversionCodes.BGR2HSV);
+
+    var channels = Cv2.Split(hsv);
+    using var hChannel = channels[0];
+    using var sChannel = channels[1];
+    using var vChannel = channels[2];
+
+    var mask = new Mat();
+    Cv2.Threshold(vChannel, mask, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+
+    ApplyConnectedComponentsFilter(mask, 300, 20000);
+
+    using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+    Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
+
+    return mask;
+}
+
+static Mat PrepareHsvSatValueCaptchaMask(Mat source)
+{
+    using var resized = new Mat();
+    Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * ScaleFactor, source.Height * ScaleFactor),
+        interpolation: InterpolationFlags.Lanczos4);
+
+    using var hsv = new Mat();
+    Cv2.CvtColor(resized, hsv, ColorConversionCodes.BGR2HSV);
+
+    var channels = Cv2.Split(hsv);
+    using var hChannel = channels[0];
+    using var sChannel = channels[1];
+    using var vChannel = channels[2];
+
+    using var sMask = new Mat();
+    Cv2.Threshold(sChannel, sMask, 50, 255, ThresholdTypes.Binary);
+
+    using var vMask = new Mat();
+    Cv2.Threshold(vChannel, vMask, 160, 255, ThresholdTypes.Binary);
+
+    var mask = new Mat();
+    Cv2.BitwiseAnd(sMask, vMask, mask);
+
+    ApplyConnectedComponentsFilter(mask, 300, 20000);
+
+    using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+    Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
+
+    return mask;
+}
+
+static void ApplyConnectedComponentsFilter(Mat mask, int minArea, int maxArea)
+{
     using var ccLabels = new Mat();
     using var ccStats = new Mat();
     using var ccCentroids = new Mat();
@@ -195,7 +340,7 @@ static Mat PrepareKMeansCaptchaMask(Mat source)
     for (var i = 1; i < numLabels; i++)
     {
         var area = ccStats.At<int>(i, 4);
-        if (area >= 300 && area <= 20000)
+        if (area >= minArea && area <= maxArea)
             continue;
         var left = ccStats.At<int>(i, 0);
         var top = ccStats.At<int>(i, 1);
@@ -203,8 +348,6 @@ static Mat PrepareKMeansCaptchaMask(Mat source)
         var h = ccStats.At<int>(i, 3);
         Cv2.Rectangle(mask, new OpenCvSharp.Rect(left, top, w, h), Scalar.Black, -1);
     }
-
-    return mask;
 }
 
 static (string text, float confidence) RunCaptchaOcrOnMat(Mat source, string tessDataPath)
