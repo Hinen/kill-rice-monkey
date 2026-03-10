@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DdddOcrSharp;
 using OpenCvSharp;
 
 const int ScaleFactor = 3;
@@ -71,8 +72,10 @@ Console.WriteLine();
 
 using var httpClient = useVisionApi ? new HttpClient { Timeout = TimeSpan.FromSeconds(15) } : null;
 
-var results = new List<(string filename, string gt, string kmeans, string hsvAuto, string hsvOtsu, string hsvSatVal)>();
-var csvLines = new List<string> { "filename,ground_truth,kmeans_result,hsv_auto_result,hsv_otsu_result,hsv_satval_result" };
+using var ddddOcr = new DDDDOCR(DdddOcrMode.ClassifyBeta);
+
+var results = new List<(string filename, string gt, string kmeans, string hsvAuto, string hsvOtsu, string hsvSatVal, string ddddocr)>();
+var csvLines = new List<string> { "filename,ground_truth,kmeans_result,hsv_auto_result,hsv_otsu_result,hsv_satval_result,ddddocr_result" };
 
 foreach (var (filePath, idx) in files.Select((f, i) => (f, i)))
 {
@@ -95,15 +98,17 @@ foreach (var (filePath, idx) in files.Select((f, i) => (f, i)))
     var hsvAuto = RunOcrWithMask(filePath, tessDataPath, PrepareHsvCaptchaMask);
     var hsvOtsu = RunOcrWithMask(filePath, tessDataPath, PrepareHsvOtsuCaptchaMask);
     var hsvSatVal = RunOcrWithMask(filePath, tessDataPath, PrepareHsvSatValueCaptchaMask);
+    var ddddocrResult = RunDdddOcr(filePath, ddddOcr);
 
-    results.Add((filename, gt, kmeans, hsvAuto, hsvOtsu, hsvSatVal));
-    csvLines.Add($"{filename},{gt},{kmeans},{hsvAuto},{hsvOtsu},{hsvSatVal}");
+    results.Add((filename, gt, kmeans, hsvAuto, hsvOtsu, hsvSatVal, ddddocrResult));
+    csvLines.Add($"{filename},{gt},{kmeans},{hsvAuto},{hsvOtsu},{hsvSatVal},{ddddocrResult}");
 
     var km = MatchTag(gt, kmeans);
     var ha = MatchTag(gt, hsvAuto);
     var ho = MatchTag(gt, hsvOtsu);
     var hs = MatchTag(gt, hsvSatVal);
-    Console.WriteLine($"GT={gt,-8} KM={kmeans,-8}{km}  HA={hsvAuto,-8}{ha}  HO={hsvOtsu,-8}{ho}  HS={hsvSatVal,-8}{hs}");
+    var dd = MatchTag(gt, ddddocrResult);
+    Console.WriteLine($"GT={gt,-8} KM={kmeans,-8}{km}  HA={hsvAuto,-8}{ha}  HO={hsvOtsu,-8}{ho}  HS={hsvSatVal,-8}{hs}  DD={ddddocrResult,-8}{dd}");
 }
 
 await File.WriteAllLinesAsync(compareCsvPath, csvLines);
@@ -113,6 +118,7 @@ PrintSummary("K-means", results.Select(r => (r.gt, r.kmeans)).ToList());
 PrintSummary("HSV Auto-Threshold", results.Select(r => (r.gt, r.hsvAuto)).ToList());
 PrintSummary("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
 PrintSummary("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
+PrintSummary("ddddocr", results.Select(r => (r.gt, r.ddddocr)).ToList());
 
 Console.WriteLine();
 Console.WriteLine("=== ACCURACY COMPARISON ===");
@@ -122,10 +128,11 @@ PrintAccuracyLine("K-means", results.Select(r => (r.gt, r.kmeans)).ToList());
 PrintAccuracyLine("HSV Auto-Threshold", results.Select(r => (r.gt, r.hsvAuto)).ToList());
 PrintAccuracyLine("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
 PrintAccuracyLine("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
+PrintAccuracyLine("ddddocr", results.Select(r => (r.gt, r.ddddocr)).ToList());
 
 var ensembleResults = results.Select(r =>
 {
-    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal };
+    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr };
     var valid = candidates.Where(c => Regex.IsMatch(c, "^[A-Z0-9]{6}$")).ToList();
     if (valid.Count == 0) return (r.gt, result: string.Empty);
     var winner = valid.GroupBy(c => c).OrderByDescending(g => g.Count()).First().Key;
@@ -135,7 +142,7 @@ PrintAccuracyLine("** ENSEMBLE **", ensembleResults);
 
 var anyCorrectResults = results.Select(r =>
 {
-    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal };
+    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr };
     var anyCorrect = candidates.Any(c => string.Equals(c, r.gt, StringComparison.OrdinalIgnoreCase));
     return (r.gt, result: anyCorrect ? r.gt : string.Empty);
 }).ToList();
@@ -411,6 +418,21 @@ static (string text, float confidence) RunCaptchaOcrOnMat(Mat source, string tes
     }
 
     return best;
+}
+
+static string RunDdddOcr(string imagePath, DDDDOCR ocr)
+{
+    try
+    {
+        var imageBytes = File.ReadAllBytes(imagePath);
+        var raw = ocr.Classify(imageBytes);
+        return FilterCaptchaText(raw);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  ddddocr error: {ex.Message}");
+        return string.Empty;
+    }
 }
 
 static string FilterCaptchaText(string raw)
