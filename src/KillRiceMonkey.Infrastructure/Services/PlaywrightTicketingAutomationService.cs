@@ -914,9 +914,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return fallback;
         }
 
+        const int expectedCaptchaLength = 6;
         var selected = candidates
             .GroupBy(c => c.text)
             .OrderByDescending(g => g.Count())
+            .ThenBy(g => Math.Abs(g.Key.Length - expectedCaptchaLength))
             .ThenByDescending(g => g.Max(c => c.confidence))
             .First();
 
@@ -1117,17 +1119,32 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 }", text);
             }
 
-            var submitLocator = captchaFrame is not null
-                ? captchaFrame.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First
-                : page.Locator("button:has-text('입력완료'), a:has-text('입력완료')").First;
-            try
+            const string submitSelector = "button:has-text('입력완료'), a:has-text('입력완료'), button:has-text('확인')";
+            var submitBase = captchaFrame is not null
+                ? captchaFrame.Locator(submitSelector)
+                : page.Locator(submitSelector);
+            var submitCount = 0;
+            try { submitCount = await submitBase.CountAsync(); } catch (PlaywrightException) { }
+            _logger.LogInformation("CAPTCHA submit search: count={Count}, inFrame={InFrame}", submitCount, captchaFrame is not null);
+
+            if (submitCount > 0)
             {
-                await submitLocator.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+                try
+                {
+                    await submitBase.First.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+                }
+                catch (TimeoutException)
+                {
+                    _logger.LogWarning("CAPTCHA submit click timed out, using JS fallback");
+                    try { await submitBase.First.EvaluateAsync("el => el.click()"); }
+                    catch (PlaywrightException) { await inputLocator.First.PressAsync("Enter"); }
+                }
             }
-            catch (TimeoutException)
+            else
             {
-                _logger.LogWarning("CAPTCHA submit click timed out, using JS fallback");
-                await submitLocator.EvaluateAsync("el => el.click()");
+                _logger.LogWarning("CAPTCHA submit button not found, pressing Enter");
+                try { await inputLocator.First.PressAsync("Enter"); }
+                catch (PlaywrightException) { await inputLocator.First.EvaluateAsync("el => el.form?.submit() || el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))"); }
             }
 
             var submitted = await TryWaitForConditionAsync(
