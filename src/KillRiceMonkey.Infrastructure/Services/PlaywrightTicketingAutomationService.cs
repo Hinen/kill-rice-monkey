@@ -774,6 +774,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
         Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
 
+        ApplyConnectedComponentsFilter(mask, 300, 20000);
+
+        return mask;
+    }
+
+    private static void ApplyConnectedComponentsFilter(Mat mask, int minArea, int maxArea)
+    {
         using var ccLabels = new Mat();
         using var ccStats = new Mat();
         using var ccCentroids = new Mat();
@@ -782,96 +789,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         for (var i = 1; i < numLabels; i++)
         {
             var area = ccStats.At<int>(i, 4);
-            if (area >= 300 && area <= 20000)
+            if (area >= minArea && area <= maxArea)
                 continue;
             var left = ccStats.At<int>(i, 0);
             var top = ccStats.At<int>(i, 1);
             var w = ccStats.At<int>(i, 2);
             var h = ccStats.At<int>(i, 3);
             Cv2.Rectangle(mask, new OpenCvSharp.Rect(left, top, w, h), Scalar.Black, -1);
-        }
-
-        return mask;
-    }
-
-    [Obsolete("Use PrepareHsvCaptchaMask instead")]
-    private static List<Mat> PrepareNolCaptchaOcrVariantsLegacy(Mat source)
-    {
-        var variants = new List<Mat>();
-
-        using var gray = ToGray(source);
-
-        {
-            var resized = new Mat();
-            Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor),
-                interpolation: InterpolationFlags.Lanczos4);
-            var inverted = new Mat();
-            Cv2.BitwiseNot(resized, inverted);
-            resized.Dispose();
-            var binary = new Mat();
-            Cv2.Threshold(inverted, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
-            inverted.Dispose();
-            RemoveSmallComponents(binary, minArea: 30);
-            using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
-            Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel);
-            variants.Add(binary);
-        }
-
-        {
-            var resized = new Mat();
-            Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor),
-                interpolation: InterpolationFlags.Lanczos4);
-            var blurred = new Mat();
-            Cv2.MedianBlur(resized, blurred, 3);
-            resized.Dispose();
-            var inverted = new Mat();
-            Cv2.BitwiseNot(blurred, inverted);
-            blurred.Dispose();
-            var binary = new Mat();
-            Cv2.Threshold(inverted, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
-            inverted.Dispose();
-            RemoveSmallComponents(binary, minArea: 50);
-            variants.Add(binary);
-        }
-
-        {
-            using var hsv = new Mat();
-            Cv2.CvtColor(source, hsv, ColorConversionCodes.BGR2HSV);
-            var channels = Cv2.Split(hsv);
-            var vChannel = channels[2];
-            channels[0].Dispose();
-            channels[1].Dispose();
-            var resized = new Mat();
-            Cv2.Resize(vChannel, resized, new OpenCvSharp.Size(vChannel.Width * NolOcrScaleFactor, vChannel.Height * NolOcrScaleFactor),
-                interpolation: InterpolationFlags.Lanczos4);
-            vChannel.Dispose();
-            var binary = new Mat();
-            Cv2.Threshold(resized, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
-            resized.Dispose();
-            RemoveSmallComponents(binary, minArea: 40);
-            variants.Add(binary);
-        }
-
-        return variants;
-    }
-
-    private static void RemoveSmallComponents(Mat binary, int minArea)
-    {
-        using var labels = new Mat();
-        using var stats = new Mat();
-        using var centroids = new Mat();
-        var numLabels = Cv2.ConnectedComponentsWithStats(binary, labels, stats, centroids);
-
-        for (var i = 1; i < numLabels; i++)
-        {
-            var area = stats.At<int>(i, 4);
-            if (area >= minArea)
-                continue;
-            var left = stats.At<int>(i, 0);
-            var top = stats.At<int>(i, 1);
-            var w = stats.At<int>(i, 2);
-            var h = stats.At<int>(i, 3);
-            Cv2.Rectangle(binary, new OpenCvSharp.Rect(left, top, w, h), Scalar.Black, -1);
         }
     }
 
