@@ -1349,9 +1349,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (text.Length < minLength || text.Length > maxLength)
             {
-                _logger.LogWarning("CAPTCHA text length {Len} out of range [{Min},{Max}], retrying",
+                _logger.LogWarning("CAPTCHA text length {Len} out of range [{Min},{Max}], 새로고침 후 재시도",
                     text.Length, minLength, maxLength);
-                await Task.Delay(100, cancellationToken);
+                if (attempt < maxAttempts)
+                    await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                await Task.Delay(200, cancellationToken);
                 continue;
             }
 
@@ -1484,9 +1486,74 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 _logger.LogInformation("CAPTCHA solved on attempt {Attempt}", attempt);
                 return;
             }
+
+            _logger.LogWarning("CAPTCHA 인식 실패 (attempt {Attempt}/{Max}), 새로고침 시도", attempt, maxAttempts);
+            if (attempt < maxAttempts)
+            {
+                await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                await Task.Delay(200, cancellationToken);
+            }
         }
 
         throw new InvalidOperationException($"CAPTCHA 자동 인식 실패 ({maxAttempts}회 시도).");
+    }
+
+    private async Task TryRefreshCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
+    {
+        const string refreshSelector =
+            "img[src*='reload' i], img[src*='refresh' i], img[src*='btn_re' i], img[alt*='새로' i], img[alt*='변경' i], img[alt*='refresh' i], " +
+            "button:has-text('변경'), button:has-text('새로고침'), a:has-text('변경'), a:has-text('새로고침'), " +
+            "button[onclick*='captcha' i], a[onclick*='captcha' i], " +
+            "[class*='refresh' i], [class*='reload' i], [class*='btn_re' i]";
+
+        ILocator FrameOrPage(string selector) =>
+            captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
+
+        try
+        {
+            var refreshLocator = FrameOrPage(refreshSelector);
+            var count = await refreshLocator.CountAsync();
+            if (count > 0)
+            {
+                await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 2000, Force = true });
+                _logger.LogInformation("CAPTCHA 새로고침 버튼 클릭 완료");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "CAPTCHA 새로고침 버튼 클릭 실패, JS fallback 시도");
+        }
+
+        try
+        {
+            var jsResult = await (captchaFrame is not null
+                ? captchaFrame.EvaluateAsync<bool>(@"() => {
+                    if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
+                    if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
+                    if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
+                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+                    for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); return true; }
+                    return false;
+                }")
+                : page.EvaluateAsync<bool>(@"() => {
+                    if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
+                    if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
+                    if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
+                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+                    for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); return true; }
+                    return false;
+                }"));
+
+            if (jsResult)
+                _logger.LogInformation("CAPTCHA 새로고침 JS fallback 성공");
+            else
+                _logger.LogWarning("CAPTCHA 새로고침 방법을 찾지 못함");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "CAPTCHA 새로고침 JS fallback 실패");
+        }
     }
 
     private static async Task<(ILocator? inputLocator, IFrame? frame)> FindCaptchaInputAsync(
