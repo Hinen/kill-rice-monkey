@@ -754,60 +754,25 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return binary;
     }
 
-    private static Mat PrepareKMeansCaptchaMask(Mat source)
+    private static Mat PrepareHsvCaptchaMask(Mat source)
     {
         var resized = new Mat();
         Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * NolOcrScaleFactor, source.Height * NolOcrScaleFactor),
             interpolation: InterpolationFlags.Lanczos4);
 
-        var samples = new Mat();
-        resized.ConvertTo(samples, MatType.CV_32FC3);
-        samples = samples.Reshape(1, resized.Rows * resized.Cols);
+        using var hsv = new Mat();
+        Cv2.CvtColor(resized, hsv, ColorConversionCodes.BGR2HSV);
+        var channels = Cv2.Split(hsv);
+        using var vChannel = channels[2];
+        channels[0].Dispose();
+        channels[1].Dispose();
 
-        const int k = 3;
-        var labels = new Mat();
-        var centers = new Mat();
-        Cv2.Kmeans(samples, k, labels,
-            new TermCriteria(CriteriaTypes.Eps | CriteriaTypes.MaxIter, 100, 0.2),
-            5, KMeansFlags.PpCenters, centers);
-        samples.Dispose();
-
-        var clusterAreas = new int[k];
-        var labelData = new int[resized.Rows * resized.Cols];
-        labels.GetArray(out labelData);
-        foreach (var l in labelData)
-            clusterAreas[l]++;
-
-        var centerBrightness = new double[k];
-        for (var i = 0; i < k; i++)
-        {
-            var b = centers.At<float>(i, 0);
-            var g = centers.At<float>(i, 1);
-            var r = centers.At<float>(i, 2);
-            centerBrightness[i] = Math.Sqrt(r * r + g * g + b * b);
-        }
-
-        var brightestCluster = Enumerable.Range(0, k).OrderByDescending(i => centerBrightness[i]).First();
-
-        var sortedByArea = Enumerable.Range(0, k).OrderByDescending(i => clusterAreas[i]).ToArray();
-        var secondLargestCluster = sortedByArea.Length > 1 ? sortedByArea[1] : sortedByArea[0];
-
-        var textCluster = brightestCluster == secondLargestCluster
-            ? brightestCluster
-            : (centerBrightness[brightestCluster] > centerBrightness[secondLargestCluster] * 1.3
-                ? brightestCluster
-                : secondLargestCluster);
-
-        var mask = new Mat(resized.Rows, resized.Cols, MatType.CV_8UC1, Scalar.Black);
-        for (var i = 0; i < labelData.Length; i++)
-        {
-            if (labelData[i] == textCluster)
-                mask.Set(i / resized.Cols, i % resized.Cols, (byte)255);
-        }
-
-        labels.Dispose();
-        centers.Dispose();
+        var mask = new Mat();
+        Cv2.Threshold(vChannel, mask, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
         resized.Dispose();
+
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+        Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
 
         using var ccLabels = new Mat();
         using var ccStats = new Mat();
@@ -829,7 +794,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return mask;
     }
 
-    [Obsolete("Use PrepareKMeansCaptchaMask instead")]
+    [Obsolete("Use PrepareHsvCaptchaMask instead")]
     private static List<Mat> PrepareNolCaptchaOcrVariantsLegacy(Mat source)
     {
         var variants = new List<Mat>();
@@ -953,19 +918,28 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         SaveCaptchaDebugImage(screenshotBytes, "captcha-raw");
 
+        var visionResult = await RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
+        if (!string.IsNullOrEmpty(visionResult))
+        {
+            _logger.LogInformation("CAPTCHA solved via Vision API: {Text}", visionResult);
+            return visionResult;
+        }
+
+        _logger.LogInformation("Vision API unavailable or failed, falling back to local OCR");
+
         using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
         if (source.Empty())
             return string.Empty;
 
-        using var kmeansMask = PrepareKMeansCaptchaMask(source);
-        SaveCaptchaDebugImage(kmeansMask, "captcha-kmeans");
-        var (kmeansText, kmeansConf) = RunCaptchaOcrOnMat(kmeansMask);
-        var kmeansFiltered = FilterCaptchaText(kmeansText);
-        _logger.LogInformation("CAPTCHA OCR kmeans: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
-            kmeansText, kmeansFiltered, kmeansConf);
+        using var hsvMask = PrepareHsvCaptchaMask(source);
+        SaveCaptchaDebugImage(hsvMask, "captcha-hsv");
+        var (hsvText, hsvConf) = RunCaptchaOcrOnMat(hsvMask);
+        var hsvFiltered = FilterCaptchaText(hsvText);
+        _logger.LogInformation("CAPTCHA OCR hsv: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
+            hsvText, hsvFiltered, hsvConf);
 
-        if (Regex.IsMatch(kmeansFiltered, "^[A-Z0-9]{6}$") && kmeansConf >= 0.3f)
-            return kmeansFiltered;
+        if (Regex.IsMatch(hsvFiltered, "^[A-Z0-9]{6}$") && hsvConf >= 0.3f)
+            return hsvFiltered;
 
         var (rawText, rawConf) = RunCaptchaOcrOnMat(source);
         var rawFiltered = FilterCaptchaText(rawText);
@@ -975,15 +949,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (Regex.IsMatch(rawFiltered, "^[A-Z0-9]{6}$") && rawConf >= 0.3f)
             return rawFiltered;
 
-        var bestTesseract = kmeansConf >= rawConf ? kmeansFiltered : rawFiltered;
-
-        var visionResult = await RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
-        if (!string.IsNullOrEmpty(visionResult))
-        {
-            _logger.LogInformation("CAPTCHA Vision API fallback used: {Text}", visionResult);
-            return visionResult;
-        }
-
+        var bestTesseract = hsvConf >= rawConf ? hsvFiltered : rawFiltered;
         _logger.LogWarning("CAPTCHA OCR: no valid 6-char result, returning best Tesseract={Text}", bestTesseract);
         return bestTesseract;
     }
@@ -1030,60 +996,88 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (string.IsNullOrWhiteSpace(apiKey))
             return string.Empty;
 
-        try
+        var base64Image = Convert.ToBase64String(imageBytes);
+
+        const int maxAttempts = 2;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            var base64Image = Convert.ToBase64String(imageBytes);
-            var requestBody = new
+            try
             {
-                model = "claude-sonnet-4-20250514",
-                max_tokens = 32,
-                messages = new[]
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+
+                var requestBody = new
                 {
-                    new
+                    model = "claude-sonnet-4-20250514",
+                    max_tokens = 32,
+                    messages = new[]
                     {
-                        role = "user",
-                        content = new object[]
+                        new
                         {
-                            new { type = "image", source = new { type = "base64", media_type = "image/png", data = base64Image } },
-                            new { type = "text", text = "Read the 6 characters in this CAPTCHA image. Reply with ONLY the 6 uppercase characters, nothing else." }
+                            role = "user",
+                            content = new object[]
+                            {
+                                new { type = "image", source = new { type = "base64", media_type = "image/png", data = base64Image } },
+                                new { type = "text", text = "Read the 6 characters in this CAPTCHA image. Reply with ONLY the 6 uppercase characters, nothing else." }
+                            }
+                        }
+                    }
+                };
+
+                var json = JsonSerializer.Serialize(requestBody);
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
+                request.Headers.Add("x-api-key", apiKey);
+                request.Headers.Add("anthropic-version", "2023-06-01");
+                request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+                using var response = await VisionApiClient.SendAsync(request, timeoutCts.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var statusCode = (int)response.StatusCode;
+                    _logger.LogWarning("Vision API returned {StatusCode} (attempt {Attempt}/{Max})",
+                        response.StatusCode, attempt, maxAttempts);
+                    if (statusCode >= 500 && attempt < maxAttempts)
+                        continue;
+                    return string.Empty;
+                }
+
+                var responseJson = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                using var doc = JsonDocument.Parse(responseJson);
+                var contentArray = doc.RootElement.GetProperty("content");
+                foreach (var block in contentArray.EnumerateArray())
+                {
+                    if (block.GetProperty("type").GetString() == "text")
+                    {
+                        var raw = block.GetProperty("text").GetString()?.Trim() ?? string.Empty;
+                        var filtered = FilterCaptchaText(raw);
+                        if (Regex.IsMatch(filtered, "^[A-Z0-9]{6}$"))
+                        {
+                            _logger.LogInformation("Vision API CAPTCHA result: {Text}", filtered);
+                            return filtered;
                         }
                     }
                 }
-            };
 
-            var json = JsonSerializer.Serialize(requestBody);
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
-            request.Headers.Add("x-api-key", apiKey);
-            request.Headers.Add("anthropic-version", "2023-06-01");
-            request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-            using var response = await VisionApiClient.SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("Vision API returned {StatusCode}", response.StatusCode);
+                _logger.LogWarning("Vision API returned non-6-char result (attempt {Attempt}/{Max})", attempt, maxAttempts);
                 return string.Empty;
             }
-
-            var responseJson = await response.Content.ReadAsStringAsync(ct);
-            using var doc = JsonDocument.Parse(responseJson);
-            var contentArray = doc.RootElement.GetProperty("content");
-            foreach (var block in contentArray.EnumerateArray())
+            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
-                if (block.GetProperty("type").GetString() == "text")
-                {
-                    var raw = block.GetProperty("text").GetString()?.Trim() ?? string.Empty;
-                    var filtered = FilterCaptchaText(raw);
-                    if (Regex.IsMatch(filtered, "^[A-Z0-9]{6}$"))
-                    {
-                        _logger.LogInformation("Vision API CAPTCHA result: {Text}", filtered);
-                        return filtered;
-                    }
-                }
+                _logger.LogWarning(ex, "Vision API timeout (attempt {Attempt}/{Max})", attempt, maxAttempts);
+                if (attempt < maxAttempts)
+                    continue;
             }
-        }
-        catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException or JsonException)
-        {
-            _logger.LogWarning(ex, "Vision API CAPTCHA recognition failed");
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Vision API request failed (attempt {Attempt}/{Max})", attempt, maxAttempts);
+                if (attempt < maxAttempts)
+                    continue;
+            }
+            catch (Exception ex) when (ex is JsonException)
+            {
+                _logger.LogWarning(ex, "Vision API response parse failed");
+                return string.Empty;
+            }
         }
 
         return string.Empty;
