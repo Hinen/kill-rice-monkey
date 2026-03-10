@@ -1501,6 +1501,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private async Task TryRefreshCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
     {
         const string refreshSelector =
+            ".refreshBtn, #divRecaptcha .capchaBtns a:nth-child(2), " +
             "img[src*='reload' i], img[src*='refresh' i], img[src*='btn_re' i], img[alt*='새로' i], img[alt*='변경' i], img[alt*='refresh' i], " +
             "button:has-text('변경'), button:has-text('새로고침'), a:has-text('변경'), a:has-text('새로고침'), " +
             "button[onclick*='captcha' i], a[onclick*='captcha' i], " +
@@ -1529,18 +1530,20 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             var jsResult = await (captchaFrame is not null
                 ? captchaFrame.EvaluateAsync<bool>(@"() => {
+                    if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
                     if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
                     if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
                     if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
-                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i], #imgCaptcha');
                     for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); return true; }
                     return false;
                 }")
                 : page.EvaluateAsync<bool>(@"() => {
+                    if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
                     if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
                     if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
                     if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
-                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i], #imgCaptcha');
                     for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); return true; }
                     return false;
                 }"));
@@ -1559,7 +1562,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static async Task<(ILocator? inputLocator, IFrame? frame)> FindCaptchaInputAsync(
         IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        const string inputSelector = "input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
+        const string inputSelector = "#txtCaptcha, input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
         var infinite = timeout == Timeout.InfiniteTimeSpan;
         var deadline = infinite ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow + timeout;
 
