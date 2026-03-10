@@ -122,6 +122,25 @@ PrintAccuracyLine("K-means", results.Select(r => (r.gt, r.kmeans)).ToList());
 PrintAccuracyLine("HSV Auto-Threshold", results.Select(r => (r.gt, r.hsvAuto)).ToList());
 PrintAccuracyLine("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
 PrintAccuracyLine("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
+
+var ensembleResults = results.Select(r =>
+{
+    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal };
+    var valid = candidates.Where(c => Regex.IsMatch(c, "^[A-Z0-9]{6}$")).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+    var winner = valid.GroupBy(c => c).OrderByDescending(g => g.Count()).First().Key;
+    return (r.gt, result: winner);
+}).ToList();
+PrintAccuracyLine("** ENSEMBLE **", ensembleResults);
+
+var anyCorrectResults = results.Select(r =>
+{
+    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal };
+    var anyCorrect = candidates.Any(c => string.Equals(c, r.gt, StringComparison.OrdinalIgnoreCase));
+    return (r.gt, result: anyCorrect ? r.gt : string.Empty);
+}).ToList();
+PrintAccuracyLine("Any-Correct (max)", anyCorrectResults);
+
 Console.WriteLine(new string('=', 48));
 
 return 0;
