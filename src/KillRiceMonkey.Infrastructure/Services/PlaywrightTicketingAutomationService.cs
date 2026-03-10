@@ -1112,39 +1112,111 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             catch (TimeoutException)
             {
                 _logger.LogWarning("CAPTCHA input fill timed out (element not visible), using JS fallback");
-                await inputLocator.First.EvaluateAsync(@"(el, val) => {
-                    el.value = val;
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                }", text);
+                try
+                {
+                    await inputLocator.First.EvaluateAsync(@"(el, val) => {
+                        el.value = val;
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        if (typeof jQuery !== 'undefined') { jQuery(el).val(val).trigger('input').trigger('change'); }
+                    }", text);
+                }
+                catch (PlaywrightException ex)
+                {
+                    _logger.LogWarning(ex, "CAPTCHA JS fill fallback also failed");
+                    continue;
+                }
             }
 
-            const string submitSelector = "button:has-text('입력완료'), a:has-text('입력완료'), button:has-text('확인')";
-            var submitBase = captchaFrame is not null
-                ? captchaFrame.Locator(submitSelector)
-                : page.Locator(submitSelector);
+            string filledValue;
+            try
+            {
+                filledValue = await inputLocator.First.EvaluateAsync<string>("el => el.value || ''");
+            }
+            catch (PlaywrightException)
+            {
+                filledValue = string.Empty;
+            }
+
+            if (string.IsNullOrEmpty(filledValue))
+            {
+                _logger.LogWarning("CAPTCHA fill verification failed: input is empty after fill, retrying");
+                await Task.Delay(300, cancellationToken);
+                continue;
+            }
+
+            _logger.LogInformation("CAPTCHA fill verified: filled={Filled}", filledValue);
+
+            const string submitSelector = "button:has-text('입력완료'), a:has-text('입력완료')";
+            ILocator? submitLocator = null;
             var submitCount = 0;
-            try { submitCount = await submitBase.CountAsync(); } catch (PlaywrightException) { }
+
+            if (captchaFrame is not null)
+            {
+                var frameSubmit = captchaFrame.Locator(submitSelector);
+                try { submitCount = await frameSubmit.CountAsync(); } catch (PlaywrightException) { }
+                if (submitCount > 0) submitLocator = frameSubmit;
+            }
+
+            if (submitLocator is null)
+            {
+                var pageSubmit = page.Locator(submitSelector);
+                try
+                {
+                    var pageCount = await pageSubmit.CountAsync();
+                    if (pageCount > 0)
+                    {
+                        submitLocator = pageSubmit;
+                        submitCount = pageCount;
+                    }
+                }
+                catch (PlaywrightException) { }
+            }
+
             _logger.LogInformation("CAPTCHA submit search: count={Count}, inFrame={InFrame}", submitCount, captchaFrame is not null);
 
-            if (submitCount > 0)
+            if (submitLocator is not null && submitCount > 0)
             {
                 try
                 {
-                    await submitBase.First.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+                    await submitLocator.Last.ClickAsync(new LocatorClickOptions { Timeout = 3000, Force = true });
                 }
                 catch (TimeoutException)
                 {
                     _logger.LogWarning("CAPTCHA submit click timed out, using JS fallback");
-                    try { await submitBase.First.EvaluateAsync("el => el.click()"); }
-                    catch (PlaywrightException) { await inputLocator.First.PressAsync("Enter"); }
+                    try
+                    {
+                        await submitLocator.Last.EvaluateAsync(@"el => {
+                            if (el.disabled) el.disabled = false;
+                            el.click();
+                        }");
+                    }
+                    catch (PlaywrightException)
+                    {
+                        try
+                        {
+                            await inputLocator.First.EvaluateAsync(@"el => {
+                                if (typeof fnCheck === 'function') { fnCheck(); }
+                                else if (el.form) { el.form.submit(); }
+                                else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
+                            }");
+                        }
+                        catch (PlaywrightException) { await inputLocator.First.PressAsync("Enter"); }
+                    }
                 }
             }
             else
             {
-                _logger.LogWarning("CAPTCHA submit button not found, pressing Enter");
-                try { await inputLocator.First.PressAsync("Enter"); }
-                catch (PlaywrightException) { await inputLocator.First.EvaluateAsync("el => el.form?.submit() || el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))"); }
+                _logger.LogWarning("CAPTCHA submit button not found, using JS fnCheck/Enter fallback");
+                try
+                {
+                    await inputLocator.First.EvaluateAsync(@"el => {
+                        if (typeof fnCheck === 'function') { fnCheck(); }
+                        else if (el.form) { el.form.submit(); }
+                        else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
+                    }");
+                }
+                catch (PlaywrightException) { await inputLocator.First.PressAsync("Enter"); }
             }
 
             var submitted = await TryWaitForConditionAsync(
