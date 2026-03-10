@@ -8,6 +8,7 @@ using System.Drawing;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
@@ -84,6 +85,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private readonly ResiliencePipeline _pipeline;
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
     private static readonly HttpClient NolHttpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private static readonly HttpClient VisionApiClient = new() { Timeout = TimeSpan.FromSeconds(10) };
     private static OcrEngine? _nolOcrEngine;
     private IPlaywright? _playwright;
     private IBrowser? _preparedNolConnectedBrowser;
@@ -752,7 +754,83 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return binary;
     }
 
-    private static List<Mat> PrepareNolCaptchaOcrVariants(Mat source)
+    private static Mat PrepareKMeansCaptchaMask(Mat source)
+    {
+        var resized = new Mat();
+        Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * NolOcrScaleFactor, source.Height * NolOcrScaleFactor),
+            interpolation: InterpolationFlags.Lanczos4);
+
+        var samples = new Mat();
+        resized.ConvertTo(samples, MatType.CV_32FC3);
+        samples = samples.Reshape(1, resized.Rows * resized.Cols);
+
+        const int k = 3;
+        var labels = new Mat();
+        var centers = new Mat();
+        Cv2.Kmeans(samples, k, labels,
+            new TermCriteria(CriteriaTypes.Eps | CriteriaTypes.MaxIter, 100, 0.2),
+            5, KMeansFlags.PpCenters, centers);
+        samples.Dispose();
+
+        var clusterAreas = new int[k];
+        var labelData = new int[resized.Rows * resized.Cols];
+        labels.GetArray(out labelData);
+        foreach (var l in labelData)
+            clusterAreas[l]++;
+
+        var centerBrightness = new double[k];
+        for (var i = 0; i < k; i++)
+        {
+            var b = centers.At<float>(i, 0);
+            var g = centers.At<float>(i, 1);
+            var r = centers.At<float>(i, 2);
+            centerBrightness[i] = Math.Sqrt(r * r + g * g + b * b);
+        }
+
+        var brightestCluster = Enumerable.Range(0, k).OrderByDescending(i => centerBrightness[i]).First();
+
+        var sortedByArea = Enumerable.Range(0, k).OrderByDescending(i => clusterAreas[i]).ToArray();
+        var secondLargestCluster = sortedByArea.Length > 1 ? sortedByArea[1] : sortedByArea[0];
+
+        var textCluster = brightestCluster == secondLargestCluster
+            ? brightestCluster
+            : (centerBrightness[brightestCluster] > centerBrightness[secondLargestCluster] * 1.3
+                ? brightestCluster
+                : secondLargestCluster);
+
+        var mask = new Mat(resized.Rows, resized.Cols, MatType.CV_8UC1, Scalar.Black);
+        for (var i = 0; i < labelData.Length; i++)
+        {
+            if (labelData[i] == textCluster)
+                mask.Set(i / resized.Cols, i % resized.Cols, (byte)255);
+        }
+
+        labels.Dispose();
+        centers.Dispose();
+        resized.Dispose();
+
+        using var ccLabels = new Mat();
+        using var ccStats = new Mat();
+        using var ccCentroids = new Mat();
+        var numLabels = Cv2.ConnectedComponentsWithStats(mask, ccLabels, ccStats, ccCentroids);
+
+        for (var i = 1; i < numLabels; i++)
+        {
+            var area = ccStats.At<int>(i, 4);
+            if (area >= 300 && area <= 20000)
+                continue;
+            var left = ccStats.At<int>(i, 0);
+            var top = ccStats.At<int>(i, 1);
+            var w = ccStats.At<int>(i, 2);
+            var h = ccStats.At<int>(i, 3);
+            Cv2.Rectangle(mask, new OpenCvSharp.Rect(left, top, w, h), Scalar.Black, -1);
+        }
+
+        return mask;
+    }
+
+    [Obsolete("Use PrepareKMeansCaptchaMask instead")]
+    private static List<Mat> PrepareNolCaptchaOcrVariantsLegacy(Mat source)
     {
         var variants = new List<Mat>();
 
@@ -879,53 +957,35 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (source.Empty())
             return string.Empty;
 
-        var candidates = new List<(string text, float confidence, string source)>();
+        using var kmeansMask = PrepareKMeansCaptchaMask(source);
+        SaveCaptchaDebugImage(kmeansMask, "captcha-kmeans");
+        var (kmeansText, kmeansConf) = RunCaptchaOcrOnMat(kmeansMask);
+        var kmeansFiltered = FilterCaptchaText(kmeansText);
+        _logger.LogInformation("CAPTCHA OCR kmeans: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
+            kmeansText, kmeansFiltered, kmeansConf);
+
+        if (Regex.IsMatch(kmeansFiltered, "^[A-Z0-9]{6}$") && kmeansConf >= 0.3f)
+            return kmeansFiltered;
 
         var (rawText, rawConf) = RunCaptchaOcrOnMat(source);
         var rawFiltered = FilterCaptchaText(rawText);
         _logger.LogInformation("CAPTCHA OCR raw: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
             rawText, rawFiltered, rawConf);
-        if (rawFiltered.Length >= 4)
-            candidates.Add((rawFiltered, rawConf, "raw"));
 
-        var variants = PrepareNolCaptchaOcrVariants(source);
-        try
+        if (Regex.IsMatch(rawFiltered, "^[A-Z0-9]{6}$") && rawConf >= 0.3f)
+            return rawFiltered;
+
+        var bestTesseract = kmeansConf >= rawConf ? kmeansFiltered : rawFiltered;
+
+        var visionResult = await RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
+        if (!string.IsNullOrEmpty(visionResult))
         {
-            for (var vi = 0; vi < variants.Count; vi++)
-            {
-                SaveCaptchaDebugImage(variants[vi], $"captcha-variant{vi}");
-                var (varText, varConf) = RunCaptchaOcrOnMat(variants[vi]);
-                var varFiltered = FilterCaptchaText(varText);
-                _logger.LogInformation("CAPTCHA OCR variant{Index}: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
-                    vi, varText, varFiltered, varConf);
-                if (varFiltered.Length >= 4)
-                    candidates.Add((varFiltered, varConf, $"variant{vi}"));
-            }
-        }
-        finally
-        {
-            foreach (var v in variants) v.Dispose();
+            _logger.LogInformation("CAPTCHA Vision API fallback used: {Text}", visionResult);
+            return visionResult;
         }
 
-        if (candidates.Count == 0)
-        {
-            var fallback = rawFiltered;
-            _logger.LogWarning("CAPTCHA OCR: no candidate with ≥4 chars, fallback={Fallback}", fallback);
-            return fallback;
-        }
-
-        const int expectedCaptchaLength = 6;
-        var selected = candidates
-            .GroupBy(c => c.text)
-            .OrderByDescending(g => g.Count())
-            .ThenBy(g => Math.Abs(g.Key.Length - expectedCaptchaLength))
-            .ThenByDescending(g => g.Max(c => c.confidence))
-            .First();
-
-        _logger.LogInformation("CAPTCHA OCR selected: text={Text}, votes={Votes}, sources={Sources}",
-            selected.Key, selected.Count(), string.Join(",", selected.Select(c => c.source)));
-
-        return selected.Key;
+        _logger.LogWarning("CAPTCHA OCR: no valid 6-char result, returning best Tesseract={Text}", bestTesseract);
+        return bestTesseract;
     }
 
     private static (string text, float confidence) RunCaptchaOcrOnMat(Mat source)
@@ -962,6 +1022,71 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return best;
+    }
+
+    private async Task<string> RecognizeCaptchaWithVisionApiAsync(byte[] imageBytes, CancellationToken ct)
+    {
+        var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        if (string.IsNullOrWhiteSpace(apiKey))
+            return string.Empty;
+
+        try
+        {
+            var base64Image = Convert.ToBase64String(imageBytes);
+            var requestBody = new
+            {
+                model = "claude-sonnet-4-20250514",
+                max_tokens = 32,
+                messages = new[]
+                {
+                    new
+                    {
+                        role = "user",
+                        content = new object[]
+                        {
+                            new { type = "image", source = new { type = "base64", media_type = "image/png", data = base64Image } },
+                            new { type = "text", text = "Read the 6 characters in this CAPTCHA image. Reply with ONLY the 6 uppercase characters, nothing else." }
+                        }
+                    }
+                }
+            };
+
+            var json = JsonSerializer.Serialize(requestBody);
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
+            request.Headers.Add("x-api-key", apiKey);
+            request.Headers.Add("anthropic-version", "2023-06-01");
+            request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+            using var response = await VisionApiClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Vision API returned {StatusCode}", response.StatusCode);
+                return string.Empty;
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(responseJson);
+            var contentArray = doc.RootElement.GetProperty("content");
+            foreach (var block in contentArray.EnumerateArray())
+            {
+                if (block.GetProperty("type").GetString() == "text")
+                {
+                    var raw = block.GetProperty("text").GetString()?.Trim() ?? string.Empty;
+                    var filtered = FilterCaptchaText(raw);
+                    if (Regex.IsMatch(filtered, "^[A-Z0-9]{6}$"))
+                    {
+                        _logger.LogInformation("Vision API CAPTCHA result: {Text}", filtered);
+                        return filtered;
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException or JsonException)
+        {
+            _logger.LogWarning(ex, "Vision API CAPTCHA recognition failed");
+        }
+
+        return string.Empty;
     }
 
     private static async Task<ILocator?> FindCaptchaImageAsync(ILocator inputLocator, IPage page, IFrame? captchaFrame)
