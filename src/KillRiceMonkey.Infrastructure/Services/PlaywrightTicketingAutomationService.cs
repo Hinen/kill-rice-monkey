@@ -989,23 +989,34 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         SaveCaptchaDebugImage(screenshotBytes, "captcha-raw");
 
-        var visionResult = await RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
+        var visionTask = RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
+        var localTask = Task.Run(() => RunLocalCaptchaOcr(screenshotBytes), cancellationToken);
+
+        var visionResult = await visionTask;
         if (!string.IsNullOrEmpty(visionResult))
         {
             _logger.LogInformation("CAPTCHA solved via Vision API: {Text}", visionResult);
             return visionResult;
         }
 
+        var localResult = await localTask;
+        if (!string.IsNullOrEmpty(localResult))
+        {
+            _logger.LogInformation("CAPTCHA solved via local OCR: {Text}", localResult);
+            return localResult;
+        }
+
+        _logger.LogWarning("CAPTCHA OCR: all methods failed, returning empty");
+        return string.Empty;
+    }
+
+    private string RunLocalCaptchaOcr(byte[] screenshotBytes)
+    {
         var ddddocrResult = RunDdddOcrOnBytes(screenshotBytes);
         var ddddocrFiltered = FilterCaptchaText(ddddocrResult);
         _logger.LogInformation("CAPTCHA OCR ddddocr: raw={Raw}, filtered={Filtered}", ddddocrResult, ddddocrFiltered);
         if (Regex.IsMatch(ddddocrFiltered, "^[A-Z0-9]{6}$"))
-        {
-            _logger.LogInformation("CAPTCHA solved via ddddocr: {Text}", ddddocrFiltered);
             return ddddocrFiltered;
-        }
-
-        _logger.LogInformation("Vision API unavailable or failed, falling back to local OCR");
 
         using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
         if (source.Empty())
@@ -1049,9 +1060,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var (rawText, rawConf) = RunCaptchaOcrOnMat(source);
         var rawFiltered = FilterCaptchaText(rawText);
-        _logger.LogInformation("CAPTCHA OCR raw: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
-            rawText, rawFiltered, rawConf);
-
         if (Regex.IsMatch(rawFiltered, "^[A-Z0-9]{6}$") && rawConf >= 0.3f)
             return rawFiltered;
 
@@ -1059,7 +1067,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             .Select(c => (filtered: c.filtered, conf: c.conf))
             .Append((filtered: rawFiltered, conf: rawConf));
         var bestFallback = allCandidates.OrderByDescending(c => c.conf).First().filtered;
-        _logger.LogWarning("CAPTCHA OCR: no valid 6-char result, returning best={Text}", bestFallback);
+        _logger.LogWarning("CAPTCHA OCR: no valid 6-char result from local, returning best={Text}", bestFallback);
         return bestFallback;
     }
 
