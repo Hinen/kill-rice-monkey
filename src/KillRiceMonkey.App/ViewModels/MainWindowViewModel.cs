@@ -24,6 +24,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string _statusMessage = "템플릿 선택 필요";
     private string _lastRunSummary = "자동화 실행 기록이 없습니다.";
     private DateTimeOffset _nolAutomationReadyAt;
+    private CancellationTokenSource? _runCts;
 
     public MainWindowViewModel(ITicketingAutomationService ticketingAutomationService)
     {
@@ -148,6 +149,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
+    public void CancelAutomation()
+    {
+        if (!IsRunning || _runCts is null)
+            return;
+
+        _runCts.Cancel();
+        StatusMessage = "취소 중";
+    }
+
     private async Task StartAutomationAsync()
     {
         if (!HasSelectedTemplate)
@@ -201,6 +211,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             mainWindow.WindowState = WindowState.Minimized;
         }
 
+        _runCts?.Dispose();
+        _runCts = new CancellationTokenSource();
+
         IsRunning = true;
         StatusMessage = templateType == TicketingTemplateType.Nol
             ? "NOL 화면 자동화 실행 중"
@@ -222,10 +235,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 StepTimeoutSeconds,
                 IsNolTemplate ? DesiredDate : null,
                 IsNolTemplate ? DesiredRound : null);
-            var result = await _ticketingAutomationService.RunAsync(request, CancellationToken.None);
+            var result = await _ticketingAutomationService.RunAsync(request, _runCts.Token);
 
             StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
             LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "취소 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 사용자에 의해 취소되었습니다.";
         }
         catch (Exception ex)
         {
@@ -235,6 +253,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         finally
         {
             IsRunning = false;
+            _runCts?.Dispose();
+            _runCts = null;
 
             if (mainWindow is not null)
             {
