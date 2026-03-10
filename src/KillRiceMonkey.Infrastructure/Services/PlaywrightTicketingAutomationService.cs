@@ -799,6 +799,150 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
+    private static Mat PrepareKMeansCaptchaMask(Mat source)
+    {
+        var resized = new Mat();
+        Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * NolOcrScaleFactor, source.Height * NolOcrScaleFactor),
+            interpolation: InterpolationFlags.Lanczos4);
+
+        var samples = new Mat();
+        resized.ConvertTo(samples, MatType.CV_32FC3);
+        samples = samples.Reshape(1, resized.Rows * resized.Cols);
+
+        const int k = 3;
+        var labels = new Mat();
+        var centers = new Mat();
+        Cv2.Kmeans(samples, k, labels,
+            new TermCriteria(CriteriaTypes.Eps | CriteriaTypes.MaxIter, 100, 0.2),
+            5, KMeansFlags.PpCenters, centers);
+        samples.Dispose();
+
+        var clusterAreas = new int[k];
+        labels.GetArray(out int[] labelData);
+        foreach (var l in labelData)
+            clusterAreas[l]++;
+
+        var centerBrightness = new double[k];
+        for (var i = 0; i < k; i++)
+        {
+            var b = centers.At<float>(i, 0);
+            var g = centers.At<float>(i, 1);
+            var r = centers.At<float>(i, 2);
+            centerBrightness[i] = Math.Sqrt(r * r + g * g + b * b);
+        }
+
+        var brightestCluster = Enumerable.Range(0, k).OrderByDescending(i => centerBrightness[i]).First();
+        var sortedByArea = Enumerable.Range(0, k).OrderByDescending(i => clusterAreas[i]).ToArray();
+        var secondLargestCluster = sortedByArea.Length > 1 ? sortedByArea[1] : sortedByArea[0];
+
+        var textCluster = brightestCluster == secondLargestCluster
+            ? brightestCluster
+            : (centerBrightness[brightestCluster] > centerBrightness[secondLargestCluster] * 1.3
+                ? brightestCluster
+                : secondLargestCluster);
+
+        var mask = new Mat(resized.Rows, resized.Cols, MatType.CV_8UC1, Scalar.Black);
+        for (var i = 0; i < labelData.Length; i++)
+        {
+            if (labelData[i] == textCluster)
+                mask.Set(i / resized.Cols, i % resized.Cols, (byte)255);
+        }
+
+        labels.Dispose();
+        centers.Dispose();
+        resized.Dispose();
+
+        ApplyConnectedComponentsFilter(mask, 300, 20000);
+        return mask;
+    }
+
+    private static Mat PrepareHsvAutoThresholdCaptchaMask(Mat source)
+    {
+        using var resized = new Mat();
+        Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * NolOcrScaleFactor, source.Height * NolOcrScaleFactor),
+            interpolation: InterpolationFlags.Lanczos4);
+
+        using var hsv = new Mat();
+        Cv2.CvtColor(resized, hsv, ColorConversionCodes.BGR2HSV);
+
+        var channels = Cv2.Split(hsv);
+        using var hChannel = channels[0];
+        using var sChannel = channels[1];
+        var vChannel = channels[2];
+
+        int[] thresholds = [150, 160, 170, 180, 190, 200];
+        var bestThreshold = 180;
+        var bestDiff = int.MaxValue;
+
+        foreach (var thresh in thresholds)
+        {
+            using var testMask = new Mat();
+            Cv2.Threshold(vChannel, testMask, thresh, 255, ThresholdTypes.Binary);
+
+            using var ccLabels = new Mat();
+            using var ccStats = new Mat();
+            using var ccCentroids = new Mat();
+            var numLabels = Cv2.ConnectedComponentsWithStats(testMask, ccLabels, ccStats, ccCentroids);
+
+            var validComponents = 0;
+            for (var i = 1; i < numLabels; i++)
+            {
+                var area = ccStats.At<int>(i, 4);
+                if (area >= 300 && area <= 20000)
+                    validComponents++;
+            }
+
+            var diff = Math.Abs(validComponents - 6);
+            if (diff < bestDiff)
+            {
+                bestDiff = diff;
+                bestThreshold = thresh;
+            }
+        }
+
+        var mask = new Mat();
+        Cv2.Threshold(vChannel, mask, bestThreshold, 255, ThresholdTypes.Binary);
+        vChannel.Dispose();
+
+        ApplyConnectedComponentsFilter(mask, 300, 20000);
+
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+        Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
+
+        return mask;
+    }
+
+    private static Mat PrepareHsvSatValueCaptchaMask(Mat source)
+    {
+        using var resized = new Mat();
+        Cv2.Resize(source, resized, new OpenCvSharp.Size(source.Width * NolOcrScaleFactor, source.Height * NolOcrScaleFactor),
+            interpolation: InterpolationFlags.Lanczos4);
+
+        using var hsv = new Mat();
+        Cv2.CvtColor(resized, hsv, ColorConversionCodes.BGR2HSV);
+
+        var channels = Cv2.Split(hsv);
+        using var hChannel = channels[0];
+        using var sChannel = channels[1];
+        using var vChannel = channels[2];
+
+        using var sMask = new Mat();
+        Cv2.Threshold(sChannel, sMask, 50, 255, ThresholdTypes.Binary);
+
+        using var vMask = new Mat();
+        Cv2.Threshold(vChannel, vMask, 160, 255, ThresholdTypes.Binary);
+
+        var mask = new Mat();
+        Cv2.BitwiseAnd(sMask, vMask, mask);
+
+        ApplyConnectedComponentsFilter(mask, 300, 20000);
+
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+        Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
+
+        return mask;
+    }
+
     private static string FilterCaptchaText(string raw)
         => new(raw.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
