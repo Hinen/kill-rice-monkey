@@ -999,15 +999,41 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (source.Empty())
             return string.Empty;
 
-        using var hsvMask = PrepareHsvCaptchaMask(source);
-        SaveCaptchaDebugImage(hsvMask, "captcha-hsv");
-        var (hsvText, hsvConf) = RunCaptchaOcrOnMat(hsvMask);
-        var hsvFiltered = FilterCaptchaText(hsvText);
-        _logger.LogInformation("CAPTCHA OCR hsv: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
-            hsvText, hsvFiltered, hsvConf);
+        var preprocessors = new (string name, Func<Mat, Mat> fn)[]
+        {
+            ("hsv-otsu",   PrepareHsvCaptchaMask),
+            ("hsv-auto",   PrepareHsvAutoThresholdCaptchaMask),
+            ("hsv-satval", PrepareHsvSatValueCaptchaMask),
+            ("kmeans",     PrepareKMeansCaptchaMask),
+        };
 
-        if (Regex.IsMatch(hsvFiltered, "^[A-Z0-9]{6}$") && hsvConf >= 0.3f)
-            return hsvFiltered;
+        var candidates = new List<(string method, string filtered, float conf)>();
+
+        foreach (var (name, fn) in preprocessors)
+        {
+            using var mask = fn(source);
+            SaveCaptchaDebugImage(mask, $"captcha-{name}");
+            var (text, conf) = RunCaptchaOcrOnMat(mask);
+            var filtered = FilterCaptchaText(text);
+            _logger.LogInformation("CAPTCHA OCR {Method}: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
+                name, text, filtered, conf);
+            candidates.Add((name, filtered, conf));
+        }
+
+        var validCandidates = candidates
+            .Where(c => Regex.IsMatch(c.filtered, "^[A-Z0-9]{6}$"))
+            .ToList();
+
+        if (validCandidates.Count > 0)
+        {
+            var winner = validCandidates
+                .GroupBy(c => c.filtered)
+                .OrderByDescending(g => g.Count())
+                .ThenByDescending(g => g.Max(c => c.conf))
+                .First();
+            _logger.LogInformation("CAPTCHA OCR ensemble: selected={Text} (votes={Votes})", winner.Key, winner.Count());
+            return winner.Key;
+        }
 
         var (rawText, rawConf) = RunCaptchaOcrOnMat(source);
         var rawFiltered = FilterCaptchaText(rawText);
@@ -1017,9 +1043,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (Regex.IsMatch(rawFiltered, "^[A-Z0-9]{6}$") && rawConf >= 0.3f)
             return rawFiltered;
 
-        var bestTesseract = hsvConf >= rawConf ? hsvFiltered : rawFiltered;
-        _logger.LogWarning("CAPTCHA OCR: no valid 6-char result, returning best Tesseract={Text}", bestTesseract);
-        return bestTesseract;
+        var allCandidates = candidates
+            .Select(c => (filtered: c.filtered, conf: c.conf))
+            .Append((filtered: rawFiltered, conf: rawConf));
+        var bestFallback = allCandidates.OrderByDescending(c => c.conf).First().filtered;
+        _logger.LogWarning("CAPTCHA OCR: no valid 6-char result, returning best={Text}", bestFallback);
+        return bestFallback;
     }
 
     private static (string text, float confidence) RunCaptchaOcrOnMat(Mat source)
