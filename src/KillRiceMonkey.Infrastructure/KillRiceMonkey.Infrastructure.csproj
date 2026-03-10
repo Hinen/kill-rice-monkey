@@ -41,14 +41,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>tessdata\eng.traineddata</Link>
     </None>
-    <None Include="onnxs\common.onnx">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>onnxs\common.onnx</Link>
-    </None>
-    <None Include="onnxs\common_old.onnx">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>onnxs\common_old.onnx</Link>
-    </None>
+
   </ItemGroup>
 
 </Project>
