@@ -89,6 +89,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static readonly HttpClient VisionApiClient = new() { Timeout = TimeSpan.FromSeconds(4) };
     private static Action<Exception, string>? _captchaWarningLogger;
     private static OcrEngine? _nolOcrEngine;
+    private static DDDDOCR? _ddddOcrInstance;
+    private static readonly object _ddddOcrLock = new();
     private IPlaywright? _playwright;
     private IBrowser? _preparedNolConnectedBrowser;
     private IPage? _preparedNolPage;
@@ -958,24 +960,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return string.Empty;
         }
 
-        try
-        {
-            var tagName = await imgLocator.EvaluateAsync<string>("el => el.tagName.toLowerCase()");
-            var src = await imgLocator.EvaluateAsync<string>("el => el.src || el.currentSrc || ''");
-            var box = await imgLocator.BoundingBoxAsync();
-            _logger.LogInformation("CAPTCHA image found: tag={Tag}, src={Src}, width={W}, height={H}",
-                tagName, src?.Length > 120 ? src[..120] : src, box?.Width, box?.Height);
-
-            if (box is not null && (box.Width > 500 || box.Height > 200 || box.Width < 20 || box.Height < 10))
-            {
-                _logger.LogWarning("CAPTCHA image dimensions suspicious: {W}x{H}, likely wrong element", box.Width, box.Height);
-            }
-        }
-        catch (PlaywrightException ex)
-        {
-            _logger.LogDebug(ex, "Failed to read CAPTCHA image attributes");
-        }
-
         byte[] screenshotBytes;
         try
         {
@@ -987,23 +971,28 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return string.Empty;
         }
 
-        SaveCaptchaDebugImage(screenshotBytes, "captcha-raw");
-
         var visionTask = RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
         var localTask = Task.Run(() => RunLocalCaptchaOcr(screenshotBytes), cancellationToken);
 
-        var visionResult = await visionTask;
-        if (!string.IsNullOrEmpty(visionResult))
+        var tasks = new List<Task<string>> { localTask, visionTask };
+        while (tasks.Count > 0)
         {
-            _logger.LogInformation("CAPTCHA solved via Vision API: {Text}", visionResult);
-            return visionResult;
-        }
-
-        var localResult = await localTask;
-        if (!string.IsNullOrEmpty(localResult))
-        {
-            _logger.LogInformation("CAPTCHA solved via local OCR: {Text}", localResult);
-            return localResult;
+            var completed = await Task.WhenAny(tasks);
+            tasks.Remove(completed);
+            try
+            {
+                var result = await completed;
+                if (!string.IsNullOrEmpty(result))
+                {
+                    _logger.LogInformation("CAPTCHA solved via {Source}: {Text}",
+                        completed == visionTask ? "Vision API" : "local OCR", result);
+                    return result;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "CAPTCHA OCR task failed");
+            }
         }
 
         _logger.LogWarning("CAPTCHA OCR: all methods failed, returning empty");
@@ -1014,13 +1003,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         var ddddocrResult = RunDdddOcrOnBytes(screenshotBytes);
         var ddddocrFiltered = FilterCaptchaText(ddddocrResult);
-        _logger.LogInformation("CAPTCHA OCR ddddocr: raw={Raw}, filtered={Filtered}", ddddocrResult, ddddocrFiltered);
         if (Regex.IsMatch(ddddocrFiltered, "^[A-Z0-9]{6}$"))
             return ddddocrFiltered;
-
-        using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
-        if (source.Empty())
-            return string.Empty;
 
         var preprocessors = new (string name, Func<Mat, Mat> fn)[]
         {
@@ -1030,20 +1014,21 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             ("kmeans",     PrepareKMeansCaptchaMask),
         };
 
-        var candidates = new List<(string method, string filtered, float conf)>();
+        var candidates = new System.Collections.Concurrent.ConcurrentBag<(string method, string filtered, float conf)>();
 
-        foreach (var (name, fn) in preprocessors)
+        Parallel.ForEach(preprocessors, item =>
         {
+            var (name, fn) = item;
+            using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
+            if (source.Empty()) return;
             using var mask = fn(source);
-            SaveCaptchaDebugImage(mask, $"captcha-{name}");
             var (text, conf) = RunCaptchaOcrOnMat(mask);
             var filtered = FilterCaptchaText(text);
-            _logger.LogInformation("CAPTCHA OCR {Method}: ocrText={OcrText}, filtered={Filtered}, confidence={Conf:F3}",
-                name, text, filtered, conf);
             candidates.Add((name, filtered, conf));
-        }
+        });
 
-        var validCandidates = candidates
+        var candidatesList = candidates.ToList();
+        var validCandidates = candidatesList
             .Where(c => Regex.IsMatch(c.filtered, "^[A-Z0-9]{6}$"))
             .ToList();
 
@@ -1054,20 +1039,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 .OrderByDescending(g => g.Count())
                 .ThenByDescending(g => g.Max(c => c.conf))
                 .First();
-            _logger.LogInformation("CAPTCHA OCR ensemble: selected={Text} (votes={Votes})", winner.Key, winner.Count());
             return winner.Key;
         }
 
-        var (rawText, rawConf) = RunCaptchaOcrOnMat(source);
+        using var rawSource = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
+        if (rawSource.Empty())
+            return candidatesList.OrderByDescending(c => c.conf).FirstOrDefault().filtered ?? string.Empty;
+
+        var (rawText, rawConf) = RunCaptchaOcrOnMat(rawSource);
         var rawFiltered = FilterCaptchaText(rawText);
         if (Regex.IsMatch(rawFiltered, "^[A-Z0-9]{6}$") && rawConf >= 0.3f)
             return rawFiltered;
 
-        var allCandidates = candidates
+        var allCandidates = candidatesList
             .Select(c => (filtered: c.filtered, conf: c.conf))
             .Append((filtered: rawFiltered, conf: rawConf));
         var bestFallback = allCandidates.OrderByDescending(c => c.conf).First().filtered;
-        _logger.LogWarning("CAPTCHA OCR: no valid 6-char result from local, returning best={Text}", bestFallback);
         return bestFallback;
     }
 
@@ -1111,8 +1098,14 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         try
         {
-            using var ocr = new DDDDOCR(DdddOcrMode.ClassifyBeta);
-            return ocr.Classify(imageBytes) ?? string.Empty;
+            if (_ddddOcrInstance is null)
+            {
+                lock (_ddddOcrLock)
+                {
+                    _ddddOcrInstance ??= new DDDDOCR(DdddOcrMode.ClassifyBeta);
+                }
+            }
+            return _ddddOcrInstance.Classify(imageBytes) ?? string.Empty;
         }
         catch (Exception ex)
         {
@@ -1304,22 +1297,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         const int minLength = 4;
         const int maxLength = 8;
 
-        try
-        {
-            await page.WaitForLoadStateAsync(LoadState.Load, new PageWaitForLoadStateOptions
-            {
-                Timeout = 5000
-            });
-        }
-        catch (TimeoutException) { }
-
         _logger.LogInformation("CAPTCHA 입력창 대기 시작 (무한 대기, F9로 취소). url={Url}", SafePageUrl(page));
         var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, Timeout.InfiniteTimeSpan, cancellationToken);
         if (inputLocator is null)
         {
             foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
             {
-                _logger.LogInformation("CAPTCHA input not on main page, searching popup. url={Url}", SafePageUrl(contextPage));
                 (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, Timeout.InfiniteTimeSpan, cancellationToken);
                 if (inputLocator is not null)
                 {
@@ -1331,40 +1314,30 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         if (inputLocator is null)
         {
-            _logger.LogWarning("CAPTCHA input not found (cancelled). url={Url}, frameCount={FrameCount}",
-                SafePageUrl(page), page.Frames.Count);
+            _logger.LogWarning("CAPTCHA input not found (cancelled).");
             return;
         }
-
-        _logger.LogInformation("CAPTCHA input found. url={Url}, inFrame={InFrame}",
-            SafePageUrl(page), captchaFrame is not null);
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
-            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} (len={Len})",
-                attempt, maxAttempts, text, text.Length);
+            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text}", attempt, maxAttempts, text);
 
             if (text.Length < minLength || text.Length > maxLength)
             {
-                _logger.LogWarning("CAPTCHA text length {Len} out of range [{Min},{Max}], 새로고침 후 재시도",
-                    text.Length, minLength, maxLength);
                 if (attempt < maxAttempts)
                     await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                await Task.Delay(200, cancellationToken);
                 continue;
             }
 
             try
             {
-                await inputLocator.First.FillAsync(string.Empty, new LocatorFillOptions { Timeout = 3000 });
-                await inputLocator.First.PressSequentiallyAsync(text, new LocatorPressSequentiallyOptions { Delay = 10 });
+                await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 1000 });
             }
             catch (TimeoutException)
             {
-                _logger.LogWarning("CAPTCHA input fill timed out (element not visible), using JS fallback");
                 try
                 {
                     await inputLocator.First.EvaluateAsync(@"(el, val) => {
@@ -1376,7 +1349,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 }
                 catch (PlaywrightException ex)
                 {
-                    _logger.LogWarning(ex, "CAPTCHA JS fill fallback also failed");
+                    _logger.LogWarning(ex, "CAPTCHA 입력 실패");
                     continue;
                 }
             }
@@ -1393,14 +1366,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (string.IsNullOrEmpty(filledValue))
             {
-                _logger.LogWarning("CAPTCHA fill verification failed: input is empty after fill, retrying");
-                await Task.Delay(100, cancellationToken);
+                _logger.LogWarning("CAPTCHA fill verification failed: input empty after fill");
                 continue;
             }
 
-            _logger.LogInformation("CAPTCHA fill verified: filled={Filled}", filledValue);
-
-            const string submitSelector = "button:has-text('입력완료'), a:has-text('입력완료')";
+            const string submitSelector = "#divRecaptcha .capchaBtns a:first-child, button:has-text('입력완료'), a:has-text('입력완료')";
             ILocator? submitLocator = null;
             var submitCount = 0;
 
@@ -1426,20 +1396,17 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 catch (PlaywrightException) { }
             }
 
-            _logger.LogInformation("CAPTCHA submit search: count={Count}, inFrame={InFrame}", submitCount, captchaFrame is not null);
-
             if (submitLocator is not null && submitCount > 0)
             {
                 try
                 {
-                    await submitLocator.Last.ClickAsync(new LocatorClickOptions { Timeout = 3000, Force = true });
+                    await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
                 }
                 catch (TimeoutException)
                 {
-                    _logger.LogWarning("CAPTCHA submit click timed out, using JS fallback");
                     try
                     {
-                        await submitLocator.Last.EvaluateAsync(@"el => {
+                        await submitLocator.First.EvaluateAsync(@"el => {
                             if (el.disabled) el.disabled = false;
                             el.click();
                         }");
@@ -1460,7 +1427,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             else
             {
-                _logger.LogWarning("CAPTCHA submit button not found, using JS fnCheck/Enter fallback");
                 try
                 {
                     await inputLocator.First.EvaluateAsync(@"el => {
@@ -1478,7 +1444,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     try { return await inputLocator.CountAsync() == 0; }
                     catch (PlaywrightException) { return false; }
                 },
-                TimeSpan.FromSeconds(3),
+                TimeSpan.FromSeconds(1.5),
                 cancellationToken);
 
             if (submitted)
@@ -1489,10 +1455,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             _logger.LogWarning("CAPTCHA 인식 실패 (attempt {Attempt}/{Max}), 새로고침 시도", attempt, maxAttempts);
             if (attempt < maxAttempts)
-            {
                 await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                await Task.Delay(200, cancellationToken);
-            }
         }
 
         throw new InvalidOperationException($"CAPTCHA 자동 인식 실패 ({maxAttempts}회 시도).");
@@ -1500,62 +1463,69 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task TryRefreshCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
     {
-        const string refreshSelector =
-            ".refreshBtn, #divRecaptcha .capchaBtns a:nth-child(2), " +
-            "img[src*='reload' i], img[src*='refresh' i], img[src*='btn_re' i], img[alt*='새로' i], img[alt*='변경' i], img[alt*='refresh' i], " +
-            "button:has-text('변경'), button:has-text('새로고침'), a:has-text('변경'), a:has-text('새로고침'), " +
-            "button[onclick*='captcha' i], a[onclick*='captcha' i], " +
-            "[class*='refresh' i], [class*='reload' i], [class*='btn_re' i]";
-
         ILocator FrameOrPage(string selector) =>
             captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
 
+        async Task<bool> EvalJs(string script)
+        {
+            return captchaFrame is not null
+                ? await captchaFrame.EvaluateAsync<bool>(script)
+                : await page.EvaluateAsync<bool>(script);
+        }
+
+        try
+        {
+            var jsResult = await EvalJs(@"() => {
+                if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
+                if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
+                if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
+                if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
+                return false;
+            }");
+
+            if (jsResult)
+            {
+                _logger.LogInformation("CAPTCHA 새로고침 JS 함수 호출 성공");
+                await Task.Delay(200, cancellationToken);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "CAPTCHA JS 새로고침 실패");
+        }
+
+        const string refreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn";
         try
         {
             var refreshLocator = FrameOrPage(refreshSelector);
             var count = await refreshLocator.CountAsync();
             if (count > 0)
             {
-                await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 2000, Force = true });
-                _logger.LogInformation("CAPTCHA 새로고침 버튼 클릭 완료");
+                await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
+                _logger.LogInformation("CAPTCHA 새로고침 버튼 클릭 완료 (count={Count})", count);
+                await Task.Delay(200, cancellationToken);
                 return;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "CAPTCHA 새로고침 버튼 클릭 실패, JS fallback 시도");
+            _logger.LogDebug(ex, "CAPTCHA 새로고침 버튼 클릭 실패");
         }
 
         try
         {
-            var jsResult = await (captchaFrame is not null
-                ? captchaFrame.EvaluateAsync<bool>(@"() => {
-                    if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
-                    if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
-                    if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
-                    if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
-                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i], #imgCaptcha');
-                    for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); return true; }
-                    return false;
-                }")
-                : page.EvaluateAsync<bool>(@"() => {
-                    if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
-                    if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
-                    if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
-                    if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
-                    var imgs = document.querySelectorAll('img[src*=""captcha"" i], img[src*=""cap_img"" i], #imgCaptcha');
-                    for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); return true; }
-                    return false;
-                }"));
-
-            if (jsResult)
-                _logger.LogInformation("CAPTCHA 새로고침 JS fallback 성공");
-            else
-                _logger.LogWarning("CAPTCHA 새로고침 방법을 찾지 못함");
+            await EvalJs(@"() => {
+                var imgs = document.querySelectorAll('#imgCaptcha, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+                for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
+                return true;
+            }");
+            _logger.LogInformation("CAPTCHA 이미지 캐시 무효화 완료");
+            await Task.Delay(200, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "CAPTCHA 새로고침 JS fallback 실패");
+            _logger.LogWarning(ex, "CAPTCHA 새로고침 모든 방법 실패");
         }
     }
 
