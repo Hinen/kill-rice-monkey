@@ -9,3 +9,15 @@ playwright.cmd
 playwright.sh
 *.onnx
 nul
+
+node_modules/
+package.json
+package-lock.json
+
+analyze_captcha*.py
+CAPTCHA_OCR_ANALYSIS.md
+captcha-samples/**/CAPTCHA_OCR_ANALYSIS.md
+
+tools/*.png
+tools/inspect-*.mjs
+tools/inspect-*.ps1
