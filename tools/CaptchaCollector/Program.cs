@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
@@ -63,6 +64,7 @@ if (context is null)
 
 IPage? captchaPage = null;
 ILocator? imageLocator = null;
+IFrame? captchaFrame = null;
 
 foreach (var pg in context.Pages)
 {
@@ -73,6 +75,7 @@ foreach (var pg in context.Pages)
         {
             captchaPage = pg;
             imageLocator = imgLoc;
+            captchaFrame = null;
             break;
         }
     }
@@ -88,6 +91,7 @@ foreach (var pg in context.Pages)
             {
                 captchaPage = pg;
                 imageLocator = frameImg;
+                captchaFrame = frame;
                 break;
             }
         }
@@ -102,13 +106,21 @@ if (captchaPage is null || imageLocator is null)
     Console.Error.WriteLine("CAPTCHA 이미지를 찾을 수 없습니다.");
     Console.Error.WriteLine($"탐색한 페이지: {context.Pages.Count}개");
     foreach (var pg in context.Pages)
+    {
         Console.Error.WriteLine($"  - {pg.Url}");
+        foreach (var frame in pg.Frames)
+        {
+            if (frame == pg.MainFrame) continue;
+            Console.Error.WriteLine($"    frame: {frame.Url}");
+        }
+    }
     Console.Error.WriteLine($"사용 셀렉터: {ImageSelector}");
     Console.Error.WriteLine("CAPTCHA가 표시된 페이지에서 다시 시도하세요.");
     return 1;
 }
 
-Console.WriteLine($"CAPTCHA 이미지 발견. url={SafeUrl(captchaPage)}");
+var frameInfo = captchaFrame is not null ? $" (frame: {captchaFrame.Url[..Math.Min(60, captchaFrame.Url.Length)]}...)" : "";
+Console.WriteLine($"CAPTCHA 이미지 발견. url={SafeUrl(captchaPage)}{frameInfo}");
 Console.WriteLine("수집 시작... (Ctrl+C로 중단)");
 Console.WriteLine();
 
@@ -117,6 +129,9 @@ using var httpClient = !string.IsNullOrWhiteSpace(apiKey) ? new HttpClient { Tim
 var collected = existingCount;
 var visionErrors = 0;
 const int maxVisionErrors = 10;
+var consecutiveDuplicates = 0;
+const int maxConsecutiveDuplicates = 10;
+string? lastImageHash = null;
 
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -142,10 +157,32 @@ while (collected < targetCount && !cts.IsCancellationRequested)
         if (imgBytes.Length < 100)
         {
             Console.WriteLine("  이미지가 너무 작습니다. 새로고침 후 재시도...");
-            await TryRefreshAsync(captchaPage, cts.Token);
+            await TryRefreshAsync(captchaPage, captchaFrame, cts.Token);
             await Task.Delay(500, cts.Token);
             continue;
         }
+
+        var currentHash = Convert.ToHexString(MD5.HashData(imgBytes));
+        if (currentHash == lastImageHash)
+        {
+            consecutiveDuplicates++;
+            if (consecutiveDuplicates >= maxConsecutiveDuplicates)
+            {
+                Console.Error.WriteLine($"  ⚠ 연속 {maxConsecutiveDuplicates}회 동일 이미지 감지 — 새로고침 실패 가능성. 1초 대기 후 재시도...");
+                await Task.Delay(1000, cts.Token);
+                consecutiveDuplicates = 0;
+            }
+            else
+            {
+                Console.WriteLine($"  중복 이미지 감지 ({consecutiveDuplicates}/{maxConsecutiveDuplicates}). 새로고침 재시도...");
+            }
+            await TryRefreshAsync(captchaPage, captchaFrame, cts.Token);
+            await Task.Delay(500, cts.Token);
+            continue;
+        }
+
+        consecutiveDuplicates = 0;
+        lastImageHash = currentHash;
 
         collected++;
         var filename = $"captcha_{collected:D4}.png";
@@ -169,7 +206,7 @@ while (collected < targetCount && !cts.IsCancellationRequested)
         if (collected % 50 == 0)
             await SaveGroundTruthAsync(groundTruthPath, existingLabels);
 
-        await TryRefreshAsync(captchaPage, cts.Token);
+        await TryRefreshAsync(captchaPage, captchaFrame, cts.Token);
         await Task.Delay(300, cts.Token);
     }
     catch (OperationCanceledException)
@@ -189,28 +226,44 @@ Console.WriteLine($"저장 위치: {samplesDir}");
 
 return 0;
 
-static async Task TryRefreshAsync(IPage page, CancellationToken ct)
+static async Task TryRefreshAsync(IPage page, IFrame? frame, CancellationToken ct)
 {
+    var jsTarget = frame as object ?? page;
+
     try
     {
-        var jsResult = await page.EvaluateAsync<bool>(@"() => {
-            if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
-            if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
-            if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
-            if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
-            return false;
-        }");
-        if (jsResult) { await Task.Delay(200, ct); return; }
+        bool jsResult;
+        if (frame is not null)
+        {
+            jsResult = await frame.EvaluateAsync<bool>(@"() => {
+                if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
+                if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
+                if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
+                if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
+                return false;
+            }");
+        }
+        else
+        {
+            jsResult = await page.EvaluateAsync<bool>(@"() => {
+                if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
+                if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
+                if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
+                if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
+                return false;
+            }");
+        }
+        if (jsResult) { await Task.Delay(300, ct); return; }
     }
     catch { }
 
     try
     {
-        var refreshLoc = page.Locator(RefreshSelector);
+        var refreshLoc = frame is not null ? frame.Locator(RefreshSelector) : page.Locator(RefreshSelector);
         if (await refreshLoc.CountAsync() > 0)
         {
             await refreshLoc.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
-            await Task.Delay(200, ct);
+            await Task.Delay(300, ct);
             return;
         }
     }
@@ -218,11 +271,20 @@ static async Task TryRefreshAsync(IPage page, CancellationToken ct)
 
     try
     {
-        await page.EvaluateAsync(@"() => {
+        var jsCode = @"() => {
             var imgs = document.querySelectorAll('#imgCaptcha, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
-            for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
-        }");
-        await Task.Delay(200, ct);
+            for (var img of imgs) {
+                var src = img.src || '';
+                if (src.startsWith('data:')) continue;
+                img.src = src.split('?')[0] + '?t=' + Date.now();
+            }
+            return true;
+        }";
+        if (frame is not null)
+            await frame.EvaluateAsync(jsCode);
+        else
+            await page.EvaluateAsync(jsCode);
+        await Task.Delay(300, ct);
     }
     catch { }
 }
