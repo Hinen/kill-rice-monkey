@@ -130,15 +130,38 @@ PrintAccuracyLine("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
 PrintAccuracyLine("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
 PrintAccuracyLine("ddddocr", results.Select(r => (r.gt, r.ddddocr)).ToList());
 
-var ensembleResults = results.Select(r =>
+var ensembleOldResults = results.Select(r =>
 {
     var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr };
-    var valid = candidates.Where(c => Regex.IsMatch(c, "^[A-Z0-9]{6}$")).ToList();
+    var valid = candidates.Where(c => Regex.IsMatch(c, "^[A-Z]{6}$")).ToList();
     if (valid.Count == 0) return (r.gt, result: string.Empty);
     var winner = valid.GroupBy(c => c).OrderByDescending(g => g.Count()).First().Key;
     return (r.gt, result: winner);
 }).ToList();
-PrintAccuracyLine("** ENSEMBLE **", ensembleResults);
+PrintAccuracyLine("ENSEMBLE (old)", ensembleOldResults);
+
+var ensembleResults = results.Select(r =>
+{
+    var all = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr };
+    var valid = all.Where(c => c.Length == 6 && c.All(char.IsAsciiLetterUpper)).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, int>();
+        foreach (var c in valid)
+        {
+            var ch = c[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + 1;
+        }
+        result[pos] = votes
+            .OrderByDescending(v => v.Value)
+            .First().Key;
+    }
+    return (r.gt, result: new string(result));
+}).ToList();
+PrintAccuracyLine("** ENSEMBLE v2 **", ensembleResults);
 
 var anyCorrectResults = results.Select(r =>
 {
@@ -436,7 +459,35 @@ static string RunDdddOcr(string imagePath, DDDDOCR ocr)
 }
 
 static string FilterCaptchaText(string raw)
-    => new(raw.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+{
+    var correctionMap = new Dictionary<char, char>
+    {
+        ['0'] = 'O', ['1'] = 'L', ['2'] = 'Z', ['3'] = 'E',
+        ['4'] = 'A', ['5'] = 'S', ['6'] = 'D', ['7'] = 'T',
+        ['8'] = 'B', ['9'] = 'Q',
+        ['\u53EA'] = 'R', ['\u6C34'] = 'K', ['\u4E2D'] = 'P', ['\u5DF4'] = 'B',
+        ['\u4E03'] = 'L', ['\u53E3'] = 'O', ['\u4E0A'] = 'W',
+    };
+
+    var sb = new System.Text.StringBuilder(raw.Length);
+    foreach (var ch in raw)
+    {
+        var upper = char.ToUpperInvariant(ch);
+        if (correctionMap.TryGetValue(upper, out var mapped))
+        {
+            sb.Append(mapped);
+        }
+        else if (correctionMap.TryGetValue(ch, out var mapped2))
+        {
+            sb.Append(mapped2);
+        }
+        else if (char.IsAsciiLetterUpper(upper))
+        {
+            sb.Append(upper);
+        }
+    }
+    return sb.ToString();
+}
 
 static async Task<string> CallVisionApiAsync(HttpClient httpClient, string apiKey, string imagePath)
 {

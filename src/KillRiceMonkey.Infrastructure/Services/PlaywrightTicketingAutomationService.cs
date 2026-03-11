@@ -948,8 +948,36 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return mask;
     }
 
+    private static readonly Dictionary<char, char> CaptchaCharCorrectionMap = new()
+    {
+        ['0'] = 'O', ['1'] = 'L', ['2'] = 'Z', ['3'] = 'E',
+        ['4'] = 'A', ['5'] = 'S', ['6'] = 'D', ['7'] = 'T',
+        ['8'] = 'B', ['9'] = 'Q',
+        ['\u53EA'] = 'R', ['\u6C34'] = 'K', ['\u4E2D'] = 'P', ['\u5DF4'] = 'B',
+        ['\u4E03'] = 'L', ['\u53E3'] = 'O', ['\u4E0A'] = 'W',
+    };
+
     private static string FilterCaptchaText(string raw)
-        => new(raw.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+    {
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (var ch in raw)
+        {
+            var upper = char.ToUpperInvariant(ch);
+            if (CaptchaCharCorrectionMap.TryGetValue(upper, out var mapped))
+            {
+                sb.Append(mapped);
+            }
+            else if (CaptchaCharCorrectionMap.TryGetValue(ch, out var mapped2))
+            {
+                sb.Append(mapped2);
+            }
+            else if (char.IsAsciiLetterUpper(upper))
+            {
+                sb.Append(upper);
+            }
+        }
+        return sb.ToString();
+    }
 
     private async Task<string> RecognizeCaptchaTextAsync(ILocator inputLocator, IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
     {
@@ -1003,8 +1031,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         var ddddocrResult = RunDdddOcrOnBytes(screenshotBytes);
         var ddddocrFiltered = FilterCaptchaText(ddddocrResult);
-        if (Regex.IsMatch(ddddocrFiltered, "^[A-Z0-9]{6}$"))
-            return ddddocrFiltered;
 
         var preprocessors = new (string name, Func<Mat, Mat> fn)[]
         {
@@ -1028,34 +1054,44 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         });
 
         var candidatesList = candidates.ToList();
+
+        if (ddddocrFiltered.Length == 6)
+            candidatesList.Add(("ddddocr", ddddocrFiltered, 1.0f));
+
         var validCandidates = candidatesList
-            .Where(c => Regex.IsMatch(c.filtered, "^[A-Z0-9]{6}$"))
+            .Where(c => c.filtered.Length == 6 && c.filtered.All(char.IsAsciiLetterUpper))
             .ToList();
 
         if (validCandidates.Count > 0)
         {
-            var winner = validCandidates
-                .GroupBy(c => c.filtered)
-                .OrderByDescending(g => g.Count())
-                .ThenByDescending(g => g.Max(c => c.conf))
-                .First();
-            return winner.Key;
+            var result = new char[6];
+            for (var pos = 0; pos < 6; pos++)
+            {
+                var votes = new Dictionary<char, (int count, float maxConf)>();
+                foreach (var c in validCandidates)
+                {
+                    var ch = c.filtered[pos];
+                    if (votes.TryGetValue(ch, out var existing))
+                        votes[ch] = (existing.count + 1, Math.Max(existing.maxConf, c.conf));
+                    else
+                        votes[ch] = (1, c.conf);
+                }
+
+                result[pos] = votes
+                    .OrderByDescending(v => v.Value.count)
+                    .ThenByDescending(v => v.Value.maxConf)
+                    .First().Key;
+            }
+            return new string(result);
         }
 
-        using var rawSource = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
-        if (rawSource.Empty())
-            return candidatesList.OrderByDescending(c => c.conf).FirstOrDefault().filtered ?? string.Empty;
+        if (ddddocrFiltered.Length == 6)
+            return ddddocrFiltered;
 
-        var (rawText, rawConf) = RunCaptchaOcrOnMat(rawSource);
-        var rawFiltered = FilterCaptchaText(rawText);
-        if (Regex.IsMatch(rawFiltered, "^[A-Z0-9]{6}$") && rawConf >= 0.3f)
-            return rawFiltered;
-
-        var allCandidates = candidatesList
-            .Select(c => (filtered: c.filtered, conf: c.conf))
-            .Append((filtered: rawFiltered, conf: rawConf));
-        var bestFallback = allCandidates.OrderByDescending(c => c.conf).First().filtered;
-        return bestFallback;
+        var bestFallback = candidatesList
+            .OrderByDescending(c => c.conf)
+            .FirstOrDefault();
+        return bestFallback.filtered ?? string.Empty;
     }
 
     private static (string text, float confidence) RunCaptchaOcrOnMat(Mat source)
