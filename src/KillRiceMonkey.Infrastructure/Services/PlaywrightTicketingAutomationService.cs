@@ -1029,90 +1029,120 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private string RunLocalCaptchaOcr(byte[] screenshotBytes)
     {
-        var ddddocrResult = RunDdddOcrOnBytes(screenshotBytes);
-        var ddddocrFiltered = FilterCaptchaText(ddddocrResult);
+        var candidates = new System.Collections.Concurrent.ConcurrentBag<(string method, string filtered, double weight)>();
 
-        string ddddocrInvFiltered = string.Empty;
-        try
+        var ddddocrRaw = RunDdddOcrOnBytes(screenshotBytes);
+        var ddddocrFiltered = FilterCaptchaText(ddddocrRaw);
+        if (ddddocrFiltered.Length == 6 && ddddocrFiltered.All(char.IsAsciiLetterUpper))
+            candidates.Add(("original", ddddocrFiltered, 2.0));
+
+        var variants = new (string name, int mode, double weight)[]
         {
-            using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
-            if (!source.Empty())
+            ("gray", 0, 1.0),
+            ("binary", 1, 1.0),
+            ("invert", 2, 1.5),
+            ("contrast", 3, 1.0),
+        };
+
+        Parallel.ForEach(variants, item =>
+        {
+            try
+            {
+                using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
+                if (source.Empty()) return;
+                using var processed = item.mode switch
+                {
+                    0 => PreprocessForDdddocr(source, DdddocrPreprocessMode.Grayscale),
+                    1 => PreprocessForDdddocr(source, DdddocrPreprocessMode.Binary),
+                    2 => PreprocessForDdddocr(source, DdddocrPreprocessMode.Invert),
+                    3 => PreprocessForDdddocr(source, DdddocrPreprocessMode.Contrast),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
+                Cv2.ImEncode(".png", processed, out var pngBytes);
+                var raw = RunDdddOcrOnBytes(pngBytes);
+                var filtered = FilterCaptchaText(raw);
+                if (filtered.Length == 6 && filtered.All(char.IsAsciiLetterUpper))
+                    candidates.Add((item.name, filtered, item.weight));
+            }
+            catch { }
+        });
+
+        var validCandidates = candidates.ToList();
+        if (validCandidates.Count == 0)
+        {
+            if (ddddocrFiltered.Length >= 4)
+                return ddddocrFiltered;
+            return string.Empty;
+        }
+
+        var result = new char[6];
+        for (var pos = 0; pos < 6; pos++)
+        {
+            var votes = new Dictionary<char, double>();
+            foreach (var c in validCandidates)
+            {
+                var ch = c.filtered[pos];
+                votes[ch] = votes.GetValueOrDefault(ch) + c.weight;
+            }
+            result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+        }
+        return new string(result);
+    }
+
+    private enum DdddocrPreprocessMode { Grayscale, Binary, Invert, Contrast }
+
+    private static Mat PreprocessForDdddocr(Mat source, DdddocrPreprocessMode mode)
+    {
+        switch (mode)
+        {
+            case DdddocrPreprocessMode.Grayscale:
+            {
+                using var gray = new Mat();
+                Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+                var result = new Mat();
+                Cv2.CvtColor(gray, result, ColorConversionCodes.GRAY2BGR);
+                return result;
+            }
+            case DdddocrPreprocessMode.Binary:
+            {
+                using var gray = new Mat();
+                Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+                using var binary = new Mat();
+                Cv2.Threshold(gray, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+                var result = new Mat();
+                Cv2.CvtColor(binary, result, ColorConversionCodes.GRAY2BGR);
+                return result;
+            }
+            case DdddocrPreprocessMode.Invert:
             {
                 using var gray = new Mat();
                 Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
                 using var inv = new Mat();
                 Cv2.BitwiseNot(gray, inv);
-                using var invBgr = new Mat();
-                Cv2.CvtColor(inv, invBgr, ColorConversionCodes.GRAY2BGR);
-                Cv2.ImEncode(".png", invBgr, out var invBytes);
-                var ddddocrInvResult = RunDdddOcrOnBytes(invBytes);
-                ddddocrInvFiltered = FilterCaptchaText(ddddocrInvResult);
+                var result = new Mat();
+                Cv2.CvtColor(inv, result, ColorConversionCodes.GRAY2BGR);
+                return result;
             }
-        }
-        catch { }
-
-        var preprocessors = new (string name, Func<Mat, Mat> fn)[]
-        {
-            ("hsv-otsu",   PrepareHsvCaptchaMask),
-            ("hsv-auto",   PrepareHsvAutoThresholdCaptchaMask),
-            ("hsv-satval", PrepareHsvSatValueCaptchaMask),
-            ("kmeans",     PrepareKMeansCaptchaMask),
-        };
-
-        var candidates = new System.Collections.Concurrent.ConcurrentBag<(string method, string filtered, float conf)>();
-
-        Parallel.ForEach(preprocessors, item =>
-        {
-            var (name, fn) = item;
-            using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
-            if (source.Empty()) return;
-            using var mask = fn(source);
-            var (text, conf) = RunCaptchaOcrOnMat(mask);
-            var filtered = FilterCaptchaText(text);
-            candidates.Add((name, filtered, conf));
-        });
-
-        var candidatesList = candidates.ToList();
-
-        if (ddddocrFiltered.Length == 6)
-            candidatesList.Add(("ddddocr", ddddocrFiltered, 1.0f));
-        if (ddddocrInvFiltered.Length == 6)
-            candidatesList.Add(("ddddocr-inv", ddddocrInvFiltered, 1.0f));
-
-        var validCandidates = candidatesList
-            .Where(c => c.filtered.Length == 6 && c.filtered.All(char.IsAsciiLetterUpper))
-            .ToList();
-
-        if (validCandidates.Count > 0)
-        {
-            var result = new char[6];
-            for (var pos = 0; pos < 6; pos++)
+            case DdddocrPreprocessMode.Contrast:
             {
-                var votes = new Dictionary<char, (int count, float maxConf)>();
-                foreach (var c in validCandidates)
-                {
-                    var ch = c.filtered[pos];
-                    if (votes.TryGetValue(ch, out var existing))
-                        votes[ch] = (existing.count + 1, Math.Max(existing.maxConf, c.conf));
-                    else
-                        votes[ch] = (1, c.conf);
-                }
-
-                result[pos] = votes
-                    .OrderByDescending(v => v.Value.count)
-                    .ThenByDescending(v => v.Value.maxConf)
-                    .First().Key;
+                using var lab = new Mat();
+                Cv2.CvtColor(source, lab, ColorConversionCodes.BGR2Lab);
+                var channels = Cv2.Split(lab);
+                using var clahe = Cv2.CreateCLAHE(4.0, new OpenCvSharp.Size(8, 8));
+                var enhanced = new Mat();
+                clahe.Apply(channels[0], enhanced);
+                channels[0].Dispose();
+                channels[0] = enhanced;
+                using var merged = new Mat();
+                Cv2.Merge(channels, merged);
+                foreach (var ch in channels) ch.Dispose();
+                var result = new Mat();
+                Cv2.CvtColor(merged, result, ColorConversionCodes.Lab2BGR);
+                return result;
             }
-            return new string(result);
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mode));
         }
-
-        if (ddddocrFiltered.Length == 6)
-            return ddddocrFiltered;
-
-        var bestFallback = candidatesList
-            .OrderByDescending(c => c.conf)
-            .FirstOrDefault();
-        return bestFallback.filtered ?? string.Empty;
     }
 
     private static (string text, float confidence) RunCaptchaOcrOnMat(Mat source)
@@ -1350,7 +1380,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task SolveCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        const int maxAttempts = 3;
+        const int maxAttempts = 5;
         const int minLength = 4;
         const int maxLength = 8;
 
@@ -1360,7 +1390,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
             {
-                (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, Timeout.InfiniteTimeSpan, cancellationToken);
+                (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, TimeSpan.FromSeconds(1), cancellationToken);
                 if (inputLocator is not null)
                 {
                     page = contextPage;
@@ -1378,9 +1408,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var attemptSw = Stopwatch.StartNew();
 
             var text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
-            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text}", attempt, maxAttempts, text);
+            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
 
             if (text.Length < minLength || text.Length > maxLength)
             {
@@ -1391,7 +1422,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             try
             {
-                await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 1000 });
+                await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 500 });
             }
             catch (TimeoutException)
             {
@@ -1411,24 +1442,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     continue;
                 }
             }
-
-            string filledValue;
-            try
-            {
-                filledValue = await inputLocator.First.EvaluateAsync<string>("el => el.value || ''");
-            }
-            catch (PlaywrightException)
-            {
-                filledValue = string.Empty;
-            }
-
-            if (string.IsNullOrEmpty(filledValue))
-            {
-                _logger.LogWarning("CAPTCHA fill verification failed: input empty after fill");
-                continue;
-            }
-
-            await Task.Delay(100, cancellationToken);
 
             const string submitSelector = "button:text-is('입력완료'), a:has-text('입력완료'), a[onclick*='fnCheck']";
             ILocator? submitLocator = null;
@@ -1469,7 +1482,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 {
                     try
                     {
-                        await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
+                        await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
                     }
                     catch (PlaywrightException)
                     {
@@ -1504,8 +1517,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     try { return await inputLocator.CountAsync() == 0; }
                     catch (PlaywrightException) { return false; }
                 },
-                TimeSpan.FromSeconds(1.5),
+                TimeSpan.FromMilliseconds(600),
                 cancellationToken);
+
+            _logger.LogInformation("CAPTCHA attempt {Attempt} totalMs={TotalMs} submitted={Submitted}", attempt, attemptSw.ElapsedMilliseconds, submitted);
 
             if (submitted)
             {
@@ -1513,7 +1528,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return;
             }
 
-            _logger.LogWarning("CAPTCHA 인식 실패 (attempt {Attempt}/{Max}), 새로고침 시도", attempt, maxAttempts);
             if (attempt < maxAttempts)
                 await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
         }
@@ -1545,8 +1559,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (jsResult)
             {
-                _logger.LogInformation("CAPTCHA 새로고침 JS 함수 호출 성공");
-                await Task.Delay(200, cancellationToken);
+                await Task.Delay(50, cancellationToken);
                 return;
             }
         }
@@ -1562,9 +1575,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var count = await refreshLocator.CountAsync();
             if (count > 0)
             {
-                await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
-                _logger.LogInformation("CAPTCHA 새로고침 버튼 클릭 완료 (count={Count})", count);
-                await Task.Delay(200, cancellationToken);
+                await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
+                await Task.Delay(50, cancellationToken);
                 return;
             }
         }
@@ -1580,8 +1592,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
                 return true;
             }");
-            _logger.LogInformation("CAPTCHA 이미지 캐시 무효화 완료");
-            await Task.Delay(200, cancellationToken);
+            await Task.Delay(50, cancellationToken);
         }
         catch (Exception ex)
         {
