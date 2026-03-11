@@ -3,8 +3,8 @@ using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
 const string CdpEndpoint = "http://localhost:9222";
-const string ImageSelector = "#imgCaptcha, img[src*='captcha' i], img[src*='cap_img' i]";
-const string RefreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn";
+const string ImageSelector = "#imgCaptcha, [class*='captchaImage'] img, img[src*='captcha' i], img[src*='cap_img' i]";
+const string RefreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
 
 var targetCount = args.Length > 0 && int.TryParse(args[0], out var c) ? c : 1000;
 var captchaType = args.Length > 1 ? args[1].ToLowerInvariant() : "new";
@@ -99,8 +99,12 @@ foreach (var pg in context.Pages)
 
 if (captchaPage is null || imageLocator is null)
 {
-    Console.Error.WriteLine("CAPTCHA 이미지를 찾을 수 없습니다. CAPTCHA가 표시된 페이지에서 실행하세요.");
-    Console.Error.WriteLine("(예매하기 버튼을 눌러 CAPTCHA가 나타난 상태에서 이 도구를 실행)");
+    Console.Error.WriteLine("CAPTCHA 이미지를 찾을 수 없습니다.");
+    Console.Error.WriteLine($"탐색한 페이지: {context.Pages.Count}개");
+    foreach (var pg in context.Pages)
+        Console.Error.WriteLine($"  - {pg.Url}");
+    Console.Error.WriteLine($"사용 셀렉터: {ImageSelector}");
+    Console.Error.WriteLine("CAPTCHA가 표시된 페이지에서 다시 시도하세요.");
     return 1;
 }
 
