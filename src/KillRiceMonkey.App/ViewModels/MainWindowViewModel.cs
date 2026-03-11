@@ -239,10 +239,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 {
                     _runCts.Token.ThrowIfCancellationRequested();
                     attempt++;
-                    StatusMessage = attempt == 1
-                        ? "NOL 자동화 실행 중"
-                        : $"NOL 자동화 재시도 중 ({attempt}회)";
 
+                    if (!await _ticketingAutomationService.IsNolPageReadyAsync(_runCts.Token))
+                    {
+                        StatusMessage = $"NOL 페이지 대기 중 ({attempt}회 폴링)";
+                        await Task.Delay(200, _runCts.Token);
+                        continue;
+                    }
+
+                    StatusMessage = "NOL 자동화 실행 중";
                     var result = await _ticketingAutomationService.RunAsync(request, _runCts.Token);
 
                     if (result.IsSuccess)
@@ -253,7 +258,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {attempt}회 시도 실패 — {result.Message}";
-                    await Task.Delay(1500, _runCts.Token);
+                    await Task.Delay(500, _runCts.Token);
                 }
             }
             else
