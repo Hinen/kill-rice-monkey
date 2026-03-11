@@ -60,9 +60,7 @@ else
     return 1;
 }
 
-var files = Enumerable.Range(1, 110)
-    .Select(i => Path.Combine(samplesDir, $"captcha_{i:D3}.png"))
-    .Where(File.Exists)
+var files = Directory.GetFiles(samplesDir, "captcha_*.png")
     .OrderBy(f => f)
     .ToList();
 
