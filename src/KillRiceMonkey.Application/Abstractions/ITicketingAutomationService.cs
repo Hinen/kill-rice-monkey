@@ -9,4 +9,5 @@ public interface ITicketingAutomationService
     Task<bool> IsNolAutomationPreparedAsync(CancellationToken cancellationToken);
     Task<string> LaunchNolRemoteDebugBrowserAsync(CancellationToken cancellationToken);
     Task<string> PrepareNolAutomationAsync(CancellationToken cancellationToken);
+    Task<bool> IsNolPageReadyAsync(CancellationToken cancellationToken);
 }

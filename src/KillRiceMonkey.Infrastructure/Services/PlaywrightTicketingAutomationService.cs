@@ -466,6 +466,66 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return Task.CompletedTask;
     }
 
+    public async Task<bool> IsNolPageReadyAsync(CancellationToken cancellationToken)
+    {
+        if (_preparedNolPage is not null && !_preparedNolPage.IsClosed)
+        {
+            try
+            {
+                if (SafePageUrl(_preparedNolPage).Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase) &&
+                    await _preparedNolPage.Locator("#productSide").CountAsync() > 0)
+                {
+                    return true;
+                }
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        if (_preparedNolConnectedBrowser is null)
+        {
+            try
+            {
+                _playwright ??= await Playwright.CreateAsync();
+                _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, cancellationToken);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (_preparedNolConnectedBrowser is null)
+            {
+                return false;
+            }
+        }
+
+        foreach (var page in _preparedNolConnectedBrowser.Contexts.SelectMany(x => x.Pages).Where(x => !x.IsClosed))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var url = SafePageUrl(page);
+            if (!url.Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (await page.Locator("#productSide").CountAsync() > 0)
+                {
+                    _preparedNolPage = page;
+                    return true;
+                }
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        return false;
+    }
+
     private static async Task<bool> IsNolCdpEndpointAvailableAsync(string endpoint, CancellationToken cancellationToken)
     {
         try
