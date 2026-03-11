@@ -1250,7 +1250,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var xpath = string.Join("/", Enumerable.Repeat("..", level));
             var container = inputLocator.Locator($"xpath={xpath}");
 
-            var hinted = container.Locator("img[src*='captcha' i], img[src*='cap_img' i]");
+            var hinted = container.Locator("img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
             try { if (await hinted.CountAsync() > 0) return hinted.First; } catch (PlaywrightException) { }
 
             var canvas = container.Locator("canvas");
@@ -1274,7 +1274,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         ILocator FrameOrPage(string selector) =>
             captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
 
-        var frameHinted = FrameOrPage("img[src*='captcha' i], img[src*='cap_img' i]");
+        var frameHinted = FrameOrPage("img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
         try { if (await frameHinted.CountAsync() > 0) return frameHinted.First; } catch (PlaywrightException) { }
 
         var frameCanvas = FrameOrPage("canvas");
@@ -1406,7 +1406,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            const string submitSelector = "#divRecaptcha .capchaBtns a:first-child, button:has-text('입력완료'), a:has-text('입력완료')";
+            const string submitSelector = "#divRecaptcha .capchaBtns a:first-child, button:has-text('입력완료'), a:has-text('입력완료'), button:has-text('확인')";
             ILocator? submitLocator = null;
             var submitCount = 0;
 
@@ -1531,7 +1531,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             _logger.LogDebug(ex, "CAPTCHA JS 새로고침 실패");
         }
 
-        const string refreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn";
+        const string refreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
         try
         {
             var refreshLocator = FrameOrPage(refreshSelector);
@@ -1568,7 +1568,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private static async Task<(ILocator? inputLocator, IFrame? frame)> FindCaptchaInputAsync(
         IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        const string inputSelector = "#txtCaptcha, input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
+        const string inputSelector = "#txtCaptcha, [class*='captchaInput'] input, [class*='captchaInput'], input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
         var infinite = timeout == Timeout.InfiniteTimeSpan;
         var deadline = infinite ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow + timeout;
 
