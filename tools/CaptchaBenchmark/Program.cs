@@ -60,9 +60,10 @@ else
     return 1;
 }
 
-var files = Directory.GetFiles(samplesDir, "captcha_*.png")
-    .OrderBy(f => f)
-    .ToList();
+var allFiles = Directory.GetFiles(samplesDir, "captcha_*.png").OrderBy(f => f).ToList();
+var files = groundTruth.Count > 0
+    ? allFiles.Where(f => groundTruth.ContainsKey(Path.GetFileName(f))).ToList()
+    : allFiles;
 
 Console.WriteLine($"Found {files.Count} captcha images in {samplesDir}");
 Console.WriteLine($"tessdata path: {tessDataPath}");
@@ -72,8 +73,8 @@ using var httpClient = useVisionApi ? new HttpClient { Timeout = TimeSpan.FromSe
 
 using var ddddOcr = new DDDDOCR(DdddOcrMode.ClassifyBeta);
 
-var results = new List<(string filename, string gt, string kmeans, string hsvAuto, string hsvOtsu, string hsvSatVal, string ddddocr)>();
-var csvLines = new List<string> { "filename,ground_truth,kmeans_result,hsv_auto_result,hsv_otsu_result,hsv_satval_result,ddddocr_result" };
+var results = new List<(string filename, string gt, string kmeans, string hsvAuto, string hsvOtsu, string hsvSatVal, string ddddocr, string ddddGray, string ddddBin, string ddddInv, string ddddContrast)>();
+var csvLines = new List<string> { "filename,ground_truth,kmeans_result,hsv_auto_result,hsv_otsu_result,hsv_satval_result,ddddocr_result,dddd_gray,dddd_bin,dddd_inv,dddd_contrast" };
 
 foreach (var (filePath, idx) in files.Select((f, i) => (f, i)))
 {
@@ -97,36 +98,34 @@ foreach (var (filePath, idx) in files.Select((f, i) => (f, i)))
     var hsvOtsu = RunOcrWithMask(filePath, tessDataPath, PrepareHsvOtsuCaptchaMask);
     var hsvSatVal = RunOcrWithMask(filePath, tessDataPath, PrepareHsvSatValueCaptchaMask);
     var ddddocrResult = RunDdddOcr(filePath, ddddOcr);
+    var ddddGray = RunDdddOcrPreprocessed(filePath, ddddOcr, 0);
+    var ddddBin = RunDdddOcrPreprocessed(filePath, ddddOcr, 1);
+    var ddddInv = RunDdddOcrPreprocessed(filePath, ddddOcr, 2);
+    var ddddContrast = RunDdddOcrPreprocessed(filePath, ddddOcr, 3);
 
-    results.Add((filename, gt, kmeans, hsvAuto, hsvOtsu, hsvSatVal, ddddocrResult));
-    csvLines.Add($"{filename},{gt},{kmeans},{hsvAuto},{hsvOtsu},{hsvSatVal},{ddddocrResult}");
+    results.Add((filename, gt, kmeans, hsvAuto, hsvOtsu, hsvSatVal, ddddocrResult, ddddGray, ddddBin, ddddInv, ddddContrast));
+    csvLines.Add($"{filename},{gt},{kmeans},{hsvAuto},{hsvOtsu},{hsvSatVal},{ddddocrResult},{ddddGray},{ddddBin},{ddddInv},{ddddContrast}");
 
-    var km = MatchTag(gt, kmeans);
-    var ha = MatchTag(gt, hsvAuto);
-    var ho = MatchTag(gt, hsvOtsu);
-    var hs = MatchTag(gt, hsvSatVal);
     var dd = MatchTag(gt, ddddocrResult);
-    Console.WriteLine($"GT={gt,-8} KM={kmeans,-8}{km}  HA={hsvAuto,-8}{ha}  HO={hsvOtsu,-8}{ho}  HS={hsvSatVal,-8}{hs}  DD={ddddocrResult,-8}{dd}");
+    Console.WriteLine($"GT={gt,-8} DD={ddddocrResult,-8}{dd}  DG={ddddGray,-8}{MatchTag(gt,ddddGray)}  DB={ddddBin,-8}{MatchTag(gt,ddddBin)}  DI={ddddInv,-8}{MatchTag(gt,ddddInv)}  DC={ddddContrast,-8}{MatchTag(gt,ddddContrast)}");
 }
 
 await File.WriteAllLinesAsync(compareCsvPath, csvLines);
 Console.WriteLine($"\nResults saved to: {compareCsvPath}");
 
-PrintSummary("K-means", results.Select(r => (r.gt, r.kmeans)).ToList());
-PrintSummary("HSV Auto-Threshold", results.Select(r => (r.gt, r.hsvAuto)).ToList());
-PrintSummary("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
-PrintSummary("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
-PrintSummary("ddddocr", results.Select(r => (r.gt, r.ddddocr)).ToList());
-
 Console.WriteLine();
 Console.WriteLine("=== ACCURACY COMPARISON ===");
-Console.WriteLine($"{"Method",-22} {"Correct",8} {"Total",6} {"Accuracy",10}");
-Console.WriteLine(new string('-', 48));
+Console.WriteLine($"{"Method",-28} {"Correct",8} {"Total",6} {"Accuracy",10}");
+Console.WriteLine(new string('-', 56));
 PrintAccuracyLine("K-means", results.Select(r => (r.gt, r.kmeans)).ToList());
 PrintAccuracyLine("HSV Auto-Threshold", results.Select(r => (r.gt, r.hsvAuto)).ToList());
 PrintAccuracyLine("HSV Otsu", results.Select(r => (r.gt, r.hsvOtsu)).ToList());
 PrintAccuracyLine("HSV Sat+Value", results.Select(r => (r.gt, r.hsvSatVal)).ToList());
-PrintAccuracyLine("ddddocr", results.Select(r => (r.gt, r.ddddocr)).ToList());
+PrintAccuracyLine("ddddocr (original)", results.Select(r => (r.gt, r.ddddocr)).ToList());
+PrintAccuracyLine("ddddocr (gray)", results.Select(r => (r.gt, r.ddddGray)).ToList());
+PrintAccuracyLine("ddddocr (binary)", results.Select(r => (r.gt, r.ddddBin)).ToList());
+PrintAccuracyLine("ddddocr (invert)", results.Select(r => (r.gt, r.ddddInv)).ToList());
+PrintAccuracyLine("ddddocr (contrast)", results.Select(r => (r.gt, r.ddddContrast)).ToList());
 
 var ensembleOldResults = results.Select(r =>
 {
@@ -136,40 +135,265 @@ var ensembleOldResults = results.Select(r =>
     var winner = valid.GroupBy(c => c).OrderByDescending(g => g.Count()).First().Key;
     return (r.gt, result: winner);
 }).ToList();
-PrintAccuracyLine("ENSEMBLE (old)", ensembleOldResults);
+PrintAccuracyLine("ENSEMBLE v2 (old 5-way)", ensembleOldResults);
 
-var ensembleResults = results.Select(r =>
+var ensembleV3Results = results.Select(r =>
 {
-    var all = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr };
-    var valid = all.Where(c => c.Length == 6 && c.All(char.IsAsciiLetterUpper)).ToList();
+    var methodResults = new (string result, double weight)[]
+    {
+        (r.kmeans, 1.0),
+        (r.hsvAuto, 1.0),
+        (r.hsvOtsu, 1.0),
+        (r.hsvSatVal, 1.0),
+        (r.ddddocr, 2.0),
+        (r.ddddGray, 1.5),
+        (r.ddddBin, 1.5),
+        (r.ddddInv, 1.5),
+        (r.ddddContrast, 1.5),
+    };
+    var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
     if (valid.Count == 0) return (r.gt, result: string.Empty);
 
     var result = new char[6];
     for (var pos = 0; pos < 6; pos++)
     {
-        var votes = new Dictionary<char, int>();
-        foreach (var c in valid)
+        var votes = new Dictionary<char, double>();
+        foreach (var (text, weight) in valid)
         {
-            var ch = c[pos];
-            votes[ch] = votes.GetValueOrDefault(ch) + 1;
+            var ch = text[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + weight;
         }
-        result[pos] = votes
-            .OrderByDescending(v => v.Value)
-            .First().Key;
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
     }
     return (r.gt, result: new string(result));
 }).ToList();
-PrintAccuracyLine("** ENSEMBLE v2 **", ensembleResults);
+PrintAccuracyLine("** ENSEMBLE v3 (9-way) **", ensembleV3Results);
+
+var ensembleV3DdddOnlyResults = results.Select(r =>
+{
+    var methodResults = new (string result, double weight)[]
+    {
+        (r.ddddocr, 2.0),
+        (r.ddddGray, 1.5),
+        (r.ddddBin, 1.5),
+        (r.ddddInv, 1.5),
+        (r.ddddContrast, 1.5),
+    };
+    var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, double>();
+        foreach (var (text, weight) in valid)
+        {
+            var ch = text[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + weight;
+        }
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+    }
+    return (r.gt, result: new string(result));
+}).ToList();
+PrintAccuracyLine("ENSEMBLE ddddocr-only", ensembleV3DdddOnlyResults);
+
+var ensembleV4Results = results.Select(r =>
+{
+    var methodResults = new (string result, double weight)[]
+    {
+        (r.kmeans, 1.0),
+        (r.hsvAuto, 1.0),
+        (r.hsvOtsu, 1.0),
+        (r.hsvSatVal, 1.0),
+        (r.ddddocr, 2.0),
+        (r.ddddInv, 2.0),
+    };
+    var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, double>();
+        foreach (var (text, weight) in valid)
+        {
+            var ch = text[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + weight;
+        }
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+    }
+    return (r.gt, result: new string(result));
+}).ToList();
+PrintAccuracyLine("ENSEMBLE v4 (6-way)", ensembleV4Results);
+
+var ensembleV5Results = results.Select(r =>
+{
+    var ddddUnique = new HashSet<string>();
+    if (r.ddddocr.Length == 6 && r.ddddocr.All(char.IsAsciiLetterUpper))
+        ddddUnique.Add(r.ddddocr);
+
+    var extraDddd = new[] { (r.ddddGray, 1.0), (r.ddddBin, 1.0), (r.ddddInv, 1.5), (r.ddddContrast, 1.0) };
+    var methodResults = new List<(string result, double weight)>
+    {
+        (r.kmeans, 1.0),
+        (r.hsvAuto, 1.0),
+        (r.hsvOtsu, 1.0),
+        (r.hsvSatVal, 1.0),
+        (r.ddddocr, 2.0),
+    };
+    foreach (var (res, w) in extraDddd)
+    {
+        if (res.Length == 6 && res.All(char.IsAsciiLetterUpper) && !ddddUnique.Contains(res))
+        {
+            methodResults.Add((res, w));
+            ddddUnique.Add(res);
+        }
+    }
+
+    var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, double>();
+        foreach (var (text, weight) in valid)
+        {
+            var ch = text[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + weight;
+        }
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+    }
+    return (r.gt, result: new string(result));
+}).ToList();
+PrintAccuracyLine("ENSEMBLE v5 (dedup)", ensembleV5Results);
+
+var ensembleV6Results = results.Select(r =>
+{
+    var bestDddd = r.ddddocr;
+    if (r.ddddInv.Length == 6 && r.ddddInv.All(char.IsAsciiLetterUpper))
+    {
+        if (bestDddd.Length != 6 || !bestDddd.All(char.IsAsciiLetterUpper))
+            bestDddd = r.ddddInv;
+        else if (bestDddd != r.ddddInv)
+        {
+            var result6 = new char[6];
+            for (var pos = 0; pos < 6; pos++)
+            {
+                if (bestDddd[pos] == r.ddddInv[pos])
+                    result6[pos] = bestDddd[pos];
+                else
+                {
+                    var matchOrig = 0;
+                    var matchInv = 0;
+                    foreach (var extra in new[] { r.ddddGray, r.ddddContrast })
+                    {
+                        if (extra.Length == 6 && extra.All(char.IsAsciiLetterUpper))
+                        {
+                            if (extra[pos] == bestDddd[pos]) matchOrig++;
+                            if (extra[pos] == r.ddddInv[pos]) matchInv++;
+                        }
+                    }
+                    result6[pos] = matchInv > matchOrig ? r.ddddInv[pos] : bestDddd[pos];
+                }
+            }
+            bestDddd = new string(result6);
+        }
+    }
+
+    var methodResults = new (string result, double weight)[]
+    {
+        (r.kmeans, 1.0),
+        (r.hsvAuto, 1.0),
+        (r.hsvOtsu, 1.0),
+        (r.hsvSatVal, 1.0),
+        (bestDddd, 2.0),
+    };
+    var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, double>();
+        foreach (var (text, weight) in valid)
+        {
+            var ch = text[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + weight;
+        }
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+    }
+    return (r.gt, result: new string(result));
+}).ToList();
+PrintAccuracyLine("** ENSEMBLE v6 (smart) **", ensembleV6Results);
+
+var ensembleV7Results = results.Select(r =>
+{
+    var methodResults = new (string result, double weight)[]
+    {
+        (r.kmeans, 1.0),
+        (r.hsvAuto, 1.0),
+        (r.hsvOtsu, 1.0),
+        (r.hsvSatVal, 1.0),
+        (r.ddddocr, 1.5),
+        (r.ddddInv, 1.5),
+    };
+    var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, double>();
+        foreach (var (text, weight) in valid)
+        {
+            var ch = text[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + weight;
+        }
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+    }
+    return (r.gt, result: new string(result));
+}).ToList();
+PrintAccuracyLine("ENSEMBLE v7 (5+inv 1.5w)", ensembleV7Results);
+
+var ensembleV8Results = results.Select(r =>
+{
+    var methodResults = new (string result, double weight)[]
+    {
+        (r.kmeans, 1.0),
+        (r.hsvAuto, 1.0),
+        (r.hsvOtsu, 1.0),
+        (r.hsvSatVal, 1.0),
+        (r.ddddocr, 1.0),
+        (r.ddddInv, 1.0),
+    };
+    var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+    if (valid.Count == 0) return (r.gt, result: string.Empty);
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, double>();
+        foreach (var (text, weight) in valid)
+        {
+            var ch = text[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + weight;
+        }
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+    }
+    return (r.gt, result: new string(result));
+}).ToList();
+PrintAccuracyLine("** ENSEMBLE v8 (6x eq) **", ensembleV8Results);
 
 var anyCorrectResults = results.Select(r =>
 {
-    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr };
+    var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr, r.ddddGray, r.ddddBin, r.ddddInv, r.ddddContrast };
     var anyCorrect = candidates.Any(c => string.Equals(c, r.gt, StringComparison.OrdinalIgnoreCase));
     return (r.gt, result: anyCorrect ? r.gt : string.Empty);
 }).ToList();
 PrintAccuracyLine("Any-Correct (max)", anyCorrectResults);
 
-Console.WriteLine(new string('=', 48));
+Console.WriteLine(new string('=', 56));
 
 return 0;
 
@@ -180,21 +404,10 @@ static string MatchTag(string gt, string result)
 
 static void PrintAccuracyLine(string name, List<(string gt, string result)> pairs)
 {
-    var withBoth = pairs.Count(p => !string.IsNullOrEmpty(p.gt) && !string.IsNullOrEmpty(p.result));
     var correct = pairs.Count(p => !string.IsNullOrEmpty(p.gt) && string.Equals(p.gt, p.result, StringComparison.OrdinalIgnoreCase));
     var total = pairs.Count(p => !string.IsNullOrEmpty(p.gt));
     var accuracy = total > 0 ? (double)correct / total * 100 : 0;
-    Console.WriteLine($"{name,-22} {correct,8} {total,6} {accuracy,9:F1}%");
-}
-
-static void PrintSummary(string name, List<(string gt, string result)> pairs)
-{
-    var total = pairs.Count(p => !string.IsNullOrEmpty(p.gt));
-    var correct = pairs.Count(p => !string.IsNullOrEmpty(p.gt) && string.Equals(p.gt, p.result, StringComparison.OrdinalIgnoreCase));
-    var empty = pairs.Count(p => string.IsNullOrEmpty(p.result));
-    var accuracy = total > 0 ? (double)correct / total * 100 : 0;
-    Console.WriteLine($"\n--- {name} ---");
-    Console.WriteLine($"  Correct: {correct}/{total}  Accuracy: {accuracy:F1}%  Empty: {empty}");
+    Console.WriteLine($"{name,-28} {correct,8} {total,6} {accuracy,9:F1}%");
 }
 
 static string RunOcrWithMask(string imagePath, string tessDataPath, Func<Mat, Mat> prepareMask)
@@ -454,6 +667,89 @@ static string RunDdddOcr(string imagePath, DDDDOCR ocr)
         Console.Error.WriteLine($"  ddddocr error: {ex.Message}");
         return string.Empty;
     }
+}
+
+static string RunDdddOcrPreprocessed(string imagePath, DDDDOCR ocr, int mode)
+{
+    try
+    {
+        using var source = Cv2.ImRead(imagePath, ImreadModes.Color);
+        if (source.Empty()) return string.Empty;
+
+        using var processed = mode switch
+        {
+            0 => ToGrayscaleMat(source),
+            1 => ToBinaryMat(source),
+            2 => ToInvertMat(source),
+            3 => ToContrastMat(source),
+            _ => throw new ArgumentOutOfRangeException(nameof(mode))
+        };
+
+        Cv2.ImEncode(".png", processed, out var pngBytes);
+        var raw = ocr.Classify(pngBytes);
+        return FilterCaptchaText(raw);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  ddddocr({mode}) error: {ex.Message}");
+        return string.Empty;
+    }
+}
+
+static Mat ToGrayscaleMat(Mat source)
+{
+    var gray = new Mat();
+    Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+    var result = new Mat();
+    Cv2.CvtColor(gray, result, ColorConversionCodes.GRAY2BGR);
+    gray.Dispose();
+    return result;
+}
+
+static Mat ToBinaryMat(Mat source)
+{
+    var gray = new Mat();
+    Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+    var binary = new Mat();
+    Cv2.Threshold(gray, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+    gray.Dispose();
+    var result = new Mat();
+    Cv2.CvtColor(binary, result, ColorConversionCodes.GRAY2BGR);
+    binary.Dispose();
+    return result;
+}
+
+static Mat ToInvertMat(Mat source)
+{
+    var gray = new Mat();
+    Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+    var inv = new Mat();
+    Cv2.BitwiseNot(gray, inv);
+    gray.Dispose();
+    var result = new Mat();
+    Cv2.CvtColor(inv, result, ColorConversionCodes.GRAY2BGR);
+    inv.Dispose();
+    return result;
+}
+
+static Mat ToContrastMat(Mat source)
+{
+    var lab = new Mat();
+    Cv2.CvtColor(source, lab, ColorConversionCodes.BGR2Lab);
+    var channels = Cv2.Split(lab);
+    using var clahe = Cv2.CreateCLAHE(4.0, new OpenCvSharp.Size(8, 8));
+    var enhanced = new Mat();
+    clahe.Apply(channels[0], enhanced);
+    channels[0].Dispose();
+    channels[0] = enhanced;
+    var merged = new Mat();
+    Cv2.Merge(channels, merged);
+    foreach (var ch in channels) ch.Dispose();
+    lab.Dispose();
+    var result = new Mat();
+    Cv2.CvtColor(merged, result, ColorConversionCodes.Lab2BGR);
+    merged.Dispose();
+    return result;
 }
 
 static string FilterCaptchaText(string raw)
