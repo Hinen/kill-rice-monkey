@@ -1032,6 +1032,25 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var ddddocrResult = RunDdddOcrOnBytes(screenshotBytes);
         var ddddocrFiltered = FilterCaptchaText(ddddocrResult);
 
+        string ddddocrInvFiltered = string.Empty;
+        try
+        {
+            using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
+            if (!source.Empty())
+            {
+                using var gray = new Mat();
+                Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+                using var inv = new Mat();
+                Cv2.BitwiseNot(gray, inv);
+                using var invBgr = new Mat();
+                Cv2.CvtColor(inv, invBgr, ColorConversionCodes.GRAY2BGR);
+                Cv2.ImEncode(".png", invBgr, out var invBytes);
+                var ddddocrInvResult = RunDdddOcrOnBytes(invBytes);
+                ddddocrInvFiltered = FilterCaptchaText(ddddocrInvResult);
+            }
+        }
+        catch { }
+
         var preprocessors = new (string name, Func<Mat, Mat> fn)[]
         {
             ("hsv-otsu",   PrepareHsvCaptchaMask),
@@ -1057,6 +1076,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         if (ddddocrFiltered.Length == 6)
             candidatesList.Add(("ddddocr", ddddocrFiltered, 1.0f));
+        if (ddddocrInvFiltered.Length == 6)
+            candidatesList.Add(("ddddocr-inv", ddddocrInvFiltered, 1.0f));
 
         var validCandidates = candidatesList
             .Where(c => c.filtered.Length == 6 && c.filtered.All(char.IsAsciiLetterUpper))
