@@ -1271,7 +1271,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var xpath = string.Join("/", Enumerable.Repeat("..", level));
             var container = inputLocator.Locator($"xpath={xpath}");
 
-            var hinted = container.Locator("img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
+            var hinted = container.Locator("#imgCaptcha, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
             try { if (await hinted.CountAsync() > 0) return hinted.First; } catch (PlaywrightException) { }
 
             var canvas = container.Locator("canvas");
@@ -1295,7 +1295,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         ILocator FrameOrPage(string selector) =>
             captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
 
-        var frameHinted = FrameOrPage("img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
+        var frameHinted = FrameOrPage("#imgCaptcha, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
         try { if (await frameHinted.CountAsync() > 0) return frameHinted.First; } catch (PlaywrightException) { }
 
         var frameCanvas = FrameOrPage("canvas");
@@ -1398,7 +1398,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 try
                 {
                     await inputLocator.First.EvaluateAsync(@"(el, val) => {
-                        el.value = val;
+                        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                        if (setter) { setter.call(el, val); } else { el.value = val; }
                         el.dispatchEvent(new Event('input', { bubbles: true }));
                         el.dispatchEvent(new Event('change', { bubbles: true }));
                         if (typeof jQuery !== 'undefined') { jQuery(el).val(val).trigger('input').trigger('change'); }
@@ -1427,7 +1428,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            const string submitSelector = "#divRecaptcha .capchaBtns a:first-child, button:has-text('입력완료'), a:has-text('입력완료'), button:has-text('확인')";
+            await Task.Delay(100, cancellationToken);
+
+            const string submitSelector = "button:text-is('입력완료'), a:has-text('입력완료'), a[onclick*='fnCheck']";
             ILocator? submitLocator = null;
             var submitCount = 0;
 
@@ -1457,16 +1460,16 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             {
                 try
                 {
-                    await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
+                    await submitLocator.First.EvaluateAsync(@"el => {
+                        if (el.disabled) el.disabled = false;
+                        el.click();
+                    }");
                 }
-                catch (TimeoutException)
+                catch (PlaywrightException)
                 {
                     try
                     {
-                        await submitLocator.First.EvaluateAsync(@"el => {
-                            if (el.disabled) el.disabled = false;
-                            el.click();
-                        }");
+                        await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
                     }
                     catch (PlaywrightException)
                     {
