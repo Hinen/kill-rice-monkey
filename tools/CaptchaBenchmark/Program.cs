@@ -385,6 +385,14 @@ var ensembleV8Results = results.Select(r =>
 }).ToList();
 PrintAccuracyLine("** ENSEMBLE v8 (6x eq) **", ensembleV8Results);
 
+var ensembleV9Results = results.Select(r =>
+{
+    var candidates = BuildOptimizedDdddCandidates(r.ddddocr, r.ddddGray, r.ddddBin, r.ddddInv, r.ddddContrast);
+    var result = BuildOptimizedDdddResult(candidates);
+    return (r.gt, result);
+}).ToList();
+PrintAccuracyLine("** ENSEMBLE v9 (optimized) **", ensembleV9Results);
+
 var anyCorrectResults = results.Select(r =>
 {
     var candidates = new[] { r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr, r.ddddGray, r.ddddBin, r.ddddInv, r.ddddContrast };
@@ -781,6 +789,84 @@ static string FilterCaptchaText(string raw)
         }
     }
     return sb.ToString();
+}
+
+static List<(string method, string filtered, double weight)> BuildOptimizedDdddCandidates(
+    string original,
+    string gray,
+    string binary,
+    string invert,
+    string contrast)
+{
+    var weighted = new (string method, string filtered, double weight)[]
+    {
+        ("original", original, 2.0),
+        ("gray", gray, 1.0),
+        ("binary", binary, 1.0),
+        ("invert", invert, 1.5),
+        ("contrast", contrast, 1.0),
+    };
+
+    return weighted
+        .Where(x => x.filtered.Length == 6 && x.filtered.All(char.IsAsciiLetterUpper))
+        .ToList();
+}
+
+static string BuildOptimizedDdddResult(List<(string method, string filtered, double weight)> candidates)
+{
+    if (candidates.Count == 0)
+        return string.Empty;
+
+    var result = new char[6];
+    for (var pos = 0; pos < 6; pos++)
+    {
+        var votes = new Dictionary<char, double>();
+        foreach (var candidate in candidates)
+        {
+            var ch = candidate.filtered[pos];
+            votes[ch] = votes.GetValueOrDefault(ch) + candidate.weight;
+        }
+        result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+    }
+
+    ApplyConfusionCorrection(result, candidates);
+    return new string(result);
+}
+
+static void ApplyConfusionCorrection(char[] result, List<(string method, string filtered, double weight)> candidates)
+{
+    var confusionRules = new[]
+    {
+        ('O', 'Q', 'Q'),
+        ('O', 'D', 'D'),
+        ('B', 'D', 'D'),
+        ('E', 'Q', 'Q'),
+        ('T', 'L', 'L'),
+    };
+
+    for (var pos = 0; pos < result.Length; pos++)
+    {
+        var charSources = new Dictionary<char, HashSet<string>>();
+        foreach (var c in candidates)
+        {
+            var ch = c.filtered[pos];
+            if (!charSources.TryGetValue(ch, out var sources))
+            {
+                sources = new HashSet<string>();
+                charSources[ch] = sources;
+            }
+            sources.Add(c.method);
+        }
+
+        foreach (var (winner, challenger, replacement) in confusionRules)
+        {
+            if (result[pos] != winner) continue;
+            if (!charSources.ContainsKey(challenger)) continue;
+            if (!charSources[challenger].Contains("invert")) continue;
+            result[pos] = replacement;
+            break;
+        }
+    }
 }
 
 static async Task<string> CallVisionApiAsync(HttpClient httpClient, string apiKey, string imagePath)

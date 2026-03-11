@@ -1084,6 +1084,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
         }
+
         return new string(result);
     }
 
