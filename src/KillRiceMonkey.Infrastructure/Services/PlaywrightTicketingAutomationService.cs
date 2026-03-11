@@ -999,28 +999,26 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return string.Empty;
         }
 
-        var visionTask = RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
-        var localTask = Task.Run(() => RunLocalCaptchaOcr(screenshotBytes), cancellationToken);
-
-        var tasks = new List<Task<string>> { localTask, visionTask };
-        while (tasks.Count > 0)
+        var localResult = RunLocalCaptchaOcr(screenshotBytes);
+        if (localResult.Length >= 4)
         {
-            var completed = await Task.WhenAny(tasks);
-            tasks.Remove(completed);
-            try
+            _logger.LogInformation("CAPTCHA solved via local OCR: {Text}", localResult);
+            _ = RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
+            return localResult;
+        }
+
+        try
+        {
+            var visionResult = await RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
+            if (!string.IsNullOrEmpty(visionResult))
             {
-                var result = await completed;
-                if (!string.IsNullOrEmpty(result))
-                {
-                    _logger.LogInformation("CAPTCHA solved via {Source}: {Text}",
-                        completed == visionTask ? "Vision API" : "local OCR", result);
-                    return result;
-                }
+                _logger.LogInformation("CAPTCHA solved via Vision API: {Text}", visionResult);
+                return visionResult;
             }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "CAPTCHA OCR task failed");
-            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Vision API CAPTCHA failed");
         }
 
         _logger.LogWarning("CAPTCHA OCR: all methods failed, returning empty");
@@ -2158,10 +2156,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private static async Task<IPage> PrepareNolBookingResultPageAsync(IPage page, DateTimeOffset deadline)
     {
-        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions
-        {
-            Timeout = (float)Math.Max(1000, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds)
-        });
         await page.BringToFrontAsync();
         return page;
     }
