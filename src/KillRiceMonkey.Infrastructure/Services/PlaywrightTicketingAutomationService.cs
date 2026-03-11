@@ -203,7 +203,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var executablePath = NolBrowserExecutableCandidates.FirstOrDefault(File.Exists);
         if (string.IsNullOrWhiteSpace(executablePath))
         {
-            throw new InvalidOperationException("Edge 또는 Chrome 실행 파일을 찾지 못했습니다.");
+            throw new InvalidOperationException("Chrome 또는 Edge 실행 파일을 찾지 못했습니다.");
         }
 
         var profileDirectory = Path.Combine(
