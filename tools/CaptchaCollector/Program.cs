@@ -3,12 +3,15 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
-const string CdpEndpoint = "http://localhost:9222";
-const string ImageSelector = "#imgCaptcha, [class*='captchaImage'] img, img[src*='captcha' i], img[src*='cap_img' i]";
-const string RefreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
+const string NolCdpEndpoint = "http://localhost:9222";
+const string MelonCdpEndpoint = "http://localhost:9223";
+const string ImageSelector = "#imgCaptcha, #captchaImg, [class*='captchaImage'] img, img[src*='captcha' i], img[src*='cap_img' i]";
+const string RefreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, #btnReload, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
 
 var targetCount = args.Length > 0 && int.TryParse(args[0], out var c) ? c : 1000;
 var captchaType = args.Length > 1 ? args[1].ToLowerInvariant() : "new";
+var isMelon = captchaType == "melon";
+var cdpEndpoint = isMelon ? MelonCdpEndpoint : NolCdpEndpoint;
 var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
 
 var projectDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -44,12 +47,13 @@ using var playwright = await Playwright.CreateAsync();
 IBrowser browser;
 try
 {
-    browser = await playwright.Chromium.ConnectOverCDPAsync(CdpEndpoint);
+    browser = await playwright.Chromium.ConnectOverCDPAsync(cdpEndpoint);
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"CDP 연결 실패: {ex.Message}");
-    Console.Error.WriteLine("remote-debug 브라우저를 먼저 실행하세요 (앱에서 'NOL Remote Debug 열기' 버튼).");
+    var buttonName = isMelon ? "Melon Remote Debug 열기" : "NOL Remote Debug 열기";
+    Console.Error.WriteLine($"remote-debug 브라우저를 먼저 실행하세요 (앱에서 '{buttonName}' 버튼).");
     return 1;
 }
 
@@ -272,7 +276,7 @@ static async Task TryRefreshAsync(IPage page, IFrame? frame, CancellationToken c
     try
     {
         var jsCode = @"() => {
-            var imgs = document.querySelectorAll('#imgCaptcha, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+            var imgs = document.querySelectorAll('#imgCaptcha, #captchaImg, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
             for (var img of imgs) {
                 var src = img.src || '';
                 if (src.startsWith('data:')) continue;

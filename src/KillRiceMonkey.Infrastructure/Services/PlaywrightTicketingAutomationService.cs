@@ -1739,7 +1739,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var xpath = string.Join("/", Enumerable.Repeat("..", level));
             var container = inputLocator.Locator($"xpath={xpath}");
 
-            var hinted = container.Locator("#imgCaptcha, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
+            var hinted = container.Locator("#imgCaptcha, #captchaImg, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
             try { if (await hinted.CountAsync() > 0) return hinted.First; } catch (PlaywrightException) { }
 
             var canvas = container.Locator("canvas");
@@ -1763,7 +1763,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         ILocator FrameOrPage(string selector) =>
             captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
 
-        var frameHinted = FrameOrPage("#imgCaptcha, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
+        var frameHinted = FrameOrPage("#imgCaptcha, #captchaImg, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
         try { if (await frameHinted.CountAsync() > 0) return frameHinted.First; } catch (PlaywrightException) { }
 
         var frameCanvas = FrameOrPage("canvas");
@@ -2006,7 +2006,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             _logger.LogDebug(ex, "CAPTCHA JS 새로고침 실패");
         }
 
-        const string refreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
+        const string refreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, #btnReload, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
         try
         {
             var refreshLocator = FrameOrPage(refreshSelector);
@@ -2026,7 +2026,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         try
         {
             await EvalJs(@"() => {
-                var imgs = document.querySelectorAll('#imgCaptcha, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+                var imgs = document.querySelectorAll('#imgCaptcha, #captchaImg, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
                 for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
                 return true;
             }");
