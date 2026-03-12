@@ -28,6 +28,9 @@
     <EmbeddedResource Include="..\..\button-images\nol\*.png">
       <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Nol.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="..\..\button-images\melon\*.png">
+      <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Melon.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <PropertyGroup>
