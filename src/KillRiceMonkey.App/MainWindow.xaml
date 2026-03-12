@@ -282,8 +282,8 @@
                                                  Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
                                         <TextBlock Margin="0,10,0,0"
                                                    Style="{StaticResource HelperTextStyle}"
-                                                    Text="Template가 Yes24, Booth, Melon이면 기본 폴더가 자동으로 고정되고, NOL은 이미지 폴더를 사용하지 않으며, Custom일 때만 직접 수정할 수 있습니다." />
-                                    </StackPanel>
+                                                    Text="Template가 Yes24, Booth, Melon이면 기본 폴더가 자동으로 고정되고, NOL/Melon은 이미지 폴더를 사용하지 않으며, Custom일 때만 직접 수정할 수 있습니다." />
+                                     </StackPanel>
 
                                      <StackPanel Grid.Row="4" Grid.ColumnSpan="3">
                                          <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="단계별 제한 시간(초)" />
@@ -328,9 +328,46 @@
                                                            Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
                                              </StackPanel>
                                          </Grid>
-                                     </Border>
+                                      </Border>
 
-                                     <Grid Grid.Row="8" Grid.ColumnSpan="3">
+                                      <Border Grid.Row="6"
+                                              Grid.ColumnSpan="3"
+                                              Style="{StaticResource SoftCardStyle}"
+                                              Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                          <Grid>
+                                              <Grid.RowDefinitions>
+                                                  <RowDefinition Height="Auto" />
+                                                  <RowDefinition Height="16" />
+                                                  <RowDefinition Height="Auto" />
+                                              </Grid.RowDefinitions>
+                                              <Grid.ColumnDefinitions>
+                                                  <ColumnDefinition Width="*" />
+                                                  <ColumnDefinition Width="20" />
+                                                  <ColumnDefinition Width="220" />
+                                              </Grid.ColumnDefinitions>
+
+                                              <StackPanel Grid.ColumnSpan="3">
+                                                  <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="Melon 화면 입력값" />
+                                                  <TextBlock Margin="0,8,0,0"
+                                                             Style="{StaticResource HelperTextStyle}"
+                                                             Text="먼저 remote debug 브라우저를 열고 로그인한 뒤, 관람일과 시간을 선택해 자동화를 실행합니다." />
+                                              </StackPanel>
+
+                                              <StackPanel Grid.Row="2">
+                                                  <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="관람일" />
+                                                  <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                           Text="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}" />
+                                              </StackPanel>
+
+                                              <StackPanel Grid.Row="2" Grid.Column="2">
+                                                  <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="시간" />
+                                                  <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                           Text="{Binding DesiredTime, UpdateSourceTrigger=PropertyChanged}" />
+                                              </StackPanel>
+                                          </Grid>
+                                      </Border>
+
+                                      <Grid Grid.Row="8" Grid.ColumnSpan="3">
                                          <Grid.ColumnDefinitions>
                                              <ColumnDefinition Width="Auto" />
                                              <ColumnDefinition Width="16" />
@@ -348,19 +385,39 @@
                                                  </StackPanel>
                                              </Button>
 
-                                             <Button Margin="0,0,0,12"
-                                                     Style="{StaticResource PrimaryButtonStyle}"
-                                                     Command="{Binding PrepareNolAutomationCommand}"
-                                                     Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                              <Button Margin="0,0,0,12"
+                                                      Style="{StaticResource PrimaryButtonStyle}"
+                                                      Command="{Binding PrepareNolAutomationCommand}"
+                                                      Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="READY" />
                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Text="NOL 준비" />
-                                                 </StackPanel>
-                                             </Button>
+                                                  </StackPanel>
+                                              </Button>
 
-                                             <Button Width="176"
-                                                     Style="{StaticResource PrimaryButtonStyle}"
-                                                     Command="{Binding StartAutomationCommand}">
+                                              <Button Margin="0,0,0,12"
+                                                      Style="{StaticResource PrimaryButtonStyle}"
+                                                      Command="{Binding LaunchMelonRemoteDebugCommand}"
+                                                      Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="OPEN" />
+                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Text="Melon Remote Debug 열기" />
+                                                  </StackPanel>
+                                              </Button>
+
+                                              <Button Margin="0,0,0,12"
+                                                      Style="{StaticResource PrimaryButtonStyle}"
+                                                      Command="{Binding PrepareMelonAutomationCommand}"
+                                                      Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="READY" />
+                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Text="Melon 준비" />
+                                                  </StackPanel>
+                                              </Button>
+
+                                              <Button Width="176"
+                                                      Style="{StaticResource PrimaryButtonStyle}"
+                                                      Command="{Binding StartAutomationCommand}">
                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Foreground="White" Text="RUN" />
                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Foreground="White" Text="자동화 실행" />
@@ -410,10 +467,10 @@
                                   <TextBlock Margin="0,14,0,0" Style="{StaticResource HelperTextStyle}" TextWrapping="Wrap">
                                       <Run Text="전역 핫키(" />
                                       <Run Text="{Binding HotkeyText}" />
-                                      <Run Text=")로 실행 가능. 이미지 모드는 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png, NOL은 먼저 remote debug 브라우저를 열고 로그인한 뒤 자동화를 실행합니다." />
-                                  </TextBlock>
-                              </StackPanel>
-                          </Border>
+                                      <Run Text=")로 실행 가능. 이미지 모드는 파일명 규칙: 숫자.png 또는 숫자-normal.png / 숫자-active.png, NOL/Melon은 먼저 remote debug 브라우저를 열고 로그인한 뒤 자동화를 실행합니다." />
+                                   </TextBlock>
+                               </StackPanel>
+                           </Border>
 
                         <Border Grid.Row="4" Style="{StaticResource SurfaceCardStyle}" VerticalAlignment="Stretch">
                             <Grid>
