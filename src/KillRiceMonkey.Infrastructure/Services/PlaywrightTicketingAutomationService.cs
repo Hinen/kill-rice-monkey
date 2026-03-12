@@ -48,6 +48,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private const uint MouseeventfLeftup = 0x0004;
     private const string NolRemoteDebugLaunchUrl = "https://tickets.interpark.com/";
     private const string NolCdpEndpoint = "http://127.0.0.1:9222/";
+    private const string MelonRemoteDebugLaunchUrl = "https://ticket.melon.com/";
+    private const int MelonRemoteDebugPort = 9223;
+    private const string MelonCdpEndpoint = "http://127.0.0.1:9223/";
     private const string NolTemplateResourcePrefix = EmbeddedTemplatePrefix + "Nol.";
     private static readonly string[] NolBrowserExecutableCandidates =
     [
@@ -85,6 +88,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private readonly ILogger<PlaywrightTicketingAutomationService> _logger;
     private readonly ResiliencePipeline _pipeline;
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
+    private readonly SemaphoreSlim _melonBrowserLock = new(1, 1);
     private static readonly HttpClient NolHttpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
     private static readonly HttpClient VisionApiClient = new() { Timeout = TimeSpan.FromSeconds(4) };
     private static Action<Exception, string>? _captchaWarningLogger;
@@ -94,7 +98,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private IPlaywright? _playwright;
     private IBrowser? _preparedNolConnectedBrowser;
     private IPage? _preparedNolPage;
+    private IBrowser? _preparedMelonConnectedBrowser;
+    private IPage? _preparedMelonPage;
     private bool _popupClosedDuringPrepare;
+    private bool _melonPopupClosedDuringPrepare;
 
     public PlaywrightTicketingAutomationService(ILogger<PlaywrightTicketingAutomationService> logger)
     {
@@ -118,6 +125,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 if (request.TemplateType == TicketingTemplateType.Nol)
                 {
                     return await RunNolAutomationAsync(request, token);
+                }
+
+                if (request.TemplateType == TicketingTemplateType.Melon)
+                {
+                    return await RunMelonAutomationAsync(request, token);
                 }
 
                 if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
@@ -176,9 +188,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     public async ValueTask DisposeAsync()
     {
         await ReleasePreparedNolConnectionAsync();
+        await ReleasePreparedMelonConnectionAsync();
         _playwright?.Dispose();
         _playwright = null;
         _nolBrowserLock.Dispose();
+        _melonBrowserLock.Dispose();
     }
 
     public async Task<bool> IsNolRemoteDebugBrowserAvailableAsync(CancellationToken cancellationToken)
@@ -190,6 +204,17 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     public async Task<bool> IsNolAutomationPreparedAsync(CancellationToken cancellationToken)
     {
         return await TryGetPreparedNolPageAsync(cancellationToken) is not null;
+    }
+
+    public async Task<bool> IsMelonRemoteDebugBrowserAvailableAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return await IsNolCdpEndpointAvailableAsync(MelonCdpEndpoint, cancellationToken);
+    }
+
+    public async Task<bool> IsMelonAutomationPreparedAsync(CancellationToken cancellationToken)
+    {
+        return await TryGetPreparedMelonPageAsync(cancellationToken) is not null;
     }
 
     public async Task<string> LaunchNolRemoteDebugBrowserAsync(CancellationToken cancellationToken)
@@ -236,6 +261,50 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return $"브라우저 실행은 요청했지만 remote debug 포트 확인이 지연되고 있습니다. 직접 확인: {NolCdpEndpoint}";
     }
 
+    public async Task<string> LaunchMelonRemoteDebugBrowserAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (await IsNolCdpEndpointAvailableAsync(MelonCdpEndpoint, cancellationToken))
+        {
+            return $"이미 remote debug 브라우저가 열려 있습니다: {MelonCdpEndpoint}";
+        }
+
+        var executablePath = NolBrowserExecutableCandidates.FirstOrDefault(File.Exists);
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            throw new InvalidOperationException("Chrome 또는 Edge 실행 파일을 찾지 못했습니다.");
+        }
+
+        var profileDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "KillRiceMonkey",
+            "MelonRemoteDebugProfile");
+        Directory.CreateDirectory(profileDirectory);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executablePath,
+            Arguments = $"--remote-debugging-port={MelonRemoteDebugPort} --user-data-dir=\"{profileDirectory}\" --new-window \"{MelonRemoteDebugLaunchUrl}\"",
+            UseShellExecute = true
+        };
+
+        Process.Start(startInfo);
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await IsNolCdpEndpointAvailableAsync(MelonCdpEndpoint, cancellationToken))
+            {
+                return $"remote debug 브라우저를 열었습니다: {MelonRemoteDebugLaunchUrl}";
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        return $"브라우저 실행은 요청했지만 remote debug 포트 확인이 지연되고 있습니다. 직접 확인: {MelonCdpEndpoint}";
+    }
+
     public async Task<string> PrepareNolAutomationAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -256,6 +325,26 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var snapshot = await DescribeNolPageStateAsync(page);
         _logger.LogInformation("Prepared NOL automation state. {State}", snapshot);
         return $"NOL 준비 완료: {SafePageUrl(page)}";
+    }
+
+    public async Task<string> PrepareMelonAutomationAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await IsMelonRemoteDebugBrowserAvailableAsync(cancellationToken))
+        {
+            throw new InvalidOperationException("먼저 Melon Remote Debug 브라우저를 실행하세요.");
+        }
+
+        var page = await EnsurePreparedMelonConnectedPageAsync(cancellationToken);
+        if (page is null)
+        {
+            throw new InvalidOperationException("준비할 Melon 상품 페이지를 찾지 못했습니다. 상품 페이지를 연 뒤 다시 시도하세요.");
+        }
+
+        await page.BringToFrontAsync();
+        await EnsureMelonPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+        _melonPopupClosedDuringPrepare = true;
+        return $"Melon 준비 완료: {SafePageUrl(page)}";
     }
 
     private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
@@ -374,6 +463,86 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
+    private async Task<AutomationRunResult> RunMelonAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
+    {
+        if (request.StepTimeoutSeconds <= 0)
+        {
+            return new AutomationRunResult(false, "단계별 제한 시간은 1초 이상이어야 합니다.", DateTimeOffset.Now);
+        }
+
+        if (!TryParseDesiredDate(request.DesiredDate, out var desiredDate))
+        {
+            return new AutomationRunResult(false, "관람일 형식이 올바르지 않습니다. 예: 2026.03.14", DateTimeOffset.Now);
+        }
+
+        if (string.IsNullOrWhiteSpace(request.DesiredRound))
+        {
+            return new AutomationRunResult(false, "시간 값이 비어 있습니다. 예: 18:00", DateTimeOffset.Now);
+        }
+
+        var desiredTime = NormalizeText(request.DesiredRound);
+        var timeout = TimeSpan.FromSeconds(request.StepTimeoutSeconds);
+
+        try
+        {
+            var cdpResult = await TryRunMelonAutomationViaConnectedBrowserAsync(desiredDate, desiredTime, timeout, cancellationToken);
+            if (cdpResult is not null)
+            {
+                return cdpResult;
+            }
+
+            return new AutomationRunResult(false, "Melon remote debug 브라우저 연결 상태를 찾지 못했습니다.", DateTimeOffset.Now);
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogError(ex, "Melon DOM automation timed out. date={Date}, time={Time}", desiredDate, desiredTime);
+            return new AutomationRunResult(false, $"Melon DOM 자동화 시간 초과: {ex.Message}", DateTimeOffset.Now);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Melon DOM automation failed. date={Date}, time={Time}", desiredDate, desiredTime);
+            return new AutomationRunResult(false, $"Melon DOM 자동화 예외: {ex.Message}", DateTimeOffset.Now);
+        }
+    }
+
+    private async Task<AutomationRunResult?> TryRunMelonAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredTime, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        IPage? page = null;
+        try
+        {
+            page = await EnsurePreparedMelonConnectedPageAsync(cancellationToken);
+            if (page is null)
+            {
+                _logger.LogInformation("No existing Melon browser with CDP endpoint was found.");
+                return null;
+            }
+
+            _logger.LogInformation("Connected-browser Melon automation selected page. url={Url}", SafePageUrl(page));
+            await page.BringToFrontAsync();
+            if (!_melonPopupClosedDuringPrepare)
+            {
+                await EnsureMelonPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+            }
+
+            _melonPopupClosedDuringPrepare = false;
+            await SelectMelonDateAsync(page, desiredDate, timeout, cancellationToken);
+            await SelectMelonTimeAsync(page, desiredTime, timeout, cancellationToken);
+            var captchaPage = await ClickMelonBookingAsync(page, timeout, cancellationToken);
+            await SolveCaptchaAsync(captchaPage, timeout, cancellationToken);
+            return new AutomationRunResult(true, $"Melon 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredTime} 선택, CAPTCHA 입력 완료.", DateTimeOffset.Now);
+        }
+        catch (Exception ex)
+        {
+            if (page is not null)
+            {
+                throw new InvalidOperationException($"Melon 기존 브라우저 DOM 자동화 실패: {ex.Message}", ex);
+            }
+
+            _logger.LogWarning(ex, "Connected-browser Melon automation failed before selecting a page.");
+            return null;
+        }
+    }
+
     private async Task<IPage?> TryGetPreparedNolPageAsync(CancellationToken cancellationToken)
     {
         await _nolBrowserLock.WaitAsync(cancellationToken);
@@ -402,6 +571,98 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
+    private async Task<IPage?> TryGetPreparedMelonPageAsync(CancellationToken cancellationToken)
+    {
+        await _melonBrowserLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (await IsPreparedMelonPageReusableAsync(_preparedMelonPage, cancellationToken))
+            {
+                return _preparedMelonPage;
+            }
+
+            if (_preparedMelonConnectedBrowser is not null)
+            {
+                var refreshedPage = await FindConnectedMelonPageAsync(_preparedMelonConnectedBrowser, cancellationToken);
+                if (await IsPreparedMelonPageReusableAsync(refreshedPage, cancellationToken))
+                {
+                    _preparedMelonPage = refreshedPage;
+                    return refreshedPage;
+                }
+            }
+
+            return null;
+        }
+        finally
+        {
+            _melonBrowserLock.Release();
+        }
+    }
+
+    private async Task<IPage?> EnsurePreparedMelonConnectedPageAsync(CancellationToken cancellationToken)
+    {
+        await _melonBrowserLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (await IsPreparedMelonPageReusableAsync(_preparedMelonPage, cancellationToken))
+            {
+                return _preparedMelonPage;
+            }
+
+            if (_preparedMelonConnectedBrowser is not null)
+            {
+                var existingPage = await FindConnectedMelonPageAsync(_preparedMelonConnectedBrowser, cancellationToken);
+                if (await IsPreparedMelonPageReusableAsync(existingPage, cancellationToken))
+                {
+                    _preparedMelonPage = existingPage;
+                    return existingPage;
+                }
+            }
+
+            _playwright ??= await Playwright.CreateAsync();
+            _preparedMelonConnectedBrowser = await TryConnectToExistingMelonBrowserAsync(_playwright, cancellationToken);
+            if (_preparedMelonConnectedBrowser is null)
+            {
+                _preparedMelonPage = null;
+                return null;
+            }
+
+            _preparedMelonPage = await FindConnectedMelonPageAsync(_preparedMelonConnectedBrowser, cancellationToken);
+            return _preparedMelonPage;
+        }
+        finally
+        {
+            _melonBrowserLock.Release();
+        }
+    }
+
+    private static async Task<bool> IsPreparedMelonPageReusableAsync(IPage? page, CancellationToken cancellationToken)
+    {
+        if (page is null || page.IsClosed)
+        {
+            return false;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            return SafePageUrl(page).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase) &&
+                   await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0;
+        }
+        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        {
+            return false;
+        }
+    }
+
+    private Task ReleasePreparedMelonConnectionAsync()
+    {
+        _preparedMelonPage = null;
+        _preparedMelonConnectedBrowser = null;
+        _melonPopupClosedDuringPrepare = false;
+        return Task.CompletedTask;
+    }
+
     private async Task<IPage?> EnsurePreparedNolConnectedPageAsync(CancellationToken cancellationToken)
     {
         await _nolBrowserLock.WaitAsync(cancellationToken);
@@ -423,7 +684,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
 
             _playwright ??= await Playwright.CreateAsync();
-            _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, cancellationToken);
+            _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, NolCdpEndpoint, cancellationToken);
             if (_preparedNolConnectedBrowser is null)
             {
                 _preparedNolPage = null;
@@ -488,7 +749,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             try
             {
                 _playwright ??= await Playwright.CreateAsync();
-                _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, cancellationToken);
+                _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, NolCdpEndpoint, cancellationToken);
             }
             catch
             {
@@ -526,6 +787,66 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return false;
     }
 
+    public async Task<bool> IsMelonPageReadyAsync(CancellationToken cancellationToken)
+    {
+        if (_preparedMelonPage is not null && !_preparedMelonPage.IsClosed)
+        {
+            try
+            {
+                if (SafePageUrl(_preparedMelonPage).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase) &&
+                    await _preparedMelonPage.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0)
+                {
+                    return true;
+                }
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        if (_preparedMelonConnectedBrowser is null)
+        {
+            try
+            {
+                _playwright ??= await Playwright.CreateAsync();
+                _preparedMelonConnectedBrowser = await TryConnectToExistingMelonBrowserAsync(_playwright, cancellationToken);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (_preparedMelonConnectedBrowser is null)
+            {
+                return false;
+            }
+        }
+
+        foreach (var page in _preparedMelonConnectedBrowser.Contexts.SelectMany(x => x.Pages).Where(x => !x.IsClosed))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var url = SafePageUrl(page);
+            if (!url.Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0)
+                {
+                    _preparedMelonPage = page;
+                    return true;
+                }
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        return false;
+    }
+
     private static async Task<bool> IsNolCdpEndpointAvailableAsync(string endpoint, CancellationToken cancellationToken)
     {
         try
@@ -539,17 +860,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private static async Task<IBrowser?> TryConnectToExistingChromiumBrowserAsync(IPlaywright playwright, CancellationToken cancellationToken)
+    private static async Task<IBrowser?> TryConnectToExistingChromiumBrowserAsync(IPlaywright playwright, string endpoint, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            return await playwright.Chromium.ConnectOverCDPAsync(NolCdpEndpoint);
+            return await playwright.Chromium.ConnectOverCDPAsync(endpoint);
         }
         catch (PlaywrightException)
         {
             return null;
         }
+    }
+
+    private static Task<IBrowser?> TryConnectToExistingMelonBrowserAsync(IPlaywright playwright, CancellationToken cancellationToken)
+    {
+        return TryConnectToExistingChromiumBrowserAsync(playwright, MelonCdpEndpoint, cancellationToken);
     }
 
     private static async Task<IPage?> FindConnectedNolPageAsync(IBrowser browser, CancellationToken cancellationToken)
@@ -572,6 +898,59 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
 
             if (await TryWaitForConditionAsync(async () => await page.Locator("#productSide").CountAsync() > 0, TimeSpan.FromMilliseconds(400), cancellationToken))
+            {
+                score += 10;
+            }
+
+            try
+            {
+                if (await page.EvaluateAsync<bool>("() => document.visibilityState === 'visible'"))
+                {
+                    score += 3;
+                }
+
+                if (await page.EvaluateAsync<bool>("() => document.hasFocus()"))
+                {
+                    score += 3;
+                }
+            }
+            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+            {
+                continue;
+            }
+
+            if (score > 0)
+            {
+                candidates.Add((page, score));
+            }
+        }
+
+        return candidates
+            .OrderByDescending(x => x.Score)
+            .Select(x => x.Page)
+            .FirstOrDefault();
+    }
+
+    private static async Task<IPage?> FindConnectedMelonPageAsync(IBrowser browser, CancellationToken cancellationToken)
+    {
+        var candidates = new List<(IPage Page, int Score)>();
+        foreach (var page in browser.Contexts.SelectMany(x => x.Pages).Where(x => !x.IsClosed))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var url = SafePageUrl(page);
+            var score = 0;
+            if (url.Contains("ticket.melon.com", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 2;
+            }
+
+            if (url.Contains("/performance/index.htm", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 4;
+            }
+
+            if (await TryWaitForConditionAsync(async () => await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0, TimeSpan.FromMilliseconds(400), cancellationToken))
             {
                 score += 10;
             }
@@ -2019,6 +2398,73 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         throw new TimeoutException("NOL 안내 팝업을 닫지 못했습니다.");
     }
 
+    private static async Task EnsureMelonPopupClosedAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        var selectors = new[]
+        {
+            "a:has-text('레이어팝업닫기')",
+            "#popup_notice .close",
+            "#popup_notice [class*='close']",
+            ".popup .close",
+            ".popup .btn_close",
+            "[class*='popup'] [class*='close']",
+            "[class*='Close']"
+        };
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            foreach (var selector in selectors)
+            {
+                var buttons = page.Locator(selector);
+                var count = await buttons.CountAsync();
+                for (var index = 0; index < count; index++)
+                {
+                    var button = buttons.Nth(index);
+                    if (!await button.IsVisibleAsync())
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        await button.ClickAsync(new LocatorClickOptions
+                        {
+                            Force = true,
+                            Timeout = 1000
+                        });
+                    }
+                    catch (PlaywrightException)
+                    {
+                        await button.EvaluateAsync("element => { element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
+                    }
+
+                    await page.WaitForTimeoutAsync(150);
+                    break;
+                }
+            }
+
+            var hasVisiblePopup = await page.EvaluateAsync<bool>("""
+                () => {
+                    const candidates = Array.from(document.querySelectorAll('#popup_notice, .popup, [class*="popup"]'));
+                    return candidates.some(element => {
+                        const style = window.getComputedStyle(element);
+                        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0;
+                    });
+                }
+                """);
+
+            if (!hasVisiblePopup)
+            {
+                return;
+            }
+
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+        }
+    }
+
     private static async Task SelectNolDateAsync(IPage page, DateOnly desiredDate, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var side = page.Locator("#productSide");
@@ -2089,6 +2535,51 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         throw new InvalidOperationException($"NOL 달력에서 선택 가능한 관람일을 찾지 못했습니다: {desiredDate:yyyy.MM.dd}");
     }
 
+    private static async Task SelectMelonDateAsync(IPage page, DateOnly desiredDate, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var desiredPerfday = desiredDate.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+        var listItems = page.Locator("#list_date .item_date[data-perfday]");
+        var calendarButton = page.Locator($"#cal_wrapper .ticketCalendarBtn[data-perfday='{desiredPerfday}']:not([disabled])").First;
+
+        await WaitForConditionAsync(
+            async () => await listItems.CountAsync() > 0 || await calendarButton.CountAsync() > 0,
+            timeout,
+            cancellationToken,
+            "Melon 날짜 목록을 찾지 못했습니다.");
+
+        var listCount = await listItems.CountAsync();
+        for (var index = 0; index < listCount; index++)
+        {
+            var item = listItems.Nth(index);
+            if (!string.Equals(await item.GetAttributeAsync("data-perfday"), desiredPerfday, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            await ClickNolElementAsync(item);
+            await WaitForConditionAsync(
+                async () => (await item.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase),
+                timeout,
+                cancellationToken,
+                "Melon 관람일 선택 반영을 확인하지 못했습니다.");
+            return;
+        }
+
+        if (await calendarButton.CountAsync() > 0)
+        {
+            await ClickNolElementAsync(calendarButton);
+            await WaitForConditionAsync(
+                async () => (await calendarButton.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase) ||
+                          await page.Locator($"#list_date .item_date[data-perfday='{desiredPerfday}'].on").CountAsync() > 0,
+                timeout,
+                cancellationToken,
+                "Melon 관람일 선택 반영을 확인하지 못했습니다.");
+            return;
+        }
+
+        throw new InvalidOperationException($"Melon 관람일을 찾지 못했습니다: {desiredDate:yyyy.MM.dd}");
+    }
+
     private static async Task SelectNolRoundAsync(IPage page, string desiredRound, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var side = page.Locator("#productSide");
@@ -2128,6 +2619,45 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         throw new InvalidOperationException($"NOL 회차를 찾지 못했습니다: {desiredRound}");
+    }
+
+    private static async Task SelectMelonTimeAsync(IPage page, string desiredTime, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var timesLocator = page.Locator("#list_time .item_time");
+
+        await WaitForConditionAsync(async () => await timesLocator.CountAsync() > 0, timeout, cancellationToken, "Melon 시간 목록을 찾지 못했습니다.");
+
+        var count = await timesLocator.CountAsync();
+        for (var index = 0; index < count; index++)
+        {
+            var item = timesLocator.Nth(index);
+            var className = await item.GetAttributeAsync("class") ?? string.Empty;
+            if (className.Contains("disabled", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var timeText = NormalizeText(await item.InnerTextAsync());
+            if (!IsMatchingMelonTime(timeText, desiredTime))
+            {
+                continue;
+            }
+
+            if (className.Contains("on", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            await ClickNolElementAsync(item);
+            await WaitForConditionAsync(
+                async () => (await item.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase),
+                timeout,
+                cancellationToken,
+                "Melon 시간 선택 반영을 확인하지 못했습니다.");
+            return;
+        }
+
+        throw new InvalidOperationException($"Melon 시간을 찾지 못했습니다: {desiredTime}");
     }
 
     private sealed class NolRoundItem
@@ -2179,6 +2709,52 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
+    }
+
+    private static async Task<IPage> ClickMelonBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var bookingButton = page.Locator("#ticketReservation_Btn").First;
+        if (await bookingButton.CountAsync() == 0)
+        {
+            throw new InvalidOperationException("Melon 예매 버튼을 찾지 못했습니다.");
+        }
+
+        var beforePages = page.Context.Pages.Where(x => !x.IsClosed).ToHashSet();
+        await bookingButton.ScrollIntoViewIfNeededAsync();
+        await ClickNolBookingButtonAsync(bookingButton, timeout);
+
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var openPages = page.Context.Pages.Where(x => !x.IsClosed).ToList();
+            var newPage = openPages.FirstOrDefault(x => !beforePages.Contains(x));
+            if (newPage is not null)
+            {
+                await newPage.BringToFrontAsync();
+                if (SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase) ||
+                    await TryWaitForConditionAsync(
+                        async () => SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase),
+                        TimeSpan.FromMilliseconds(800),
+                        cancellationToken))
+                {
+                    return newPage;
+                }
+            }
+
+            var existingPopup = openPages.FirstOrDefault(x => SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
+            if (existingPopup is not null)
+            {
+                await existingPopup.BringToFrontAsync();
+                return existingPopup;
+            }
+
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+        }
+
+        throw new TimeoutException("Melon 예매 버튼 클릭 후 팝업 전환을 확인하지 못했습니다.");
     }
 
     private static async Task ClickNolBookingButtonAsync(ILocator bookingButton, TimeSpan timeout)
@@ -2352,6 +2928,18 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         return string.Equals(NormalizeText(normalizedActual), NormalizeText(normalizedDesired), StringComparison.Ordinal);
+    }
+
+    private static bool IsMatchingMelonTime(string actual, string desired)
+    {
+        var actualDigits = DigitsOnlyPattern.Replace(actual, string.Empty);
+        var desiredDigits = DigitsOnlyPattern.Replace(desired, string.Empty);
+        if (actualDigits.Length >= 4 && desiredDigits.Length >= 4)
+        {
+            return actualDigits[..4] == desiredDigits[..4];
+        }
+
+        return string.Equals(NormalizeText(actual), NormalizeText(desired), StringComparison.Ordinal);
     }
 
     private static bool TryParseNolRound(string value, out string round, out string time)
