@@ -1852,6 +1852,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (page.IsClosed)
+            {
+                _logger.LogInformation("CAPTCHA page closed before attempt {Attempt} – treating as success.", attempt);
+                return;
+            }
+
             var attemptSw = Stopwatch.StartNew();
 
             var text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
@@ -1938,7 +1944,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                                 else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
                             }");
                         }
-                        catch (PlaywrightException) { await inputLocator.First.PressAsync("Enter"); }
+                        catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
                     }
                 }
             }
@@ -1952,23 +1958,24 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                         else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
                     }");
                 }
-                catch (PlaywrightException) { await inputLocator.First.PressAsync("Enter"); }
+                catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
             }
 
             var submitted = await TryWaitForConditionAsync(
                 async () =>
                 {
+                    if (page.IsClosed) return true;
                     try { return await inputLocator.CountAsync() == 0; }
-                    catch (PlaywrightException) { return false; }
+                    catch (PlaywrightException) { return page.IsClosed; }
                 },
                 TimeSpan.FromMilliseconds(600),
                 cancellationToken);
 
             _logger.LogInformation("CAPTCHA attempt {Attempt} totalMs={TotalMs} submitted={Submitted}", attempt, attemptSw.ElapsedMilliseconds, submitted);
 
-            if (submitted)
+            if (submitted || page.IsClosed)
             {
-                _logger.LogInformation("CAPTCHA solved on attempt {Attempt}", attempt);
+                _logger.LogInformation("CAPTCHA solved on attempt {Attempt} (pageClosed={PageClosed})", attempt, page.IsClosed);
                 return;
             }
 
