@@ -17,6 +17,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string? _selectedTemplate;
     private string _imageDirectory = "button-images";
     private string _desiredDate = string.Empty;
+    private string _desiredTime = string.Empty;
     private string _desiredRound = string.Empty;
     private double _matchThreshold = 0.86;
     private int _stepTimeoutSeconds = 8;
@@ -25,6 +26,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string _statusMessage = "템플릿 선택 필요";
     private string _lastRunSummary = "자동화 실행 기록이 없습니다.";
     private DateTimeOffset _nolAutomationReadyAt;
+    private DateTimeOffset _melonAutomationReadyAt;
     private CancellationTokenSource? _runCts;
 
     public MainWindowViewModel(ITicketingAutomationService ticketingAutomationService)
@@ -32,6 +34,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         _ticketingAutomationService = ticketingAutomationService;
         LaunchNolRemoteDebugCommand = new AsyncCommand(LaunchNolRemoteDebugAsync, () => !IsRunning && IsNolTemplate);
         PrepareNolAutomationCommand = new AsyncCommand(PrepareNolAutomationAsync, () => !IsRunning && IsNolTemplate);
+        LaunchMelonRemoteDebugCommand = new AsyncCommand(LaunchMelonRemoteDebugAsync, () => !IsRunning && IsMelonTemplate);
+        PrepareMelonAutomationCommand = new AsyncCommand(PrepareMelonAutomationAsync, () => !IsRunning && IsMelonTemplate);
         StartAutomationCommand = new AsyncCommand(StartAutomationAsync, () => !IsRunning && HasSelectedTemplate);
     }
 
@@ -44,6 +48,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public AsyncCommand LaunchNolRemoteDebugCommand { get; }
 
     public AsyncCommand PrepareNolAutomationCommand { get; }
+
+    public AsyncCommand LaunchMelonRemoteDebugCommand { get; }
+
+    public AsyncCommand PrepareMelonAutomationCommand { get; }
 
     public string? SelectedTemplate
     {
@@ -69,6 +77,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         get => _desiredDate;
         set => SetProperty(ref _desiredDate, value);
+    }
+
+    public string DesiredTime
+    {
+        get => _desiredTime;
+        set => SetProperty(ref _desiredTime, value);
     }
 
     public string DesiredRound
@@ -108,6 +122,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             StartAutomationCommand.NotifyCanExecuteChanged();
             LaunchNolRemoteDebugCommand.NotifyCanExecuteChanged();
             PrepareNolAutomationCommand.NotifyCanExecuteChanged();
+            LaunchMelonRemoteDebugCommand.NotifyCanExecuteChanged();
+            PrepareMelonAutomationCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -137,6 +153,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public bool HasSelectedTemplate => !string.IsNullOrWhiteSpace(SelectedTemplate);
 
     public bool IsNolTemplate => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Nol;
+
+    public bool IsMelonTemplate => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Melon;
 
     public bool IsSuccessStatus => string.Equals(StatusMessage, "성공 종료", StringComparison.Ordinal);
 
@@ -206,6 +224,41 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             }
         }
 
+        if (templateType == TicketingTemplateType.Melon)
+        {
+            if (string.IsNullOrWhiteSpace(DesiredDate))
+            {
+                StatusMessage = "입력 확인 필요";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 관람일을 입력하세요. 예: 2026.03.14";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(DesiredTime))
+            {
+                StatusMessage = "입력 확인 필요";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 시간을 입력하세요. 예: 18:00";
+                return;
+            }
+
+            var readyCacheValid = (DateTimeOffset.UtcNow - _melonAutomationReadyAt).TotalMinutes < 10;
+            if (!readyCacheValid)
+            {
+                if (!await _ticketingAutomationService.IsMelonRemoteDebugBrowserAvailableAsync(CancellationToken.None))
+                {
+                    StatusMessage = "remote debug 필요";
+                    LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 먼저 'Melon Remote Debug 열기' 버튼으로 브라우저를 실행하세요.";
+                    return;
+                }
+
+                if (!await _ticketingAutomationService.IsMelonAutomationPreparedAsync(CancellationToken.None))
+                {
+                    StatusMessage = "Melon 준비 필요";
+                    LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 상품 페이지를 연 뒤 'Melon 준비' 버튼으로 연결을 미리 준비하세요.";
+                    return;
+                }
+            }
+        }
+
         if (mainWindow is not null)
         {
             mainWindow.WindowState = WindowState.Minimized;
@@ -231,8 +284,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 imageDirectory,
                 MatchThreshold,
                 StepTimeoutSeconds,
-                IsNolTemplate ? DesiredDate : null,
-                IsNolTemplate ? DesiredRound : null);
+                IsNolTemplate || IsMelonTemplate ? DesiredDate : null,
+                IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : null));
 
             if (templateType == TicketingTemplateType.Nol)
             {
@@ -250,6 +303,35 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     StatusMessage = "NOL 자동화 실행 중";
+                    var result = await _ticketingAutomationService.RunAsync(request, _runCts.Token);
+
+                    if (result.IsSuccess)
+                    {
+                        StatusMessage = "성공 종료";
+                        LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
+                        return;
+                    }
+
+                    LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {attempt}회 시도 실패 — {result.Message}";
+                    await Task.Delay(500, _runCts.Token);
+                }
+            }
+            else if (templateType == TicketingTemplateType.Melon)
+            {
+                var attempt = 0;
+                while (true)
+                {
+                    _runCts.Token.ThrowIfCancellationRequested();
+                    attempt++;
+
+                    if (!await _ticketingAutomationService.IsMelonPageReadyAsync(_runCts.Token))
+                    {
+                        StatusMessage = $"Melon 페이지 대기 중 ({attempt}회 폴링)";
+                        await Task.Delay(200, _runCts.Token);
+                        continue;
+                    }
+
+                    StatusMessage = "Melon 자동화 실행 중";
                     var result = await _ticketingAutomationService.RunAsync(request, _runCts.Token);
 
                     if (result.IsSuccess)
@@ -344,6 +426,61 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
+    private async Task LaunchMelonRemoteDebugAsync()
+    {
+        if (!IsMelonTemplate)
+        {
+            return;
+        }
+
+        IsRunning = true;
+        StatusMessage = "remote debug 브라우저 실행 중";
+
+        try
+        {
+            var message = await _ticketingAutomationService.LaunchMelonRemoteDebugBrowserAsync(CancellationToken.None);
+            StatusMessage = "성공 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = "예외 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | remote debug 브라우저 실행 실패: {ex.Message}";
+        }
+        finally
+        {
+            IsRunning = false;
+        }
+    }
+
+    private async Task PrepareMelonAutomationAsync()
+    {
+        if (!IsMelonTemplate)
+        {
+            return;
+        }
+
+        IsRunning = true;
+        StatusMessage = "Melon 자동화 준비 중";
+
+        try
+        {
+            var message = await _ticketingAutomationService.PrepareMelonAutomationAsync(CancellationToken.None);
+            _melonAutomationReadyAt = DateTimeOffset.UtcNow;
+            StatusMessage = "성공 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = "예외 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | Melon 준비 실패: {ex.Message}";
+        }
+        finally
+        {
+            IsRunning = false;
+        }
+    }
+
     private void HandleSelectedTemplateChanged(string? value)
     {
         var templateType = ParseTemplateType(value);
@@ -372,9 +509,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsImageDirectoryEditable));
         OnPropertyChanged(nameof(HasSelectedTemplate));
         OnPropertyChanged(nameof(IsNolTemplate));
+        OnPropertyChanged(nameof(IsMelonTemplate));
         StartAutomationCommand.NotifyCanExecuteChanged();
         LaunchNolRemoteDebugCommand.NotifyCanExecuteChanged();
         PrepareNolAutomationCommand.NotifyCanExecuteChanged();
+        LaunchMelonRemoteDebugCommand.NotifyCanExecuteChanged();
+        PrepareMelonAutomationCommand.NotifyCanExecuteChanged();
     }
 
     private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
