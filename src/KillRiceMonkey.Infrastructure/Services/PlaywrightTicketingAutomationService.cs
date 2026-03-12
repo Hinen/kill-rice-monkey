@@ -1470,7 +1470,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var ddddocrRaw = RunDdddOcrOnBytes(screenshotBytes);
         var ddddocrFiltered = FilterCaptchaText(ddddocrRaw);
-        if (ddddocrFiltered.Length == 6 && ddddocrFiltered.All(char.IsAsciiLetterUpper))
+        if (ddddocrFiltered.Length is >= 4 and <= 8 && ddddocrFiltered.All(char.IsAsciiLetterOrDigit))
             candidates.Add(("original", ddddocrFiltered, 2.0));
 
         var variants = new (string name, int mode, double weight)[]
@@ -1498,7 +1498,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 Cv2.ImEncode(".png", processed, out var pngBytes);
                 var raw = RunDdddOcrOnBytes(pngBytes);
                 var filtered = FilterCaptchaText(raw);
-                if (filtered.Length == 6 && filtered.All(char.IsAsciiLetterUpper))
+                if (filtered.Length is >= 4 and <= 8 && filtered.All(char.IsAsciiLetterOrDigit))
                     candidates.Add((item.name, filtered, item.weight));
             }
             catch { }
@@ -1512,11 +1512,17 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return string.Empty;
         }
 
-        var result = new char[6];
-        for (var pos = 0; pos < 6; pos++)
+        var majorityLength = validCandidates
+            .GroupBy(c => c.filtered.Length)
+            .OrderByDescending(g => g.Sum(x => x.weight))
+            .First().Key;
+        var sameLenCandidates = validCandidates.Where(c => c.filtered.Length == majorityLength).ToList();
+
+        var result = new char[majorityLength];
+        for (var pos = 0; pos < majorityLength; pos++)
         {
             var votes = new Dictionary<char, double>();
-            foreach (var c in validCandidates)
+            foreach (var c in sameLenCandidates)
             {
                 var ch = c.filtered[pos];
                 votes[ch] = votes.GetValueOrDefault(ch) + c.weight;
@@ -2404,6 +2410,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var selectors = new[]
         {
             "a:has-text('레이어팝업닫기')",
+            "a.btn_layerpopup_close",
             "#popup_notice .close",
             "#popup_notice [class*='close']",
             ".popup .close",
