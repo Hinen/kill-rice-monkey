@@ -636,23 +636,15 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private static async Task<bool> IsPreparedMelonPageReusableAsync(IPage? page, CancellationToken cancellationToken)
+    private static Task<bool> IsPreparedMelonPageReusableAsync(IPage? page, CancellationToken cancellationToken)
     {
         if (page is null || page.IsClosed)
         {
-            return false;
+            return Task.FromResult(false);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        try
-        {
-            return SafePageUrl(page).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase) &&
-                   await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0;
-        }
-        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
-        {
-            return false;
-        }
+        return Task.FromResult(SafePageUrl(page).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase));
     }
 
     private Task ReleasePreparedMelonConnectionAsync()
@@ -791,16 +783,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         if (_preparedMelonPage is not null && !_preparedMelonPage.IsClosed)
         {
-            try
+            if (SafePageUrl(_preparedMelonPage).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase))
             {
-                if (SafePageUrl(_preparedMelonPage).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase) &&
-                    await _preparedMelonPage.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0)
-                {
-                    return true;
-                }
-            }
-            catch (PlaywrightException)
-            {
+                return true;
             }
         }
 
@@ -831,17 +816,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
-            try
-            {
-                if (await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0)
-                {
-                    _preparedMelonPage = page;
-                    return true;
-                }
-            }
-            catch (PlaywrightException)
-            {
-            }
+            _preparedMelonPage = page;
+            return true;
         }
 
         return false;
@@ -2432,10 +2408,14 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             foreach (var selector in selectors)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 var buttons = page.Locator(selector);
                 var count = await buttons.CountAsync();
                 for (var index = 0; index < count; index++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     var button = buttons.Nth(index);
                     if (!await button.IsVisibleAsync())
                     {
@@ -2447,18 +2427,26 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                         await button.ClickAsync(new LocatorClickOptions
                         {
                             Force = true,
-                            Timeout = 1000
+                            Timeout = 300
                         });
                     }
                     catch (PlaywrightException)
                     {
-                        await button.EvaluateAsync("element => { element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
+                        try
+                        {
+                            await button.EvaluateAsync("element => { element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
+                        }
+                        catch (PlaywrightException)
+                        {
+                        }
                     }
 
-                    await page.WaitForTimeoutAsync(150);
+                    await Task.Delay(150, cancellationToken);
                     break;
                 }
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             var hasVisiblePopup = await page.EvaluateAsync<bool>("""
                 () => {
