@@ -11,6 +11,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 {
     private const string Yes24FixedImageDirectory = "button-images/yes24";
     private const string BoothFixedImageDirectory = "button-images/booth";
+    private const string MelonFixedImageDirectory = "button-images/melon";
 
     private readonly ITicketingAutomationService _ticketingAutomationService;
     private string? _selectedTemplate;
@@ -36,7 +37,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Booth", "NOL", "Custom"];
+    public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Booth", "NOL", "Melon", "Custom"];
 
     public AsyncCommand StartAutomationCommand { get; }
 
@@ -221,6 +222,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             {
                 TicketingTemplateType.Yes24 => Yes24FixedImageDirectory,
                 TicketingTemplateType.Booth => BoothFixedImageDirectory,
+                TicketingTemplateType.Melon => MelonFixedImageDirectory,
                 _ => ImageDirectory
             };
 
@@ -353,6 +355,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         {
             ImageDirectory = BoothFixedImageDirectory;
         }
+        else if (templateType == TicketingTemplateType.Melon)
+        {
+            ImageDirectory = MelonFixedImageDirectory;
+        }
         else if (templateType == TicketingTemplateType.Nol)
         {
             ImageDirectory = "button-images";
@@ -413,6 +419,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         if (value.Equals("NOL", StringComparison.OrdinalIgnoreCase))
         {
             return TicketingTemplateType.Nol;
+        }
+
+        if (value.Equals("Melon", StringComparison.OrdinalIgnoreCase))
+        {
+            return TicketingTemplateType.Melon;
         }
 
         return TicketingTemplateType.Custom;
