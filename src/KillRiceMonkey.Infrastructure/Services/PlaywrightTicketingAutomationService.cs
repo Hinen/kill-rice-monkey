@@ -1396,6 +1396,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task<string> RecognizeCaptchaTextAsync(ILocator inputLocator, IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
     {
+        if (page.IsClosed)
+            return string.Empty;
+
         var imgLocator = await FindCaptchaImageAsync(inputLocator, page, captchaFrame);
         if (imgLocator is null)
         {
@@ -1406,7 +1409,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         byte[] screenshotBytes;
         try
         {
-            screenshotBytes = await imgLocator.ScreenshotAsync();
+            screenshotBytes = await imgLocator.ScreenshotAsync(new LocatorScreenshotOptions { Timeout = 3000 });
         }
         catch (PlaywrightException ex)
         {
@@ -1841,6 +1844,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (text.Length < minLength || text.Length > maxLength)
             {
+                if (page.IsClosed)
+                {
+                    _logger.LogInformation("CAPTCHA page closed during OCR attempt {Attempt} – treating as success.", attempt);
+                    return;
+                }
+
                 if (attempt < maxAttempts)
                     await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
                 continue;
@@ -1964,6 +1973,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task TryRefreshCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
     {
+        if (page.IsClosed)
+            return;
+
         ILocator FrameOrPage(string selector) =>
             captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
 
@@ -2406,61 +2418,74 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            foreach (var selector in selectors)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
+            if (page.IsClosed)
+                return;
 
-                var buttons = page.Locator(selector);
-                var count = await buttons.CountAsync();
-                for (var index = 0; index < count; index++)
+            try
+            {
+                foreach (var selector in selectors)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    var button = buttons.Nth(index);
-                    if (!await button.IsVisibleAsync())
+                    var buttons = page.Locator(selector);
+                    var count = await buttons.CountAsync();
+                    for (var index = 0; index < count; index++)
                     {
-                        continue;
-                    }
+                        cancellationToken.ThrowIfCancellationRequested();
 
-                    try
-                    {
-                        await button.ClickAsync(new LocatorClickOptions
+                        var button = buttons.Nth(index);
+                        if (!await button.IsVisibleAsync())
                         {
-                            Force = true,
-                            Timeout = 300
-                        });
-                    }
-                    catch (PlaywrightException)
-                    {
+                            continue;
+                        }
+
                         try
                         {
-                            await button.EvaluateAsync("element => { element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
+                            await button.ClickAsync(new LocatorClickOptions
+                            {
+                                Force = true,
+                                Timeout = 300
+                            });
                         }
                         catch (PlaywrightException)
                         {
+                            try
+                            {
+                                await button.EvaluateAsync("element => { element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
+                            }
+                            catch (PlaywrightException)
+                            {
+                            }
                         }
-                    }
 
-                    await Task.Delay(150, cancellationToken);
-                    break;
+                        await Task.Delay(150, cancellationToken);
+                        break;
+                    }
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var hasVisiblePopup = await page.EvaluateAsync<bool>("""
+                    () => {
+                        const candidates = Array.from(document.querySelectorAll('#popup_notice, .popup, [class*="popup"]'));
+                        return candidates.some(element => {
+                            const style = window.getComputedStyle(element);
+                            return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0;
+                        });
+                    }
+                    """);
+
+                if (!hasVisiblePopup)
+                {
+                    return;
                 }
             }
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var hasVisiblePopup = await page.EvaluateAsync<bool>("""
-                () => {
-                    const candidates = Array.from(document.querySelectorAll('#popup_notice, .popup, [class*="popup"]'));
-                    return candidates.some(element => {
-                        const style = window.getComputedStyle(element);
-                        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0;
-                    });
-                }
-                """);
-
-            if (!hasVisiblePopup)
+            catch (PlaywrightException) when (page.IsClosed)
             {
                 return;
+            }
+            catch (PlaywrightException)
+            {
             }
 
             await Task.Delay(PollDelayMilliseconds, cancellationToken);
