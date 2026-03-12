@@ -12,6 +12,7 @@ var targetCount = args.Length > 0 && int.TryParse(args[0], out var c) ? c : 1000
 var captchaType = args.Length > 1 ? args[1].ToLowerInvariant() : "new";
 var isMelon = captchaType == "melon";
 var cdpEndpoint = isMelon ? MelonCdpEndpoint : NolCdpEndpoint;
+var performanceUrl = isMelon && args.Length > 2 ? args[2] : null;
 var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
 
 var projectDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -35,6 +36,8 @@ var existingCount = Directory.GetFiles(samplesDir, "captcha_*.png").Length;
 Console.WriteLine($"CAPTCHA Collector: type={captchaType.ToUpperInvariant()}, target={targetCount}, existing={existingCount}");
 Console.WriteLine($"Output: {samplesDir}");
 Console.WriteLine($"Vision API: {(string.IsNullOrWhiteSpace(apiKey) ? "OFF (no ANTHROPIC_API_KEY)" : "ON")}");
+if (isMelon && performanceUrl is not null)
+    Console.WriteLine($"Performance URL: {performanceUrl}");
 Console.WriteLine();
 
 if (existingCount >= targetCount)
@@ -66,12 +69,54 @@ if (context is null)
     return 1;
 }
 
+IPage? melonPerformancePage = null;
+if (isMelon)
+{
+    Console.WriteLine("=== Melon CAPTCHA 자동 수집 모드 ===");
+    Console.WriteLine("멜론에 로그인해주세요. 완료 후 Enter를 누르세요.");
+    Console.ReadLine();
+
+    melonPerformancePage = context.Pages.FirstOrDefault(p =>
+        p.Url.Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase));
+
+    if (melonPerformancePage is null && performanceUrl is not null)
+    {
+        melonPerformancePage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
+        Console.WriteLine($"공연 페이지로 이동: {performanceUrl}");
+        await melonPerformancePage.GotoAsync(performanceUrl,
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30000 });
+        await Task.Delay(2000);
+    }
+
+    if (melonPerformancePage is null)
+    {
+        Console.Error.WriteLine("공연 페이지를 찾을 수 없습니다.");
+        Console.Error.WriteLine("사용법: dotnet run --project tools/CaptchaCollector -- <수량> melon <공연URL>");
+        Console.Error.WriteLine("예시: dotnet run --project tools/CaptchaCollector -- 5000 melon https://ticket.melon.com/performance/index.htm?prodId=212444");
+        return 1;
+    }
+
+    Console.WriteLine($"공연 페이지 확인: {SafeUrl(melonPerformancePage)}");
+
+    var popupPage = await OpenMelonBookingPopupAsync(melonPerformancePage, default);
+    if (popupPage is not null)
+    {
+        Console.WriteLine("예매 팝업에서 CAPTCHA 로딩 대기...");
+        await Task.Delay(3000);
+    }
+    else
+    {
+        Console.Error.WriteLine("예매 팝업 자동 오픈 실패. 이미 열린 CAPTCHA 페이지를 탐색합니다...");
+    }
+}
+
 IPage? captchaPage = null;
 ILocator? imageLocator = null;
 IFrame? captchaFrame = null;
 
 foreach (var pg in context.Pages)
 {
+    if (pg.IsClosed) continue;
     var imgLoc = pg.Locator(ImageSelector);
     try
     {
@@ -119,7 +164,10 @@ if (captchaPage is null || imageLocator is null)
         }
     }
     Console.Error.WriteLine($"사용 셀렉터: {ImageSelector}");
-    Console.Error.WriteLine("CAPTCHA가 표시된 페이지에서 다시 시도하세요.");
+    if (isMelon)
+        Console.Error.WriteLine("예매 팝업을 수동으로 열고 다시 시도하세요.");
+    else
+        Console.Error.WriteLine("CAPTCHA가 표시된 페이지에서 다시 시도하세요.");
     return 1;
 }
 
@@ -149,9 +197,61 @@ while (collected < targetCount && !cts.IsCancellationRequested)
 {
     try
     {
-        var imgCount = await imageLocator.CountAsync();
+        var imgCount = 0;
+        try { imgCount = await imageLocator.CountAsync(); }
+        catch (PlaywrightException) { }
+
         if (imgCount == 0)
         {
+            if (isMelon && melonPerformancePage is not null)
+            {
+                Console.WriteLine("  CAPTCHA 팝업이 닫혔습니다. 예매 팝업 재오픈 중...");
+                var popupPage = await OpenMelonBookingPopupAsync(melonPerformancePage, cts.Token);
+                if (popupPage is not null)
+                {
+                    captchaPage = popupPage;
+                    captchaFrame = null;
+                    Console.WriteLine("  CAPTCHA 로딩 대기...");
+                    await Task.Delay(3000, cts.Token);
+                    imageLocator = popupPage.Locator(ImageSelector);
+                    try
+                    {
+                        if (await imageLocator.CountAsync() > 0)
+                        {
+                            Console.WriteLine("  CAPTCHA 재발견. 수집 계속...");
+                            consecutiveDuplicates = 0;
+                            lastImageHash = null;
+                            continue;
+                        }
+                    }
+                    catch (PlaywrightException) { }
+
+                    foreach (var frame in popupPage.Frames)
+                    {
+                        if (frame == popupPage.MainFrame) continue;
+                        var frameLoc = frame.Locator(ImageSelector);
+                        try
+                        {
+                            if (await frameLoc.CountAsync() > 0)
+                            {
+                                imageLocator = frameLoc;
+                                captchaFrame = frame;
+                                Console.WriteLine("  CAPTCHA 재발견 (frame). 수집 계속...");
+                                consecutiveDuplicates = 0;
+                                lastImageHash = null;
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                else
+                {
+                    Console.Error.WriteLine("  예매 팝업 재오픈 실패. 3초 후 재시도...");
+                    await Task.Delay(3000, cts.Token);
+                }
+                continue;
+            }
             Console.WriteLine("  CAPTCHA 이미지가 사라졌습니다. 재탐색 대기 중...");
             await Task.Delay(2000, cts.Token);
             continue;
@@ -189,7 +289,7 @@ while (collected < targetCount && !cts.IsCancellationRequested)
         lastImageHash = currentHash;
 
         collected++;
-        var filename = $"captcha_{collected:D4}.png";
+        var filename = $"captcha_{collected:D5}.png";
         var filePath = Path.Combine(samplesDir, filename);
         await File.WriteAllBytesAsync(filePath, imgBytes, cts.Token);
 
@@ -229,6 +329,122 @@ Console.WriteLine($"\n수집 완료: {collected}개 샘플, {existingLabels.Coun
 Console.WriteLine($"저장 위치: {samplesDir}");
 
 return 0;
+
+static async Task<IPage?> OpenMelonBookingPopupAsync(IPage performancePage, CancellationToken ct)
+{
+    try
+    {
+        var existingPopup = performancePage.Context.Pages.FirstOrDefault(p =>
+            p != performancePage && !p.IsClosed &&
+            p.Url.Contains("/reservation/popup/onestop", StringComparison.OrdinalIgnoreCase));
+        if (existingPopup is not null)
+        {
+            Console.WriteLine($"  기존 예매 팝업 사용: {SafeUrl(existingPopup)}");
+            return existingPopup;
+        }
+
+        var closeSelectors = new[] { "a:has-text('레이어팝업닫기')", "#popup_notice .close", ".popup .close", ".popup .btn_close" };
+        foreach (var sel in closeSelectors)
+        {
+            try
+            {
+                var closeBtn = performancePage.Locator(sel);
+                for (var i = 0; i < 3; i++)
+                {
+                    if (await closeBtn.CountAsync() > 0)
+                    {
+                        await closeBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 1000 });
+                        await Task.Delay(300, ct);
+                    }
+                    else break;
+                }
+            }
+            catch { }
+        }
+
+        var dateItems = performancePage.Locator("#list_date .item_date[data-perfday]");
+        try
+        {
+            await dateItems.First.WaitForAsync(new LocatorWaitForOptions { Timeout = 5000 });
+        }
+        catch
+        {
+            Console.Error.WriteLine("  날짜 목록을 찾을 수 없습니다.");
+            return null;
+        }
+
+        if (await dateItems.CountAsync() > 0)
+        {
+            var dateValue = await dateItems.First.GetAttributeAsync("data-perfday");
+            await dateItems.First.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+            Console.WriteLine($"  날짜 선택: {dateValue}");
+            await Task.Delay(1500, ct);
+        }
+
+        var timeItems = performancePage.Locator("#list_time .item_time");
+        try
+        {
+            await timeItems.First.WaitForAsync(new LocatorWaitForOptions { Timeout = 5000 });
+        }
+        catch
+        {
+            Console.Error.WriteLine("  시간 목록을 찾을 수 없습니다.");
+            return null;
+        }
+
+        if (await timeItems.CountAsync() > 0)
+        {
+            await timeItems.First.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+            Console.WriteLine("  시간 선택");
+            await Task.Delay(1000, ct);
+        }
+
+        var beforePages = performancePage.Context.Pages.ToHashSet();
+        var bookingBtn = performancePage.Locator("#ticketReservation_Btn");
+
+        try
+        {
+            await bookingBtn.WaitForAsync(new LocatorWaitForOptions { Timeout = 3000 });
+        }
+        catch
+        {
+            Console.Error.WriteLine("  예매 버튼을 찾을 수 없습니다.");
+            return null;
+        }
+
+        await bookingBtn.ClickAsync(new LocatorClickOptions { Timeout = 5000 });
+        Console.WriteLine("  예매 버튼 클릭");
+
+        for (var i = 0; i < 30; i++)
+        {
+            await Task.Delay(500, ct);
+            var newPage = performancePage.Context.Pages.FirstOrDefault(p =>
+                !beforePages.Contains(p) && !p.IsClosed);
+            if (newPage is not null)
+            {
+                Console.WriteLine($"  예매 팝업 감지: {SafeUrl(newPage)}");
+                return newPage;
+            }
+        }
+
+        var fallbackPopup = performancePage.Context.Pages.FirstOrDefault(p =>
+            p != performancePage && !p.IsClosed &&
+            p.Url.Contains("/reservation/popup/onestop", StringComparison.OrdinalIgnoreCase));
+        if (fallbackPopup is not null)
+        {
+            Console.WriteLine($"  예매 팝업 발견 (기존): {SafeUrl(fallbackPopup)}");
+            return fallbackPopup;
+        }
+
+        Console.Error.WriteLine("  예매 팝업이 열리지 않았습니다.");
+        return null;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  예매 팝업 열기 실패: {ex.Message}");
+        return null;
+    }
+}
 
 static async Task TryRefreshAsync(IPage page, IFrame? frame, CancellationToken ct)
 {
