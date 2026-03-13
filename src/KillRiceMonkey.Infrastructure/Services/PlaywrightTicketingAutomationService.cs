@@ -579,7 +579,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                         break;
                     }
 
-                    await Task.Delay(1000, cancellationToken);
+                    await Task.Delay(200, cancellationToken);
                 }
             }
 
@@ -2102,9 +2102,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}",
             SafePageUrl(page), page.IsClosed, page.Frames.Count);
 
-        await Task.Delay(500, cancellationToken);
-
-        _logger.LogInformation("[SelectSeat] settle 대기 후 iframe 탐색 시작.");
+        _logger.LogInformation("[SelectSeat] iframe 탐색 시작.");
         var seatFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
         _logger.LogInformation("[SelectSeat] seat iframe 발견. frameUrl={Url}", seatFrame.Url);
 
@@ -2215,13 +2213,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             catch (PlaywrightException) { }
 
-            await Task.Delay(500, cancellationToken);
+            await Task.Delay(100, cancellationToken);
         }
     }
 
     private async Task<IFrame> SelectMelonSeatInFrameAsync(IPage page, IFrame seatFrame, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        const int maxRetries = 20;
+        const int maxRetries = 10;
         var currentFrame = seatFrame;
 
         for (var retry = 0; retry < maxRetries; retry++)
@@ -2253,7 +2251,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 if (seats.Count == 0)
                 {
                     _logger.LogWarning("선택 가능한 좌석 없음. retry={Retry}", retry);
-                    await Task.Delay(500, cancellationToken);
+                    await Task.Delay(100, cancellationToken);
                     continue;
                 }
 
@@ -2277,7 +2275,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     continue;
                 }
 
-                await Task.Delay(300, cancellationToken);
+                await Task.Delay(50, cancellationToken);
 
                 var hasConflict = await DetectMelonSeatConflictAsync(currentFrame);
                 if (hasConflict)
@@ -2299,7 +2297,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             catch (PlaywrightException ex)
             {
                 _logger.LogWarning("좌석 선택 중 frame detached 감지 — frame 재탐색. retry={Retry}, error={Error}", retry, ex.Message);
-                await Task.Delay(500, cancellationToken);
+                await Task.Delay(200, cancellationToken);
                 currentFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
             }
         }
@@ -2355,7 +2353,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 }
                 catch (PlaywrightException)
                 {
-                    await nextBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 5000, Force = true });
+                    await nextBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 2000, Force = true });
                 }
 
                 _logger.LogInformation("멜론 '좌석 선택 완료' 버튼 클릭 완료.");
@@ -2364,7 +2362,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             catch (PlaywrightException ex) when (attempt < maxFrameRetries - 1)
             {
                 _logger.LogWarning("좌석 선택 완료 버튼 클릭 중 frame detached 감지 — frame 재탐색. attempt={Attempt}, error={Error}", attempt, ex.Message);
-                await Task.Delay(500, cancellationToken);
+                await Task.Delay(200, cancellationToken);
                 currentFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
             }
         }
@@ -2857,7 +2855,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                             }
                         }
 
-                        await Task.Delay(150, cancellationToken);
+                        await Task.Delay(50, cancellationToken);
                         break;
                     }
                 }
