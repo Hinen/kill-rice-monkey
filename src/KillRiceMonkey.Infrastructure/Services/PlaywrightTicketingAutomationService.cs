@@ -583,16 +583,15 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 }
             }
 
-            _logger.LogError("[Melon] 좌석 선택 {Max}회 모두 실패. 팝업을 닫고 전체 재시도로 전환.", maxSeatRetries);
-            await CloseMelonPopupPagesSafelyAsync(page, captchaPage);
+            _logger.LogError("[Melon] 좌석 선택 {Max}회 모두 실패. 전체 재시도로 전환.", maxSeatRetries);
             throw new InvalidOperationException($"좌석 선택 {maxSeatRetries}회 시도 모두 실패.");
         }
         catch (Exception ex)
         {
             if (captchaPage is not null && !captchaPage.IsClosed)
             {
-                _logger.LogInformation("[Melon] 실패 후 팝업 정리. popupUrl={Url}", SafePageUrl(captchaPage));
-                await CloseMelonPopupPagesSafelyAsync(page, captchaPage);
+                _logger.LogWarning("[Melon] 실패 발생했으나 팝업은 닫지 않음 (재시도 시 재활용). popupUrl={Url}, exType={ExType}",
+                    SafePageUrl(captchaPage), ex.GetType().Name);
             }
 
             if (page is not null)
@@ -1932,7 +1931,18 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             var attemptSw = Stopwatch.StartNew();
 
-            var text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
+            string text;
+            try
+            {
+                text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
+            }
+            catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
+            {
+                _logger.LogWarning(ocrEx, "[CAPTCHA] OCR 스크린샷/인식 실패 (attempt={Attempt}). 다음 시도로 진행.", attempt);
+                if (attempt < maxAttempts)
+                    await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                continue;
+            }
             _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
 
             if (text.Length < minLength || text.Length > maxLength)
@@ -2061,7 +2071,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
         }
 
-        throw new InvalidOperationException($"CAPTCHA 자동 인식 실패 ({maxAttempts}회 시도).");
+        _logger.LogWarning("[CAPTCHA] CAPTCHA 자동 인식 {Max}회 모두 실패 — 좌석 선택 진행 시도.", maxAttempts);
     }
 
     private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
