@@ -495,12 +495,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
         catch (TimeoutException ex)
         {
-            _logger.LogError(ex, "Melon DOM automation timed out. date={Date}, time={Time}", desiredDate, desiredTime);
+            _logger.LogError(ex, "[RunMelon] 시간 초과. date={Date}, time={Time}, exType={ExType}", desiredDate, desiredTime, ex.GetType().Name);
             return new AutomationRunResult(false, $"Melon DOM 자동화 시간 초과: {ex.Message}", DateTimeOffset.Now);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Melon DOM automation failed. date={Date}, time={Time}", desiredDate, desiredTime);
+            _logger.LogError(ex, "[RunMelon] 예외 발생. date={Date}, time={Time}, exType={ExType}, innerEx={InnerExType}",
+                desiredDate, desiredTime, ex.GetType().Name, ex.InnerException?.GetType().Name ?? "없음");
             return new AutomationRunResult(false, $"Melon DOM 자동화 예외: {ex.Message}", DateTimeOffset.Now);
         }
     }
@@ -508,6 +509,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private async Task<AutomationRunResult?> TryRunMelonAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredTime, TimeSpan timeout, CancellationToken cancellationToken)
     {
         IPage? page = null;
+        IPage? captchaPage = null;
         try
         {
             page = await EnsurePreparedMelonConnectedPageAsync(cancellationToken);
@@ -525,9 +527,19 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
 
             _melonPopupClosedDuringPrepare = false;
+
+            _logger.LogInformation("[Melon] 날짜 선택 시작. date={Date}", desiredDate);
             await SelectMelonDateAsync(page, desiredDate, timeout, cancellationToken);
+            _logger.LogInformation("[Melon] 날짜 선택 완료.");
+
+            _logger.LogInformation("[Melon] 시간 선택 시작. time={Time}", desiredTime);
             await SelectMelonTimeAsync(page, desiredTime, timeout, cancellationToken);
-            var captchaPage = await ClickMelonBookingAsync(page, timeout, cancellationToken);
+            _logger.LogInformation("[Melon] 시간 선택 완료.");
+
+            _logger.LogInformation("[Melon] 예매하기 버튼 클릭 시작.");
+            captchaPage = await ClickMelonBookingAsync(page, timeout, cancellationToken);
+            _logger.LogInformation("[Melon] 예매 팝업 열림. popupUrl={Url}", SafePageUrl(captchaPage));
+
             captchaPage.Dialog += async (_, dialog) =>
             {
                 _logger.LogInformation("멜론 dialog 감지: type={Type}, message={Message}", dialog.Type, dialog.Message);
@@ -535,20 +547,93 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 try { await captchaPage.EvaluateAsync("() => { window.__melonAlertDetected = true; }"); } catch { }
             };
 
+            _logger.LogInformation("[Melon] CAPTCHA 풀이 시작.");
             await SolveCaptchaAsync(captchaPage, timeout, cancellationToken);
-            await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, cancellationToken);
-            return new AutomationRunResult(true, $"Melon 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredTime} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
+            _logger.LogInformation("[Melon] CAPTCHA 풀이 완료. popupUrl={Url}, isClosed={IsClosed}", SafePageUrl(captchaPage), captchaPage.IsClosed);
+
+            if (captchaPage.IsClosed)
+            {
+                _logger.LogWarning("[Melon] CAPTCHA 풀이 후 팝업이 닫혀 있음 — 재시도 필요.");
+                return new AutomationRunResult(false, "CAPTCHA 풀이 후 팝업 닫힘 — 재시도.", DateTimeOffset.Now);
+            }
+
+            const int maxSeatRetries = 3;
+            for (var seatAttempt = 0; seatAttempt < maxSeatRetries; seatAttempt++)
+            {
+                try
+                {
+                    _logger.LogInformation("[Melon] 좌석 선택 시도 {Attempt}/{Max}. popupUrl={Url}, frameCount={FrameCount}",
+                        seatAttempt + 1, maxSeatRetries, SafePageUrl(captchaPage), captchaPage.Frames.Count);
+                    await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, cancellationToken);
+                    _logger.LogInformation("[Melon] 좌석 선택 및 완료 버튼 클릭 성공!");
+                    return new AutomationRunResult(true, $"Melon 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredTime} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
+                }
+                catch (Exception seatEx) when (seatAttempt < maxSeatRetries - 1)
+                {
+                    _logger.LogWarning(seatEx, "[Melon] 좌석 선택 실패 (attempt={Attempt}/{Max}). 같은 팝업에서 재시도합니다. popupUrl={Url}, isClosed={IsClosed}",
+                        seatAttempt + 1, maxSeatRetries, SafePageUrl(captchaPage), captchaPage.IsClosed);
+
+                    if (captchaPage.IsClosed)
+                    {
+                        _logger.LogWarning("[Melon] 팝업이 닫혀 있어 좌석 재시도 불가.");
+                        break;
+                    }
+
+                    await Task.Delay(1000, cancellationToken);
+                }
+            }
+
+            _logger.LogError("[Melon] 좌석 선택 {Max}회 모두 실패. 팝업을 닫고 전체 재시도로 전환.", maxSeatRetries);
+            await CloseMelonPopupPagesSafelyAsync(page, captchaPage);
+            throw new InvalidOperationException($"좌석 선택 {maxSeatRetries}회 시도 모두 실패.");
         }
         catch (Exception ex)
         {
+            if (captchaPage is not null && !captchaPage.IsClosed)
+            {
+                _logger.LogInformation("[Melon] 실패 후 팝업 정리. popupUrl={Url}", SafePageUrl(captchaPage));
+                await CloseMelonPopupPagesSafelyAsync(page, captchaPage);
+            }
+
             if (page is not null)
             {
+                _logger.LogError(ex, "[Melon] 자동화 실패. 예외를 상위로 전파합니다. pageUrl={Url}", SafePageUrl(page));
                 throw new InvalidOperationException($"Melon 기존 브라우저 DOM 자동화 실패: {ex.Message}", ex);
             }
 
             _logger.LogWarning(ex, "Connected-browser Melon automation failed before selecting a page.");
             return null;
         }
+    }
+
+    private async Task CloseMelonPopupPagesSafelyAsync(IPage? mainPage, IPage? captchaPage)
+    {
+        try
+        {
+            if (captchaPage is not null && !captchaPage.IsClosed)
+            {
+                _logger.LogInformation("[Melon] onestop 팝업 닫기: url={Url}", SafePageUrl(captchaPage));
+                await captchaPage.CloseAsync();
+            }
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger.LogWarning(ex, "[Melon] 팝업 닫기 실패 (무시).");
+        }
+
+        if (mainPage is null) return;
+        try
+        {
+            var remainingPopups = mainPage.Context.Pages
+                .Where(p => p != mainPage && !p.IsClosed && SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var popup in remainingPopups)
+            {
+                _logger.LogInformation("[Melon] 잔여 팝업 닫기: url={Url}", SafePageUrl(popup));
+                try { await popup.CloseAsync(); } catch (PlaywrightException) { }
+            }
+        }
+        catch (PlaywrightException) { }
     }
 
     private async Task<IPage?> TryGetPreparedNolPageAsync(CancellationToken cancellationToken)
@@ -1981,31 +2066,48 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("멜론 좌석 선택 시작. url={Url}", SafePageUrl(page));
+        _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}",
+            SafePageUrl(page), page.IsClosed, page.Frames.Count);
 
         await Task.Delay(500, cancellationToken);
 
+        _logger.LogInformation("[SelectSeat] settle 대기 후 iframe 탐색 시작.");
         var seatFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
+        _logger.LogInformation("[SelectSeat] seat iframe 발견. frameUrl={Url}", seatFrame.Url);
 
-        if (await IsMelonZoneSelectionRequiredAsync(seatFrame))
+        var zoneRequired = await IsMelonZoneSelectionRequiredAsync(seatFrame);
+        _logger.LogInformation("[SelectSeat] 구역 선택 필요 여부: {Required}", zoneRequired);
+        if (zoneRequired)
         {
             _logger.LogInformation("구역 선택 필요 — 사용자가 구역을 선택할 때까지 대기합니다.");
             await WaitForMelonZoneSelectionAsync(seatFrame, cancellationToken);
             _logger.LogInformation("구역 선택 완료 — 좌석 선택을 진행합니다.");
         }
 
+        _logger.LogInformation("[SelectSeat] 좌석 선택 실행 시작.");
         var validFrame = await SelectMelonSeatInFrameAsync(page, seatFrame, timeout, cancellationToken);
+        _logger.LogInformation("[SelectSeat] 좌석 선택 완료. 완료 버튼 클릭 시작.");
         await ClickMelonSeatCompleteAsync(page, validFrame, timeout, cancellationToken);
 
-        _logger.LogInformation("멜론 좌석 선택 완료 버튼 클릭 완료.");
+        _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 완료 버튼 클릭 완료.");
     }
 
-    private static async Task<IFrame> FindMelonSeatFrameAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task<IFrame> FindMelonSeatFrameAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
+        var loggedOnce = false;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (!loggedOnce)
+            {
+                var frameUrls = page.Frames.Select(f => f.Url).ToList();
+                _logger.LogInformation("[FindSeatFrame] 탐색 시작. pageUrl={Url}, frameCount={Count}, frameUrls={FrameUrls}",
+                    SafePageUrl(page), frameUrls.Count, string.Join(" | ", frameUrls));
+                loggedOnce = true;
+            }
+
             foreach (var frame in page.Frames)
             {
                 if (frame == page.MainFrame) continue;
@@ -2013,7 +2115,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 {
                     var canvas = frame.Locator("#ez_canvas");
                     if (await canvas.CountAsync() > 0)
+                    {
+                        _logger.LogInformation("[FindSeatFrame] #ez_canvas 발견! frameUrl={Url}", frame.Url);
                         return frame;
+                    }
                 }
                 catch (PlaywrightException) { }
             }
@@ -2021,6 +2126,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             await Task.Delay(PollDelayMilliseconds, cancellationToken);
         }
 
+        var finalFrameUrls = page.Frames.Select(f => f.Url).ToList();
+        _logger.LogError("[FindSeatFrame] 타임아웃! pageUrl={Url}, frameCount={Count}, frameUrls={FrameUrls}",
+            SafePageUrl(page), finalFrameUrls.Count, string.Join(" | ", finalFrameUrls));
         throw new TimeoutException("멜론 좌석맵 iframe(#ez_canvas)을 찾지 못했습니다.");
     }
 
@@ -2996,9 +3104,19 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
     }
 
-    private static async Task<IPage> ClickMelonBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task<IPage> ClickMelonBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        var existingPopups = page.Context.Pages
+            .Where(p => p != page && !p.IsClosed && SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var popup in existingPopups)
+        {
+            _logger.LogInformation("기존 onestop.htm 팝업 닫기: url={Url}", SafePageUrl(popup));
+            try { await popup.CloseAsync(); } catch (PlaywrightException) { }
+        }
+
         var bookingButton = page.Locator("#ticketReservation_Btn").First;
         if (await bookingButton.CountAsync() == 0)
         {
@@ -3007,6 +3125,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var beforePages = page.Context.Pages.Where(x => !x.IsClosed).ToHashSet();
         await bookingButton.ScrollIntoViewIfNeededAsync();
+        _logger.LogInformation("예매하기 버튼 클릭 시도. beforePagesCount={Count}", beforePages.Count);
         await ClickNolBookingButtonAsync(bookingButton, timeout);
 
         var deadline = DateTimeOffset.UtcNow + timeout;
