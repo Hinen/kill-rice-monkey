@@ -1501,7 +1501,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         byte[] screenshotBytes;
         try
         {
-            screenshotBytes = await imgLocator.ScreenshotAsync(new LocatorScreenshotOptions { Timeout = 3000 });
+            screenshotBytes = await imgLocator.ScreenshotAsync(new LocatorScreenshotOptions { Timeout = 500 });
         }
         catch (PlaywrightException ex)
         {
@@ -1938,7 +1938,23 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
             {
-                _logger.LogWarning(ocrEx, "[CAPTCHA] OCR 스크린샷/인식 실패 (attempt={Attempt}). 다음 시도로 진행.", attempt);
+                _logger.LogWarning("[CAPTCHA] OCR 실패 (attempt={Attempt}): {Message}", attempt, ocrEx.Message);
+
+                if (page.IsClosed)
+                {
+                    _logger.LogInformation("[CAPTCHA] 페이지 닫힘 — CAPTCHA 통과로 간주.");
+                    return;
+                }
+
+                var inputStillExists = false;
+                try { inputStillExists = await inputLocator.CountAsync() > 0; } catch { }
+
+                if (!inputStillExists)
+                {
+                    _logger.LogInformation("[CAPTCHA] CAPTCHA 입력창 사라짐 — 좌석 선택 단계로 진행.");
+                    return;
+                }
+
                 if (attempt < maxAttempts)
                     await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
                 continue;
@@ -2056,7 +2072,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     try { return await inputLocator.CountAsync() == 0; }
                     catch (PlaywrightException) { return page.IsClosed; }
                 },
-                TimeSpan.FromMilliseconds(600),
+                TimeSpan.FromMilliseconds(300),
                 cancellationToken);
 
             _logger.LogInformation("CAPTCHA attempt {Attempt} totalMs={TotalMs} submitted={Submitted}", attempt, attemptSw.ElapsedMilliseconds, submitted);
@@ -2064,6 +2080,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             if (submitted || page.IsClosed)
             {
                 _logger.LogInformation("CAPTCHA solved on attempt {Attempt} (pageClosed={PageClosed})", attempt, page.IsClosed);
+                return;
+            }
+
+            var seatFrameVisible = page.Frames.Any(f => f != page.MainFrame && f.Url.Contains("stepSeat.htm"));
+            if (seatFrameVisible)
+            {
+                _logger.LogInformation("[CAPTCHA] 좌석 선택 프레임 감지 — CAPTCHA 통과로 간주 (attempt={Attempt}).", attempt);
                 return;
             }
 
