@@ -1983,6 +1983,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         _logger.LogInformation("멜론 좌석 선택 시작. url={Url}", SafePageUrl(page));
 
+        await Task.Delay(500, cancellationToken);
+
         var seatFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
 
         if (await IsMelonZoneSelectionRequiredAsync(seatFrame))
@@ -1992,8 +1994,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             _logger.LogInformation("구역 선택 완료 — 좌석 선택을 진행합니다.");
         }
 
-        await SelectMelonSeatInFrameAsync(seatFrame, cancellationToken);
-        await ClickMelonSeatCompleteAsync(seatFrame, timeout, cancellationToken);
+        var validFrame = await SelectMelonSeatInFrameAsync(page, seatFrame, timeout, cancellationToken);
+        await ClickMelonSeatCompleteAsync(page, validFrame, timeout, cancellationToken);
 
         _logger.LogInformation("멜론 좌석 선택 완료 버튼 클릭 완료.");
     }
@@ -2076,79 +2078,89 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task SelectMelonSeatInFrameAsync(IFrame seatFrame, CancellationToken cancellationToken)
+    private async Task<IFrame> SelectMelonSeatInFrameAsync(IPage page, IFrame seatFrame, TimeSpan timeout, CancellationToken cancellationToken)
     {
         const int maxRetries = 20;
+        var currentFrame = seatFrame;
 
         for (var retry = 0; retry < maxRetries; retry++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var seatsJson = await seatFrame.EvaluateAsync<string>(@"() => {
-            const rects = document.querySelectorAll('#ez_canvas rect');
-            const seats = [];
-            for (const r of rects) {
-                const fill = r.getAttribute('fill') || 'none';
-                const w = parseFloat(r.getAttribute('width'));
-                const h = parseFloat(r.getAttribute('height'));
-                if (w > 0 && w <= 15 && h > 0 && h <= 15 && fill !== 'none' && fill.toUpperCase() !== '#DDDDDD') {
-                    seats.push({
-                        x: parseFloat(r.getAttribute('x')),
-                        y: parseFloat(r.getAttribute('y')),
-                        idx: Array.from(rects).indexOf(r)
-                    });
+            try
+            {
+                var seatsJson = await currentFrame.EvaluateAsync<string>(@"() => {
+                const rects = document.querySelectorAll('#ez_canvas rect');
+                const seats = [];
+                for (const r of rects) {
+                    const fill = r.getAttribute('fill') || 'none';
+                    const w = parseFloat(r.getAttribute('width'));
+                    const h = parseFloat(r.getAttribute('height'));
+                    if (w > 0 && w <= 15 && h > 0 && h <= 15 && fill !== 'none' && fill.toUpperCase() !== '#DDDDDD') {
+                        seats.push({
+                            x: parseFloat(r.getAttribute('x')),
+                            y: parseFloat(r.getAttribute('y')),
+                            idx: Array.from(rects).indexOf(r)
+                        });
+                    }
                 }
-            }
-            seats.sort((a, b) => a.y - b.y || a.x - b.x);
-            return JSON.stringify(seats);
-        }");
+                seats.sort((a, b) => a.y - b.y || a.x - b.x);
+                return JSON.stringify(seats);
+            }");
 
-            var seats = JsonSerializer.Deserialize<List<MelonSeatInfo>>(seatsJson) ?? [];
-            if (seats.Count == 0)
+                var seats = JsonSerializer.Deserialize<List<MelonSeatInfo>>(seatsJson) ?? [];
+                if (seats.Count == 0)
+                {
+                    _logger.LogWarning("선택 가능한 좌석 없음. retry={Retry}", retry);
+                    await Task.Delay(500, cancellationToken);
+                    continue;
+                }
+
+                var targetIndex = seats.Count >= SeatSelectionOffset ? SeatSelectionOffset - 1 : 0;
+                var target = seats[targetIndex];
+                _logger.LogInformation("좌석 선택: available={Count}, targetIdx={TargetIdx}, x={X}, y={Y}", seats.Count, targetIndex, target.X, target.Y);
+
+                var clickResult = await currentFrame.EvaluateAsync<string>(@"(args) => {
+                const rects = document.querySelectorAll('#ez_canvas rect');
+                const rect = rects[args.idx];
+                if (!rect) return 'not_found';
+                const evt = document.createEvent('MouseEvents');
+                evt.initMouseEvent('click', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+                rect.dispatchEvent(evt);
+                return 'clicked';
+            }", new { idx = target.Idx });
+
+                if (clickResult != "clicked")
+                {
+                    _logger.LogWarning("좌석 클릭 실패: result={Result}", clickResult);
+                    continue;
+                }
+
+                await Task.Delay(300, cancellationToken);
+
+                var hasConflict = await DetectMelonSeatConflictAsync(currentFrame);
+                if (hasConflict)
+                {
+                    _logger.LogInformation("좌석 중복 선택 감지 — 다른 좌석으로 재시도. retry={Retry}", retry);
+                    await DismissMelonSeatConflictAlertAsync(currentFrame);
+                    continue;
+                }
+
+                var selectedCount = await currentFrame.Locator("#partSeatSelected li").CountAsync();
+                if (selectedCount > 0)
+                {
+                    _logger.LogInformation("좌석 선택 성공. selectedCount={Count}", selectedCount);
+                    return currentFrame;
+                }
+
+                _logger.LogWarning("좌석 선택 후 선택된 좌석 목록 비어있음. retry={Retry}", retry);
+            }
+            catch (PlaywrightException ex)
             {
-                _logger.LogWarning("선택 가능한 좌석 없음. retry={Retry}", retry);
+                _logger.LogWarning("좌석 선택 중 frame detached 감지 — frame 재탐색. retry={Retry}, error={Error}", retry, ex.Message);
                 await Task.Delay(500, cancellationToken);
-                continue;
+                currentFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
             }
-
-            var targetIndex = seats.Count >= SeatSelectionOffset ? SeatSelectionOffset - 1 : 0;
-            var target = seats[targetIndex];
-            _logger.LogInformation("좌석 선택: available={Count}, targetIdx={TargetIdx}, x={X}, y={Y}", seats.Count, targetIndex, target.X, target.Y);
-
-            var clickResult = await seatFrame.EvaluateAsync<string>(@"(args) => {
-            const rects = document.querySelectorAll('#ez_canvas rect');
-            const rect = rects[args.idx];
-            if (!rect) return 'not_found';
-            const evt = document.createEvent('MouseEvents');
-            evt.initMouseEvent('click', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
-            rect.dispatchEvent(evt);
-            return 'clicked';
-        }", new { idx = target.Idx });
-
-            if (clickResult != "clicked")
-            {
-                _logger.LogWarning("좌석 클릭 실패: result={Result}", clickResult);
-                continue;
-            }
-
-            await Task.Delay(300, cancellationToken);
-
-            var hasConflict = await DetectMelonSeatConflictAsync(seatFrame);
-            if (hasConflict)
-            {
-                _logger.LogInformation("좌석 중복 선택 감지 — 다른 좌석으로 재시도. retry={Retry}", retry);
-                await DismissMelonSeatConflictAlertAsync(seatFrame);
-                continue;
-            }
-
-            var selectedCount = await seatFrame.Locator("#partSeatSelected li").CountAsync();
-            if (selectedCount > 0)
-            {
-                _logger.LogInformation("좌석 선택 성공. selectedCount={Count}", selectedCount);
-                return;
-            }
-
-            _logger.LogWarning("좌석 선택 후 선택된 좌석 목록 비어있음. retry={Retry}", retry);
         }
 
         throw new InvalidOperationException($"좌석 선택 실패 ({maxRetries}회 시도).");
@@ -2180,25 +2192,41 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         catch (PlaywrightException) { }
     }
 
-    private async Task ClickMelonSeatCompleteAsync(IFrame seatFrame, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task ClickMelonSeatCompleteAsync(IPage page, IFrame seatFrame, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        var nextBtn = seatFrame.Locator("#nextTicketSelection");
-        await WaitForConditionAsync(
-            async () => await nextBtn.CountAsync() > 0,
-            timeout,
-            cancellationToken,
-            "멜론 '좌석 선택 완료' 버튼을 찾지 못했습니다.");
+        var currentFrame = seatFrame;
+        const int maxFrameRetries = 3;
 
-        try
+        for (var attempt = 0; attempt < maxFrameRetries; attempt++)
         {
-            await nextBtn.First.EvaluateAsync("el => el.click()");
-        }
-        catch (PlaywrightException)
-        {
-            await nextBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 5000, Force = true });
-        }
+            try
+            {
+                var nextBtn = currentFrame.Locator("#nextTicketSelection");
+                await WaitForConditionAsync(
+                    async () => await nextBtn.CountAsync() > 0,
+                    timeout,
+                    cancellationToken,
+                    "멜론 '좌석 선택 완료' 버튼을 찾지 못했습니다.");
 
-        _logger.LogInformation("멜론 '좌석 선택 완료' 버튼 클릭 완료.");
+                try
+                {
+                    await nextBtn.First.EvaluateAsync("el => el.click()");
+                }
+                catch (PlaywrightException)
+                {
+                    await nextBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 5000, Force = true });
+                }
+
+                _logger.LogInformation("멜론 '좌석 선택 완료' 버튼 클릭 완료.");
+                return;
+            }
+            catch (PlaywrightException ex) when (attempt < maxFrameRetries - 1)
+            {
+                _logger.LogWarning("좌석 선택 완료 버튼 클릭 중 frame detached 감지 — frame 재탐색. attempt={Attempt}, error={Error}", attempt, ex.Message);
+                await Task.Delay(500, cancellationToken);
+                currentFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
+            }
+        }
     }
 
     private async Task TryRefreshCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
