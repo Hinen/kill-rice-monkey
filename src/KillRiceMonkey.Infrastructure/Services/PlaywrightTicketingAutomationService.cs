@@ -3141,13 +3141,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var existingPopups = page.Context.Pages
-            .Where(p => p != page && !p.IsClosed && SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        foreach (var popup in existingPopups)
+        var existingPopup = page.Context.Pages
+            .FirstOrDefault(p => p != page && !p.IsClosed && SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
+        if (existingPopup is not null)
         {
-            _logger.LogInformation("기존 onestop.htm 팝업 닫기: url={Url}", SafePageUrl(popup));
-            try { await popup.CloseAsync(); } catch (PlaywrightException) { }
+            _logger.LogInformation("[Melon] 기존 onestop.htm 팝업 재사용. url={Url}", SafePageUrl(existingPopup));
+            await existingPopup.BringToFrontAsync();
+            return existingPopup;
         }
 
         var bookingButton = page.Locator("#ticketReservation_Btn").First;
@@ -3174,18 +3174,18 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 if (SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase) ||
                     await TryWaitForConditionAsync(
                         async () => SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase),
-                        TimeSpan.FromMilliseconds(800),
+                        TimeSpan.FromMilliseconds(300),
                         cancellationToken))
                 {
                     return newPage;
                 }
             }
 
-            var existingPopup = openPages.FirstOrDefault(x => SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
-            if (existingPopup is not null)
+            var foundPopup = openPages.FirstOrDefault(x => SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
+            if (foundPopup is not null)
             {
-                await existingPopup.BringToFrontAsync();
-                return existingPopup;
+                await foundPopup.BringToFrontAsync();
+                return foundPopup;
             }
 
             await Task.Delay(PollDelayMilliseconds, cancellationToken);
