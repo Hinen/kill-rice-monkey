@@ -327,7 +327,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     if (!await _ticketingAutomationService.IsMelonPageReadyAsync(_runCts.Token))
                     {
                         StatusMessage = $"Melon 페이지 대기 중 ({attempt}회 폴링)";
-                        await Task.Delay(200, _runCts.Token);
+                        await Task.Delay(50, _runCts.Token);
                         continue;
                     }
 
@@ -342,7 +342,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {attempt}회 시도 실패 — {result.Message}";
-                    await Task.Delay(500, _runCts.Token);
+                    await Task.Delay(100, _runCts.Token);
                 }
             }
             else
