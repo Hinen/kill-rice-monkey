@@ -19,8 +19,8 @@
             <Setter Property="Padding" Value="12,7" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                    <Setter Property="Background" Value="#FFFCE8C8" />
-                    <Setter Property="BorderBrush" Value="#FFE2A93B" />
+                    <Setter Property="Background" Value="{StaticResource WarningSoftBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource WarningBrush}" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
                     <Setter Property="Background" Value="{StaticResource SuccessSoftBrush}" />
@@ -40,7 +40,7 @@
             <Setter Property="Foreground" Value="{StaticResource AccentDeepBrush}" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                    <Setter Property="Foreground" Value="#FF8B5A00" />
+                    <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
                     <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
@@ -69,7 +69,7 @@
     <Grid>
         <Canvas IsHitTestVisible="False">
             <Ellipse Width="420" Height="420" Fill="{StaticResource OrbBrush}" Canvas.Left="-140" Canvas.Top="-150" />
-            <Ellipse Width="360" Height="360" Fill="#26BBD8FF" Canvas.Right="-120" Canvas.Top="120" />
+            <Ellipse Width="360" Height="360" Fill="{StaticResource OrbSecondaryBrush}" Canvas.Right="-120" Canvas.Top="120" />
         </Canvas>
 
         <ScrollViewer VerticalScrollBarVisibility="Auto"
@@ -105,7 +105,7 @@
                         <ColumnDefinition Width="1.28*" />
                     </Grid.ColumnDefinitions>
 
-                    <Border Style="{StaticResource SurfaceCardStyle}" Background="{StaticResource HeroBackgroundBrush}" BorderBrush="#1FFFFFFF">
+                    <Border Style="{StaticResource SurfaceCardStyle}" Background="{StaticResource HeroBackgroundBrush}" BorderBrush="{StaticResource HeroPanelStrokeBrush}">
                         <Grid>
                             <Rectangle RadiusX="24" RadiusY="24" Fill="{StaticResource GlossBrush}" Opacity="0.55" />
                             <Grid Margin="8">
@@ -118,8 +118,8 @@
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
 
-                                <Border Padding="12,6" CornerRadius="999" Background="#1CFFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1" HorizontalAlignment="Left">
-                                    <TextBlock Style="{StaticResource EyebrowTextStyle}" Foreground="#E5FFFFFF" Text="CONTROL DASHBOARD" />
+                                <Border Padding="12,6" CornerRadius="999" Background="{StaticResource HeroChipBrush}" BorderBrush="{StaticResource HeroChipStrokeBrush}" BorderThickness="1" HorizontalAlignment="Left">
+                                    <TextBlock Style="{StaticResource EyebrowTextStyle}" Foreground="{StaticResource PrimaryTextBrush}" Text="CONTROL DASHBOARD" />
                                 </Border>
 
                                 <TextBlock Grid.Row="1"
@@ -133,7 +133,7 @@
 
                                 <TextBlock Grid.Row="3"
                                            Style="{StaticResource HelperTextStyle}"
-                                           Foreground="#D6E3F8"
+                                           Foreground="{StaticResource HeroBodyTextBrush}"
                                            TextWrapping="Wrap"
                                            Text="사용자가 직접 연 사이트를 기준으로, 이미지 단계 실행을 빠르게 시작하는 데 초점을 맞춘 데스크톱 헬퍼입니다. 시각 구조를 대시보드형으로 재구성해 상태 확인과 조작 포인트를 더 또렷하게 정리했습니다." />
 
@@ -146,54 +146,54 @@
                                         <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
 
-                                    <Border Style="{StaticResource SoftCardStyle}" Background="#14FFFFFF" BorderBrush="#1FFFFFFF">
+                                    <Border Style="{StaticResource SoftCardStyle}" Background="{StaticResource HeroSoftCardBrush}" BorderBrush="{StaticResource HeroSoftCardStrokeBrush}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="White" Text="01" />
+                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="{StaticResource PrimaryTextBrush}" Text="01" />
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="White" Text="템플릿 기반 제어" />
-                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="#C9D8F4" Text="Yes24, Booth, NOL, Melon, Custom 템플릿을 한 화면에서 전환합니다." />
+                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" Text="템플릿 기반 제어" />
+                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="{StaticResource HeroMutedTextBrush}" Text="Yes24, Booth, NOL, Melon, Custom 템플릿을 한 화면에서 전환합니다." />
                                             </StackPanel>
                                         </Grid>
                                     </Border>
 
-                                    <Border Grid.Row="2" Style="{StaticResource SoftCardStyle}" Background="#14FFFFFF" BorderBrush="#1FFFFFFF">
+                                    <Border Grid.Row="2" Style="{StaticResource SoftCardStyle}" Background="{StaticResource HeroSoftCardBrush}" BorderBrush="{StaticResource HeroSoftCardStrokeBrush}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="White" Text="02" />
+                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="{StaticResource PrimaryTextBrush}" Text="02" />
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="White" Text="실행 상태 피드백" />
-                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="#C9D8F4" Text="실행 상태와 마지막 결과를 분리해 확인 흐름을 단순화했습니다." />
+                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" Text="실행 상태 피드백" />
+                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="{StaticResource HeroMutedTextBrush}" Text="실행 상태와 마지막 결과를 분리해 확인 흐름을 단순화했습니다." />
                                             </StackPanel>
                                         </Grid>
                                     </Border>
 
-                                    <Border Grid.Row="4" Style="{StaticResource SoftCardStyle}" Background="#14FFFFFF" BorderBrush="#1FFFFFFF">
+                                    <Border Grid.Row="4" Style="{StaticResource SoftCardStyle}" Background="{StaticResource HeroSoftCardBrush}" BorderBrush="{StaticResource HeroSoftCardStrokeBrush}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="White" Text="03" />
+                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="{StaticResource PrimaryTextBrush}" Text="03" />
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="White" Text="명확한 실행 가이드" />
-                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="#C9D8F4" Text="핫키와 파일명 규칙을 별도 정보 카드로 분리해 실수 가능성을 줄였습니다." />
+                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" Text="명확한 실행 가이드" />
+                                                <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="{StaticResource HeroMutedTextBrush}" Text="핫키와 파일명 규칙을 별도 정보 카드로 분리해 실수 가능성을 줄였습니다." />
                                             </StackPanel>
                                         </Grid>
                                     </Border>
                                 </Grid>
 
-                                <Border Grid.Row="5" Margin="0,24,0,0" Padding="16" CornerRadius="18" Background="#16FFFFFF" BorderBrush="#20FFFFFF" BorderThickness="1">
-                                    <TextBlock Style="{StaticResource HelperTextStyle}" Foreground="#F4F7FF" Text="실행은 언제나 사용자 액션에서 시작되며, 현재 창은 설정 집중도와 상태 가독성을 높이는 방향으로 재구성되어 있습니다." />
+                                <Border Grid.Row="5" Margin="0,24,0,0" Padding="16" CornerRadius="18" Background="{StaticResource HeroCalloutBrush}" BorderBrush="{StaticResource HeroCalloutStrokeBrush}" BorderThickness="1">
+                                    <TextBlock Style="{StaticResource HelperTextStyle}" Foreground="{StaticResource PrimaryTextBrush}" Text="실행은 언제나 사용자 액션에서 시작되며, 현재 창은 설정 집중도와 상태 가독성을 높이는 방향으로 재구성되어 있습니다." />
                                 </Border>
                             </Grid>
                         </Grid>
@@ -447,8 +447,8 @@
                                                       Style="{StaticResource PrimaryButtonStyle}"
                                                       Command="{Binding StartAutomationCommand}">
                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                     <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Foreground="White" Text="RUN" />
-                                                     <TextBlock Margin="8,0,0,0" FontSize="15" Foreground="White" Text="자동화 실행" />
+                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Foreground="{StaticResource PrimaryTextBrush}" Text="RUN" />
+                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Foreground="{StaticResource PrimaryTextBrush}" Text="자동화 실행" />
                                                  </StackPanel>
                                              </Button>
                                          </StackPanel>
@@ -466,7 +466,7 @@
                                                             <Setter Property="Fill" Value="{StaticResource AccentBrush}" />
                                                             <Style.Triggers>
                                                                 <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                                                                    <Setter Property="Fill" Value="#FFE2A93B" />
+                                                                    <Setter Property="Fill" Value="{StaticResource WarningBrush}" />
                                                                 </DataTrigger>
                                                                 <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
                                                                     <Setter Property="Fill" Value="{StaticResource SuccessBrush}" />
@@ -516,7 +516,7 @@
                                     <TextBlock Grid.Column="1" Style="{StaticResource EyebrowTextStyle}" VerticalAlignment="Center" Text="LATEST" />
                                 </Grid>
 
-                                <Border Grid.Row="2" Style="{StaticResource SoftCardStyle}" Background="#FFF8FAFD">
+                                <Border Grid.Row="2" Style="{StaticResource SoftCardStyle}" Background="{StaticResource SummarySurfaceBrush}">
                                     <TextBlock TextWrapping="Wrap"
                                                LineHeight="24"
                                                FontSize="14"
