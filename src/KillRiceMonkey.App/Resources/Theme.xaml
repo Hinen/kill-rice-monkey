@@ -4,8 +4,8 @@
     <Color x:Key="SurfaceColor">#FF141A2E</Color>
     <Color x:Key="SurfaceAltColor">#FF1C2340</Color>
     <Color x:Key="StrokeColor">#18FFFFFF</Color>
-    <Color x:Key="InputBackgroundColor">#FF101628</Color>
-    <Color x:Key="InputStrokeColor">#FF2A365D</Color>
+    <Color x:Key="InputBackgroundColor">#FF232940</Color>
+    <Color x:Key="InputStrokeColor">#FF3D4560</Color>
     <Color x:Key="PrimaryTextColor">#FFF0F2F8</Color>
     <Color x:Key="MutedTextColor">#FF96A2C7</Color>
     <Color x:Key="AccentColor">#FF38BDF8</Color>

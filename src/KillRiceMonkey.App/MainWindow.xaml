@@ -5,8 +5,8 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Kill Rice Monkey"
-        Width="1180"
-        Height="760"
+        Width="1024"
+        Height="680"
         ResizeMode="CanMinimize"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
@@ -155,7 +155,7 @@
         <Grid x:Name="RootContent" Margin="18" Opacity="0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="48" />
-                <RowDefinition Height="14" />
+                <RowDefinition Height="12" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
@@ -165,540 +165,402 @@
                     Background="{StaticResource GlassSurfaceBrush}">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="18" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <Viewbox Width="20" Height="20" VerticalAlignment="Center">
-                        <Canvas Width="24" Height="24">
-                            <Path Data="{StaticResource ZapIcon}"
-                                  Fill="{StaticResource AccentSoftBrush}"
-                                  Stroke="{StaticResource AccentBrush}"
-                                  StrokeThickness="2"
-                                  StrokeStartLineCap="Round"
-                                  StrokeEndLineCap="Round"
-                                  StrokeLineJoin="Round" />
-                        </Canvas>
-                    </Viewbox>
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="18" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
 
-                    <StackPanel Grid.Column="2"
-                                Orientation="Horizontal"
-                                VerticalAlignment="Center">
-                        <TextBlock FontSize="18"
+                        <Viewbox Width="20" Height="20" VerticalAlignment="Center">
+                            <Canvas Width="24" Height="24">
+                                <Path Data="{StaticResource ZapIcon}"
+                                      Fill="{StaticResource AccentSoftBrush}"
+                                      Stroke="{StaticResource AccentBrush}"
+                                      StrokeThickness="2"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round" />
+                            </Canvas>
+                        </Viewbox>
+
+                        <TextBlock Grid.Column="2"
+                                   FontSize="18"
                                    FontWeight="Bold"
                                    VerticalAlignment="Center"
                                    Text="KILL RICE MONKEY" />
-                        <TextBlock Margin="12,1,0,0"
-                                   Style="{StaticResource EyebrowTextStyle}"
-                                   VerticalAlignment="Center"
-                                   Text="SINGLE VIEW CONTROL DASHBOARD" />
-                    </StackPanel>
 
-                    <Border Grid.Column="3"
+                        <Border Grid.Column="4"
+                                Padding="10,4"
+                                CornerRadius="10"
+                                Background="{StaticResource HeroChipBrush}"
+                                BorderBrush="{StaticResource HeroChipStrokeBrush}"
+                                BorderThickness="1"
+                                VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontSize="14"
+                                           VerticalAlignment="Center"
+                                           Text="⚡" />
+                                <TextBlock Margin="6,0,0,0"
+                                           FontSize="12"
+                                           FontWeight="Bold"
+                                           VerticalAlignment="Center"
+                                           Text="{Binding HotkeyText}" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Column="1"
                             Style="{StaticResource StateBadgeBorderStyle}"
                             VerticalAlignment="Center">
                         <TextBlock Style="{StaticResource StateBadgeTextStyle}"
-                                   Text="{Binding StatusMessage}" />
+                                   Text="READY" />
                     </Border>
                 </Grid>
             </Border>
 
             <Grid Grid.Row="2">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="300" />
-                    <ColumnDefinition Width="18" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="10" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-                <Border Style="{StaticResource SurfaceCardStyle}"
-                        Background="{StaticResource HeroBackgroundBrush}"
-                        BorderBrush="{StaticResource HeroPanelStrokeBrush}">
-                    <Grid ClipToBounds="True">
-                        <Rectangle RadiusX="16"
-                                   RadiusY="16"
-                                   Fill="{StaticResource GlossBrush}"
-                                   Opacity="0.75" />
+                <Border Style="{StaticResource SurfaceCardStyle}" Padding="18">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
-                        <Canvas IsHitTestVisible="False">
-                            <Ellipse Width="210"
-                                     Height="210"
-                                     Fill="{StaticResource AccentSoftBrush}"
-                                     Opacity="0.42"
-                                     Canvas.Left="-80"
-                                     Canvas.Top="-60" />
-                            <Ellipse Width="170"
-                                     Height="170"
-                                     Fill="{StaticResource OrbSecondaryBrush}"
-                                     Opacity="0.7"
-                                     Canvas.Right="-44"
-                                     Canvas.Bottom="52" />
-                            <Viewbox Width="180"
-                                     Height="180"
-                                     Canvas.Right="-22"
-                                     Canvas.Top="96"
-                                     Opacity="0.15">
-                                <Canvas Width="24" Height="24">
-                                    <Path Data="{StaticResource ZapIcon}"
-                                          Fill="{StaticResource AccentSoftBrush}"
-                                          Stroke="{StaticResource AccentBrush}"
-                                          StrokeThickness="1.4"
-                                          StrokeStartLineCap="Round"
-                                          StrokeEndLineCap="Round"
-                                          StrokeLineJoin="Round" />
-                                </Canvas>
-                            </Viewbox>
-                        </Canvas>
+                        <ProgressBar Grid.Row="0"
+                                     Style="{StaticResource ThinProgressBarStyle}"
+                                     IsIndeterminate="True"
+                                     Visibility="{Binding IsRunning, Converter={StaticResource BooleanToVisibilityConverter}}" />
 
-                        <Grid Margin="24">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="18" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
+                        <Grid Grid.Row="2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.15*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="0.85*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="0.85*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="1.45*" />
+                            </Grid.ColumnDefinitions>
 
-                            <StackPanel>
-                                <Border Padding="10,5"
-                                        HorizontalAlignment="Left"
-                                        CornerRadius="10"
-                                        Background="{StaticResource HeroChipBrush}"
-                                        BorderBrush="{StaticResource HeroChipStrokeBrush}"
-                                        BorderThickness="1">
-                                    <TextBlock Style="{StaticResource EyebrowTextStyle}"
-                                               Foreground="{StaticResource PrimaryTextBrush}"
-                                               Text="CONTROL PANEL" />
-                                </Border>
-
-                                <TextBlock Margin="0,16,0,0"
-                                           FontSize="26"
-                                           FontWeight="Bold"
-                                           LineHeight="32"
-                                           TextWrapping="Wrap">
-                                    <Run Text="Ticket" />
-                                    <LineBreak />
-                                    <Run Text="Automation" />
-                                </TextBlock>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                           Text="템플릿" />
+                                <ComboBox Style="{StaticResource InputComboBoxStyle}"
+                                          ItemsSource="{Binding TemplateOptions}"
+                                          SelectedItem="{Binding SelectedTemplate, UpdateSourceTrigger=PropertyChanged}" />
                             </StackPanel>
 
-                            <Border Grid.Row="2"
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                           Text="매칭 임계값" />
+                                <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                         Text="{Binding MatchThreshold, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="4">
+                                <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                           Text="타임아웃(초)" />
+                                <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                         Text="{Binding StepTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="6">
+                                <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                           Text="이미지 폴더" />
+                                <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                         IsEnabled="{Binding IsImageDirectoryEditable}"
+                                         Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Grid.Row="4">
+                            <Border
                                     Style="{StaticResource SoftCardStyle}"
-                                    Background="{StaticResource HeroSoftCardBrush}"
-                                    BorderBrush="{StaticResource HeroSoftCardStrokeBrush}">
-                                <StackPanel>
-                                    <TextBlock Style="{StaticResource EyebrowTextStyle}"
-                                               Foreground="{StaticResource HeroMutedTextBrush}"
-                                               Text="HOTKEY" />
-                                    <StackPanel Margin="0,16,0,0"
-                                                Orientation="Horizontal">
-                                        <Viewbox Width="24" Height="24" Margin="0,4,10,0">
-                                            <Canvas Width="24" Height="24">
-                                                <Path Data="{StaticResource ZapIcon}"
-                                                      Fill="{StaticResource AccentSoftBrush}"
-                                                      Stroke="{StaticResource AccentBrush}"
-                                                      StrokeThickness="2"
-                                                      StrokeStartLineCap="Round"
-                                                      StrokeEndLineCap="Round"
-                                                      StrokeLineJoin="Round" />
-                                            </Canvas>
-                                        </Viewbox>
-                                        <TextBlock FontSize="32"
-                                                   FontWeight="Bold"
-                                                   Foreground="{StaticResource HeroBodyTextBrush}"
-                                                   Text="{Binding HotkeyText}" />
+                                    Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.25*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="0.75*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="관람일" />
+                                        <DatePicker Style="{StaticResource InputDatePickerStyle}"
+                                                    SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
+                                                    SelectedDateFormat="Short" />
                                     </StackPanel>
-                                    <TextBlock Margin="0,6,0,0"
-                                               FontSize="14"
-                                               Foreground="{StaticResource HeroMutedTextBrush}"
-                                               Text="Press to start" />
-                                </StackPanel>
+
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="회차" />
+                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                 Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
+                                </Grid>
                             </Border>
 
+                            <Border
+                                    Style="{StaticResource SoftCardStyle}"
+                                    Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.2*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="0.8*" />
+                                    </Grid.ColumnDefinitions>
 
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="관람일" />
+                                        <DatePicker Style="{StaticResource InputDatePickerStyle}"
+                                                    SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
+                                                    SelectedDateFormat="Short" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="시간/회차" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="8" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <ComboBox Grid.Column="0"
+                                                      Style="{StaticResource InputComboBoxStyle}"
+                                                      ItemsSource="{Binding HourOptions}"
+                                                      SelectedItem="{Binding MelonHour, UpdateSourceTrigger=PropertyChanged}"
+                                                      ItemStringFormat="{}{0:D2}" />
+
+                                            <ComboBox Grid.Column="2"
+                                                      Style="{StaticResource InputComboBoxStyle}"
+                                                      ItemsSource="{Binding MinuteOptions}"
+                                                      SelectedItem="{Binding MelonMinute, UpdateSourceTrigger=PropertyChanged}"
+                                                      ItemStringFormat="{}{0:D2}" />
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <TextBox Grid.ColumnSpan="3"
+                                             Visibility="Collapsed"
+                                             Text="{Binding DesiredTime, UpdateSourceTrigger=PropertyChanged}" />
+                                </Grid>
+                            </Border>
+
+                        </Grid>
+
+                        <Grid Grid.Row="6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <Button Grid.Column="0"
+                                    Style="{StaticResource SecondaryActionButtonStyle}"
+                                    Command="{Binding LaunchNolRemoteDebugCommand}"
+                                    Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Data="{StaticResource ExternalLinkIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="OPEN" />
+                                </StackPanel>
+                            </Button>
+
+                            <Button Grid.Column="0"
+                                    Style="{StaticResource SecondaryActionButtonStyle}"
+                                    Command="{Binding LaunchMelonRemoteDebugCommand}"
+                                    Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Data="{StaticResource ExternalLinkIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="OPEN" />
+                                </StackPanel>
+                            </Button>
+
+                            <Button Grid.Column="2"
+                                    Style="{StaticResource ReadyActionButtonStyle}"
+                                    Command="{Binding PrepareNolAutomationCommand}"
+                                    Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Data="{StaticResource ShieldCheckIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="READY" />
+                                </StackPanel>
+                            </Button>
+
+                            <Button Grid.Column="2"
+                                    Style="{StaticResource ReadyActionButtonStyle}"
+                                    Command="{Binding PrepareMelonAutomationCommand}"
+                                    Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Data="{StaticResource ShieldCheckIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="READY" />
+                                </StackPanel>
+                            </Button>
+
+                            <Button Grid.Column="4"
+                                    Style="{StaticResource RunActionButtonStyle}"
+                                    Command="{Binding StartAutomationCommand}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Data="{StaticResource PlayIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="RUN" />
+                                </StackPanel>
+                            </Button>
+
+                            <Border Grid.Column="6"
+                                    Margin="12,0,0,0"
+                                    Style="{StaticResource SoftCardStyle}"
+                                    Padding="12,8"
+                                    VerticalAlignment="Center">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="10" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <Viewbox Width="16" Height="16" VerticalAlignment="Center">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Data="{StaticResource ZapIcon}"
+                                                  Fill="{StaticResource AccentSoftBrush}"
+                                                  Stroke="{StaticResource AccentBrush}"
+                                                  StrokeThickness="2"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round"
+                                                  StrokeLineJoin="Round" />
+                                        </Canvas>
+                                    </Viewbox>
+
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                        <TextBlock Style="{StaticResource EyebrowTextStyle}"
+                                                   Text="STATUS" />
+                                        <TextBlock Margin="0,2,0,0"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Text="{Binding StatusMessage}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
                         </Grid>
                     </Grid>
                 </Border>
 
-                <Grid Grid.Column="2">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="1.6*" />
-                        <RowDefinition Height="10" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
+                <Border Grid.Row="2"
+                        Style="{StaticResource ResultCardBorderStyle}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="14" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
 
-                    <Border Style="{StaticResource SurfaceCardStyle}" Padding="18">
                         <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="8" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="10" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
 
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
+                            <Viewbox Width="18" Height="18" VerticalAlignment="Center">
+                                <Canvas Width="24" Height="24">
+                                    <Path Data="{StaticResource ShieldCheckIcon}"
+                                          StrokeThickness="2"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round">
+                                        <Path.Style>
+                                            <Style TargetType="Path">
+                                                <Setter Property="Stroke" Value="{StaticResource AccentBrush}" />
+                                                <Setter Property="Fill" Value="Transparent" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
+                                                        <Setter Property="Stroke" Value="{StaticResource SuccessBrush}" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsErrorStatus}" Value="True">
+                                                        <Setter Property="Stroke" Value="{StaticResource DangerBrush}" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                        <Setter Property="Stroke" Value="{StaticResource WarningBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Path.Style>
+                                    </Path>
+                                </Canvas>
+                            </Viewbox>
 
-                                <StackPanel>
-                                    <TextBlock Style="{StaticResource SectionTitleTextStyle}"
-                                               Text="설정" />
-                                </StackPanel>
+                            <TextBlock Grid.Column="2"
+                                       Style="{StaticResource SectionTitleTextStyle}"
+                                       Text="실행 로그" />
 
-                                <Border Grid.Column="1"
-                                        Style="{StaticResource StateBadgeBorderStyle}"
-                                        VerticalAlignment="Top">
-                                    <TextBlock Style="{StaticResource StateBadgeTextStyle}"
-                                               Text="READY" />
-                                </Border>
-                            </Grid>
-
-                            <ProgressBar Grid.Row="2"
-                                         Style="{StaticResource ThinProgressBarStyle}"
-                                         IsIndeterminate="True"
-                                         Visibility="{Binding IsRunning, Converter={StaticResource BooleanToVisibilityConverter}}" />
-
-                            <Grid Grid.Row="4">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="10" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="10" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="1.1*" />
-                                    <ColumnDefinition Width="16" />
-                                    <ColumnDefinition Width="0.9*" />
-                                    <ColumnDefinition Width="16" />
-                                    <ColumnDefinition Width="1.55*" />
-                                </Grid.ColumnDefinitions>
-
-                                <StackPanel Grid.Column="0">
-                                    <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                               Text="템플릿" />
-                                    <ComboBox Style="{StaticResource InputComboBoxStyle}"
-                                              ItemsSource="{Binding TemplateOptions}"
-                                              SelectedItem="{Binding SelectedTemplate, UpdateSourceTrigger=PropertyChanged}" />
-                                </StackPanel>
-
-                                <StackPanel Grid.Column="2">
-                                    <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                               Text="매칭 임계값" />
-                                    <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                             Text="{Binding MatchThreshold, UpdateSourceTrigger=PropertyChanged}" />
-                                </StackPanel>
-
-                                <StackPanel Grid.Column="4">
-                                    <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                               Text="타임아웃(초)" />
-                                    <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                             Text="{Binding StepTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}" />
-                                </StackPanel>
-
-                                <Border Grid.Row="2"
-                                        Grid.Column="0"
-                                        Grid.ColumnSpan="3"
-                                        Style="{StaticResource SoftCardStyle}"
-                                        Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="8" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="14" />
-                                            <ColumnDefinition Width="150" />
-                                        </Grid.ColumnDefinitions>
-
-                                        <StackPanel Grid.ColumnSpan="3">
-                                            <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                       Text="NOL" />
-                                        </StackPanel>
-
-                                        <StackPanel Grid.Row="2">
-                                            <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                       Text="관람일" />
-                                            <DatePicker Style="{StaticResource InputDatePickerStyle}"
-                                                        SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
-                                                        SelectedDateFormat="Short" />
-                                        </StackPanel>
-
-                                        <StackPanel Grid.Row="2" Grid.Column="2">
-                                            <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                       Text="회차" />
-                                            <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                     Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-
-                                <Border Grid.Row="2"
-                                        Grid.Column="0"
-                                        Grid.ColumnSpan="3"
-                                        Style="{StaticResource SoftCardStyle}"
-                                        Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="8" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="14" />
-                                            <ColumnDefinition Width="178" />
-                                        </Grid.ColumnDefinitions>
-
-                                        <TextBlock Grid.ColumnSpan="3"
-                                                   Style="{StaticResource SectionLabelTextStyle}"
-                                                   Text="Melon" />
-
-                                        <StackPanel Grid.Row="2">
-                                            <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                       Text="관람일" />
-                                            <DatePicker Style="{StaticResource InputDatePickerStyle}"
-                                                        SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
-                                                        SelectedDateFormat="Short" />
-                                        </StackPanel>
-
-                                        <StackPanel Grid.Row="2" Grid.Column="2">
-                                            <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                       Text="시간" />
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="10" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-
-                                                <ComboBox Grid.Column="0"
-                                                          Style="{StaticResource InputComboBoxStyle}"
-                                                          ItemsSource="{Binding HourOptions}"
-                                                          SelectedItem="{Binding MelonHour, UpdateSourceTrigger=PropertyChanged}"
-                                                          ItemStringFormat="{}{0:D2}" />
-
-                                                <ComboBox Grid.Column="2"
-                                                          Style="{StaticResource InputComboBoxStyle}"
-                                                          ItemsSource="{Binding MinuteOptions}"
-                                                          SelectedItem="{Binding MelonMinute, UpdateSourceTrigger=PropertyChanged}"
-                                                          ItemStringFormat="{}{0:D2}" />
-                                            </Grid>
-                                        </StackPanel>
-
-                                        <TextBox Grid.Row="2"
-                                                 Grid.ColumnSpan="3"
-                                                 Visibility="Collapsed"
-                                                 Text="{Binding DesiredTime, UpdateSourceTrigger=PropertyChanged}" />
-                                    </Grid>
-                                </Border>
-
-                                <StackPanel Grid.Row="2" Grid.Column="4">
-                                    <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                               Text="이미지 폴더" />
-                                    <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                             IsEnabled="{Binding IsImageDirectoryEditable}"
-                                             Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
-                                </StackPanel>
-
-                                <Grid Grid.Row="4"
-                                      Grid.ColumnSpan="5">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="12" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="12" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-
-                                    <Button Grid.Column="0"
-                                            Style="{StaticResource SecondaryActionButtonStyle}"
-                                            Command="{Binding LaunchNolRemoteDebugCommand}"
-                                            Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                            <Viewbox Width="15" Height="15" Margin="0,0,8,0">
-                                                <Canvas Width="24" Height="24">
-                                                    <Path Style="{StaticResource ActionIconPathStyle}"
-                                                          Data="{StaticResource ExternalLinkIcon}" />
-                                                </Canvas>
-                                            </Viewbox>
-                                            <TextBlock VerticalAlignment="Center" Text="OPEN" />
-                                        </StackPanel>
-                                    </Button>
-
-                                    <Button Grid.Column="0"
-                                            Style="{StaticResource SecondaryActionButtonStyle}"
-                                            Command="{Binding LaunchMelonRemoteDebugCommand}"
-                                            Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                            <Viewbox Width="15" Height="15" Margin="0,0,8,0">
-                                                <Canvas Width="24" Height="24">
-                                                    <Path Style="{StaticResource ActionIconPathStyle}"
-                                                          Data="{StaticResource ExternalLinkIcon}" />
-                                                </Canvas>
-                                            </Viewbox>
-                                            <TextBlock VerticalAlignment="Center" Text="OPEN" />
-                                        </StackPanel>
-                                    </Button>
-
-                                    <Button Grid.Column="2"
-                                            Style="{StaticResource ReadyActionButtonStyle}"
-                                            Command="{Binding PrepareNolAutomationCommand}"
-                                            Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                            <Viewbox Width="15" Height="15" Margin="0,0,8,0">
-                                                <Canvas Width="24" Height="24">
-                                                    <Path Style="{StaticResource ActionIconPathStyle}"
-                                                          Data="{StaticResource ShieldCheckIcon}" />
-                                                </Canvas>
-                                            </Viewbox>
-                                            <TextBlock VerticalAlignment="Center" Text="READY" />
-                                        </StackPanel>
-                                    </Button>
-
-                                    <Button Grid.Column="2"
-                                            Style="{StaticResource ReadyActionButtonStyle}"
-                                            Command="{Binding PrepareMelonAutomationCommand}"
-                                            Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                            <Viewbox Width="15" Height="15" Margin="0,0,8,0">
-                                                <Canvas Width="24" Height="24">
-                                                    <Path Style="{StaticResource ActionIconPathStyle}"
-                                                          Data="{StaticResource ShieldCheckIcon}" />
-                                                </Canvas>
-                                            </Viewbox>
-                                            <TextBlock VerticalAlignment="Center" Text="READY" />
-                                        </StackPanel>
-                                    </Button>
-
-                                    <Button Grid.Column="4"
-                                            Style="{StaticResource RunActionButtonStyle}"
-                                            Command="{Binding StartAutomationCommand}">
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                            <Viewbox Width="15" Height="15" Margin="0,0,8,0">
-                                                <Canvas Width="24" Height="24">
-                                                    <Path Style="{StaticResource ActionIconPathStyle}"
-                                                          Data="{StaticResource PlayIcon}" />
-                                                </Canvas>
-                                            </Viewbox>
-                                            <TextBlock VerticalAlignment="Center" Text="RUN" />
-                                        </StackPanel>
-                                    </Button>
-
-                                    <Border Grid.Column="5"
-                                            Margin="12,0,0,0"
-                                            Style="{StaticResource SoftCardStyle}"
-                                            Padding="12,8"
-                                            VerticalAlignment="Center">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="12" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <Viewbox Width="16" Height="16" VerticalAlignment="Center">
-                                                <Canvas Width="24" Height="24">
-                                                    <Path Data="{StaticResource ZapIcon}"
-                                                          Fill="{StaticResource AccentSoftBrush}"
-                                                          Stroke="{StaticResource AccentBrush}"
-                                                          StrokeThickness="2"
-                                                          StrokeStartLineCap="Round"
-                                                          StrokeEndLineCap="Round"
-                                                          StrokeLineJoin="Round" />
-                                                </Canvas>
-                                            </Viewbox>
-
-                                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                                <TextBlock Style="{StaticResource EyebrowTextStyle}"
-                                                           Text="STATUS" />
-                                                <TextBlock Margin="0,3,0,0"
-                                                           FontSize="14"
-                                                           FontWeight="SemiBold"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           Text="{Binding StatusMessage}" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </Grid>
-                            </Grid>
-                        </Grid>
-                    </Border>
-
-                    <Border Grid.Row="2"
-                            Style="{StaticResource ResultCardBorderStyle}">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="16" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="12" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-
-                                <Viewbox Width="18" Height="18" VerticalAlignment="Center">
-                                    <Canvas Width="24" Height="24">
-                                        <Path Data="{StaticResource ShieldCheckIcon}"
-                                              StrokeThickness="2"
-                                              StrokeStartLineCap="Round"
-                                              StrokeEndLineCap="Round"
-                                              StrokeLineJoin="Round">
-                                            <Path.Style>
-                                                <Style TargetType="Path">
-                                                    <Setter Property="Stroke" Value="{StaticResource AccentBrush}" />
-                                                    <Setter Property="Fill" Value="Transparent" />
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
-                                                            <Setter Property="Stroke" Value="{StaticResource SuccessBrush}" />
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding IsErrorStatus}" Value="True">
-                                                            <Setter Property="Stroke" Value="{StaticResource DangerBrush}" />
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                                                            <Setter Property="Stroke" Value="{StaticResource WarningBrush}" />
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </Path.Style>
-                                        </Path>
-                                    </Canvas>
-                                </Viewbox>
-
-                                <StackPanel Grid.Column="2">
-                                    <TextBlock Style="{StaticResource SectionTitleTextStyle}"
-                                               Text="실행 로그" />
-                                </StackPanel>
-
-                                <Border Grid.Column="3"
-                                        Style="{StaticResource StateBadgeBorderStyle}"
-                                        VerticalAlignment="Center">
-                                    <TextBlock Style="{StaticResource StateBadgeTextStyle}"
-                                               Text="LATEST" />
-                                </Border>
-                            </Grid>
-
-                            <Border Grid.Row="2"
-                                    Style="{StaticResource SoftCardStyle}"
-                                    Background="{StaticResource SummarySurfaceBrush}">
-                                <TextBlock FontSize="14"
-                                           LineHeight="24"
-                                           TextWrapping="Wrap"
-                                           Text="{Binding LastRunSummary}" />
+                            <Border Grid.Column="3"
+                                    Style="{StaticResource StateBadgeBorderStyle}"
+                                    VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource StateBadgeTextStyle}"
+                                           Text="LATEST" />
                             </Border>
                         </Grid>
-                    </Border>
-                </Grid>
+
+                        <Border Grid.Row="2"
+                                Style="{StaticResource SoftCardStyle}"
+                                Background="{StaticResource SummarySurfaceBrush}"
+                                Padding="16,14">
+                            <TextBlock FontSize="14"
+                                       LineHeight="24"
+                                       TextWrapping="Wrap"
+                                       Text="{Binding LastRunSummary}" />
+                        </Border>
+                    </Grid>
+                </Border>
             </Grid>
         </Grid>
     </Grid>
