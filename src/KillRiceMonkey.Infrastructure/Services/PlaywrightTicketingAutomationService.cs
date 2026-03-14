@@ -547,9 +547,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 try { await captchaPage.EvaluateAsync("() => { window.__melonAlertDetected = true; }"); } catch { }
             };
 
+            var captchaSw = Stopwatch.StartNew();
             _logger.LogInformation("[Melon] CAPTCHA 풀이 시작.");
             await SolveCaptchaAsync(captchaPage, timeout, cancellationToken);
-            _logger.LogInformation("[Melon] CAPTCHA 풀이 완료. popupUrl={Url}, isClosed={IsClosed}", SafePageUrl(captchaPage), captchaPage.IsClosed);
+            _logger.LogInformation("[PERF] SolveCaptcha: {Ms}ms. popupUrl={Url}, isClosed={IsClosed}",
+                captchaSw.ElapsedMilliseconds, SafePageUrl(captchaPage), captchaPage.IsClosed);
 
             if (captchaPage.IsClosed)
             {
@@ -2123,28 +2125,33 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        var totalSw = Stopwatch.StartNew();
         _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}",
             SafePageUrl(page), page.IsClosed, page.Frames.Count);
 
-        _logger.LogInformation("[SelectSeat] iframe 탐색 시작.");
+        var stepSw = Stopwatch.StartNew();
         var seatFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
-        _logger.LogInformation("[SelectSeat] seat iframe 발견. frameUrl={Url}", seatFrame.Url);
+        _logger.LogInformation("[PERF] FindMelonSeatFrame: {Ms}ms. frameUrl={Url}", stepSw.ElapsedMilliseconds, seatFrame.Url);
 
+        stepSw.Restart();
         var zoneRequired = await IsMelonZoneSelectionRequiredAsync(seatFrame);
-        _logger.LogInformation("[SelectSeat] 구역 선택 필요 여부: {Required}", zoneRequired);
+        _logger.LogInformation("[PERF] IsMelonZoneSelectionRequired: {Ms}ms. required={Required}", stepSw.ElapsedMilliseconds, zoneRequired);
         if (zoneRequired)
         {
-            _logger.LogInformation("구역 선택 필요 — 사용자가 구역을 선택할 때까지 대기합니다.");
+            stepSw.Restart();
             await WaitForMelonZoneSelectionAsync(seatFrame, cancellationToken);
-            _logger.LogInformation("구역 선택 완료 — 좌석 선택을 진행합니다.");
+            _logger.LogInformation("[PERF] WaitForMelonZoneSelection: {Ms}ms", stepSw.ElapsedMilliseconds);
         }
 
-        _logger.LogInformation("[SelectSeat] 좌석 선택 실행 시작.");
+        stepSw.Restart();
         var validFrame = await SelectMelonSeatInFrameAsync(page, seatFrame, timeout, cancellationToken);
-        _logger.LogInformation("[SelectSeat] 좌석 선택 완료. 완료 버튼 클릭 시작.");
-        await ClickMelonSeatCompleteAsync(page, validFrame, timeout, cancellationToken);
+        _logger.LogInformation("[PERF] SelectMelonSeatInFrame: {Ms}ms", stepSw.ElapsedMilliseconds);
 
-        _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 완료 버튼 클릭 완료.");
+        stepSw.Restart();
+        await ClickMelonSeatCompleteAsync(page, validFrame, timeout, cancellationToken);
+        _logger.LogInformation("[PERF] ClickMelonSeatComplete: {Ms}ms", stepSw.ElapsedMilliseconds);
+
+        _logger.LogInformation("[PERF] 좌석 선택 전체 소요: {Ms}ms", totalSw.ElapsedMilliseconds);
     }
 
     private async Task<IFrame> FindMelonSeatFrameAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
