@@ -16,7 +16,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private readonly ITicketingAutomationService _ticketingAutomationService;
     private string? _selectedTemplate;
     private string _imageDirectory = "button-images";
-    private string _desiredDate = string.Empty;
+    private DateTime? _desiredDate = DateTime.Today;
     private string _desiredTime = string.Empty;
     private string _desiredRound = string.Empty;
     private double _matchThreshold = 0.86;
@@ -73,7 +73,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         set => SetProperty(ref _imageDirectory, value);
     }
 
-    public string DesiredDate
+    public DateTime? DesiredDate
     {
         get => _desiredDate;
         set => SetProperty(ref _desiredDate, value);
@@ -191,10 +191,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         if (templateType == TicketingTemplateType.Nol)
         {
-            if (string.IsNullOrWhiteSpace(DesiredDate))
+            if (DesiredDate is null)
             {
                 StatusMessage = "입력 확인 필요";
-                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 관람일을 입력하세요. 예: 2026.04.11";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 관람일을 선택하세요.";
                 return;
             }
 
@@ -226,10 +226,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         if (templateType == TicketingTemplateType.Melon)
         {
-            if (string.IsNullOrWhiteSpace(DesiredDate))
+            if (DesiredDate is null)
             {
                 StatusMessage = "입력 확인 필요";
-                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 관람일을 입력하세요. 예: 2026.03.14";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 관람일을 선택하세요.";
                 return;
             }
 
@@ -284,7 +284,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 imageDirectory,
                 MatchThreshold,
                 StepTimeoutSeconds,
-                IsNolTemplate || IsMelonTemplate ? DesiredDate : null,
+                IsNolTemplate || IsMelonTemplate ? DesiredDate?.ToString("yyyy.MM.dd") : null,
                 IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : null));
 
             if (templateType == TicketingTemplateType.Nol)
