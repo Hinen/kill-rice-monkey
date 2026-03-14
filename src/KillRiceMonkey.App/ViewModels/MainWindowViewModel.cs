@@ -1,6 +1,7 @@
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Input;
@@ -17,7 +18,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string? _selectedTemplate;
     private string _imageDirectory = "button-images";
     private DateTime? _desiredDate = DateTime.Today;
-    private string _desiredTime = string.Empty;
+    private string _desiredTime = "18시 00분";
+    private int _melonHour = 18;
+    private int _melonMinute;
     private string _desiredRound = string.Empty;
     private double _matchThreshold = 0.86;
     private int _stepTimeoutSeconds = 8;
@@ -83,6 +86,30 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         get => _desiredTime;
         set => SetProperty(ref _desiredTime, value);
+    }
+
+    public IReadOnlyList<int> HourOptions { get; } = Enumerable.Range(0, 24).ToList();
+
+    public IReadOnlyList<int> MinuteOptions { get; } = Enumerable.Range(0, 60).ToList();
+
+    public int MelonHour
+    {
+        get => _melonHour;
+        set
+        {
+            if (SetProperty(ref _melonHour, value))
+                DesiredTime = $"{_melonHour:D2}시 {_melonMinute:D2}분";
+        }
+    }
+
+    public int MelonMinute
+    {
+        get => _melonMinute;
+        set
+        {
+            if (SetProperty(ref _melonMinute, value))
+                DesiredTime = $"{_melonHour:D2}시 {_melonMinute:D2}분";
+        }
     }
 
     public string DesiredRound
@@ -236,7 +263,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             if (string.IsNullOrWhiteSpace(DesiredTime))
             {
                 StatusMessage = "입력 확인 필요";
-                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 시간을 입력하세요. 예: 18:00";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 시간을 선택하세요.";
                 return;
             }
 
