@@ -7,8 +7,7 @@
         Title="Kill Rice Monkey"
         Width="1180"
         Height="760"
-        MinWidth="1180"
-        MinHeight="760"
+        ResizeMode="CanMinimize"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
@@ -278,16 +277,10 @@
                                            FontWeight="Bold"
                                            LineHeight="32"
                                            TextWrapping="Wrap">
-                                    <Run Text="즉시 실행을 위한" />
+                                    <Run Text="Ticket" />
                                     <LineBreak />
-                                    <Run Text="모던 다크 콘솔" />
+                                    <Run Text="Automation" />
                                 </TextBlock>
-
-                                <TextBlock Margin="0,10,0,0"
-                                           Style="{StaticResource HelperTextStyle}"
-                                           Foreground="{StaticResource HeroMutedTextBrush}"
-                                           TextWrapping="Wrap"
-                                           Text="스크롤 없이 상태 확인, 템플릿 선택, 실행 트리거를 한 화면에서 끝내는 단일 뷰 레이아웃입니다." />
                             </StackPanel>
 
                             <Border Grid.Row="2"
@@ -316,18 +309,10 @@
                                                    Foreground="{StaticResource HeroBodyTextBrush}"
                                                    Text="{Binding HotkeyText}" />
                                     </StackPanel>
-                                    <TextBlock Margin="0,10,0,0"
-                                               FontSize="16"
-                                               FontWeight="SemiBold"
-                                               Foreground="{StaticResource PrimaryTextBrush}"
-                                               Text="로 즉시 실행" />
-                                    <Rectangle Margin="0,18,0,18"
-                                               Height="1"
-                                               Fill="{StaticResource StrokeBrush}" />
-                                    <TextBlock Style="{StaticResource HelperTextStyle}"
-                                               Foreground="{StaticResource HeroBodyTextBrush}"
-                                               TextWrapping="Wrap"
-                                               Text="사용자가 직접 띄운 페이지를 기준으로 자동화가 시작되며, 준비 버튼과 실행 버튼을 같은 시야 안에 고정했습니다." />
+                                    <TextBlock Margin="0,6,0,0"
+                                               FontSize="14"
+                                               Foreground="{StaticResource HeroMutedTextBrush}"
+                                               Text="Press to start" />
                                 </StackPanel>
                             </Border>
 
@@ -381,12 +366,8 @@
                                                    FontSize="22"
                                                    FontWeight="Bold"
                                                    Foreground="{StaticResource PrimaryTextBrush}"
-                                                   Text="{Binding StatusMessage}" />
-                                        <TextBlock Margin="0,8,0,0"
-                                                   Style="{StaticResource HelperTextStyle}"
-                                                   Foreground="{StaticResource HeroBodyTextBrush}"
                                                    TextWrapping="Wrap"
-                                                   Text="상단 배지와 결과 카드도 동일한 상태 값을 따라가므로 실행 단계가 바뀌어도 눈을 크게 이동할 필요가 없습니다." />
+                                                   Text="{Binding StatusMessage}" />
                                     </StackPanel>
                                 </Grid>
                             </Border>
@@ -419,10 +400,7 @@
 
                                 <StackPanel>
                                     <TextBlock Style="{StaticResource SectionTitleTextStyle}"
-                                               Text="실행 설정" />
-                                    <TextBlock Margin="0,8,0,0"
-                                               Style="{StaticResource HelperTextStyle}"
-                                               Text="입력 필드와 액션 버튼을 상단 카드에 밀집 배치해 한 번의 시선 이동으로 준비를 끝냅니다." />
+                                               Text="설정" />
                                 </StackPanel>
 
                                 <Border Grid.Column="1"
@@ -764,10 +742,7 @@
 
                                 <StackPanel Grid.Column="2">
                                     <TextBlock Style="{StaticResource SectionTitleTextStyle}"
-                                               Text="마지막 실행 결과" />
-                                    <TextBlock Margin="0,8,0,0"
-                                               Style="{StaticResource HelperTextStyle}"
-                                               Text="최근 상태와 실행 요약을 아래 카드에 고정해 마지막 결과를 빠르게 복기할 수 있게 했습니다." />
+                                               Text="실행 로그" />
                                 </StackPanel>
 
                                 <Border Grid.Column="3"
