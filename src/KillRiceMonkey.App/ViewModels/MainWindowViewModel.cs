@@ -213,7 +213,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             return;
         }
 
-        var mainWindow = System.Windows.Application.Current?.MainWindow;
         var templateType = ParseTemplateType(SelectedTemplate);
 
         if (templateType == TicketingTemplateType.Nol)
@@ -284,11 +283,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     return;
                 }
             }
-        }
-
-        if (mainWindow is not null)
-        {
-            mainWindow.WindowState = WindowState.Minimized;
         }
 
         _runCts?.Dispose();
