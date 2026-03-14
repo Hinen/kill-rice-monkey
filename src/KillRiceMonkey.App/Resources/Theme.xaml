@@ -137,6 +137,28 @@
         </Style.Triggers>
     </Style>
 
+    <Style x:Key="InputDatePickerStyle" TargetType="DatePicker">
+        <Setter Property="Height" Value="44" />
+        <Setter Property="Padding" Value="10,8" />
+        <Setter Property="Background" Value="White" />
+        <Setter Property="BorderBrush" Value="{StaticResource StrokeBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Style.Triggers>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+            </Trigger>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="#FFBAC4D6" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.55" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
     <Style x:Key="InputComboBoxStyle" TargetType="ComboBox">
         <Setter Property="Height" Value="44" />
         <Setter Property="Padding" Value="14,8" />

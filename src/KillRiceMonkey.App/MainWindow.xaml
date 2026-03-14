@@ -318,8 +318,9 @@
 
                                              <StackPanel Grid.Row="2">
                                                  <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="관람일" />
-                                                 <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                           Text="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}" />
+                                                 <DatePicker SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
+                                                             SelectedDateFormat="Long"
+                                                             Style="{StaticResource InputDatePickerStyle}" />
                                              </StackPanel>
 
                                              <StackPanel Grid.Row="2" Grid.Column="2">
@@ -354,9 +355,10 @@
                                               </StackPanel>
 
                                               <StackPanel Grid.Row="2">
-                                                  <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="관람일" />
-                                                  <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                           Text="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}" />
+                                                   <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="관람일" />
+                                                   <DatePicker SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
+                                                               SelectedDateFormat="Long"
+                                                               Style="{StaticResource InputDatePickerStyle}" />
                                               </StackPanel>
 
                                               <StackPanel Grid.Row="2" Grid.Column="2">
