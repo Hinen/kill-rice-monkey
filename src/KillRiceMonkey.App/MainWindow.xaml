@@ -377,18 +377,18 @@
 
                 <Grid Grid.Column="2">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="1.18*" />
-                        <RowDefinition Height="14" />
-                        <RowDefinition Height="0.82*" />
+                        <RowDefinition Height="1.6*" />
+                        <RowDefinition Height="10" />
+                        <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Border Style="{StaticResource SurfaceCardStyle}">
+                    <Border Style="{StaticResource SurfaceCardStyle}" Padding="18">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="14" />
+                                <RowDefinition Height="8" />
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="18" />
+                                <RowDefinition Height="10" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
 
@@ -419,9 +419,9 @@
                             <Grid Grid.Row="4">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="16" />
+                                    <RowDefinition Height="10" />
                                     <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="16" />
+                                    <RowDefinition Height="10" />
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
@@ -462,7 +462,7 @@
                                     <Grid>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="14" />
+                                            <RowDefinition Height="8" />
                                             <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
@@ -473,10 +473,7 @@
 
                                         <StackPanel Grid.ColumnSpan="3">
                                             <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                       Text="NOL 입력" />
-                                            <TextBlock Margin="0,6,0,0"
-                                                       Style="{StaticResource HelperTextStyle}"
-                                                       Text="remote debug 브라우저를 먼저 열고 로그인한 뒤 관람일과 회차를 지정합니다." />
+                                                       Text="NOL" />
                                         </StackPanel>
 
                                         <StackPanel Grid.Row="2">
@@ -504,7 +501,7 @@
                                     <Grid>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="14" />
+                                            <RowDefinition Height="8" />
                                             <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
@@ -513,13 +510,9 @@
                                             <ColumnDefinition Width="178" />
                                         </Grid.ColumnDefinitions>
 
-                                        <StackPanel Grid.ColumnSpan="3">
-                                            <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                       Text="Melon 입력" />
-                                            <TextBlock Margin="0,6,0,0"
-                                                       Style="{StaticResource HelperTextStyle}"
-                                                       Text="remote debug 브라우저를 먼저 열고 로그인한 뒤 관람일과 시간을 지정합니다." />
-                                        </StackPanel>
+                                        <TextBlock Grid.ColumnSpan="3"
+                                                   Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="Melon" />
 
                                         <StackPanel Grid.Row="2">
                                             <TextBlock Style="{StaticResource SectionLabelTextStyle}"
@@ -562,14 +555,10 @@
 
                                 <StackPanel Grid.Row="2" Grid.Column="4">
                                     <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                               Text="이미지 폴더 경로" />
+                                               Text="이미지 폴더" />
                                     <TextBox Style="{StaticResource InputTextBoxStyle}"
                                              IsEnabled="{Binding IsImageDirectoryEditable}"
                                              Text="{Binding ImageDirectory, UpdateSourceTrigger=PropertyChanged}" />
-                                    <TextBlock Margin="0,8,0,0"
-                                               Style="{StaticResource HelperTextStyle}"
-                                               TextWrapping="Wrap"
-                                               Text="Custom 템플릿일 때만 직접 수정 가능하며, 템플릿에 따라 기본 경로나 미사용 상태가 자동 적용됩니다." />
                                 </StackPanel>
 
                                 <Grid Grid.Row="4"
