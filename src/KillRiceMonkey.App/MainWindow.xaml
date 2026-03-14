@@ -363,8 +363,34 @@
 
                                               <StackPanel Grid.Row="2" Grid.Column="2">
                                                   <TextBlock Style="{StaticResource SectionLabelTextStyle}" Text="시간" />
-                                                  <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                           Text="{Binding DesiredTime, UpdateSourceTrigger=PropertyChanged}" />
+                                                  <Grid>
+                                                      <Grid.ColumnDefinitions>
+                                                          <ColumnDefinition Width="*" />
+                                                          <ColumnDefinition Width="Auto" />
+                                                          <ColumnDefinition Width="*" />
+                                                          <ColumnDefinition Width="Auto" />
+                                                      </Grid.ColumnDefinitions>
+                                                      <ComboBox Grid.Column="0"
+                                                                Style="{StaticResource InputComboBoxStyle}"
+                                                                ItemsSource="{Binding HourOptions}"
+                                                                SelectedItem="{Binding MelonHour}"
+                                                                ItemStringFormat="{}{0:D2}" />
+                                                      <TextBlock Grid.Column="1"
+                                                                 Text="시"
+                                                                 VerticalAlignment="Center"
+                                                                 Margin="6,0"
+                                                                 Style="{StaticResource SectionLabelTextStyle}" />
+                                                      <ComboBox Grid.Column="2"
+                                                                Style="{StaticResource InputComboBoxStyle}"
+                                                                ItemsSource="{Binding MinuteOptions}"
+                                                                SelectedItem="{Binding MelonMinute}"
+                                                                ItemStringFormat="{}{0:D2}" />
+                                                      <TextBlock Grid.Column="3"
+                                                                 Text="분"
+                                                                 VerticalAlignment="Center"
+                                                                 Margin="6,0,0,0"
+                                                                 Style="{StaticResource SectionLabelTextStyle}" />
+                                                  </Grid>
                                               </StackPanel>
                                           </Grid>
                                       </Border>
