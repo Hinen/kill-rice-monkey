@@ -2268,64 +2268,69 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             try
             {
-                var seatsJson = await currentFrame.EvaluateAsync<string>(@"() => {
+                var scanClickResult = await currentFrame.EvaluateAsync<string>(@"(args) => {
                 const rects = document.querySelectorAll('#ez_canvas rect');
                 const seats = [];
+                let i = 0;
                 for (const r of rects) {
                     const fill = r.getAttribute('fill') || 'none';
                     const w = parseFloat(r.getAttribute('width'));
                     const h = parseFloat(r.getAttribute('height'));
                     if (w > 0 && w <= 15 && h > 0 && h <= 15 && fill !== 'none' && fill.toUpperCase() !== '#DDDDDD') {
-                        seats.push({
-                            x: parseFloat(r.getAttribute('x')),
-                            y: parseFloat(r.getAttribute('y')),
-                            idx: Array.from(rects).indexOf(r)
-                        });
+                        seats.push({ x: parseFloat(r.getAttribute('x')), y: parseFloat(r.getAttribute('y')), idx: i });
                     }
+                    i++;
                 }
+                if (seats.length === 0) return JSON.stringify({ s: 'empty', c: 0 });
                 seats.sort((a, b) => a.y - b.y || a.x - b.x);
-                return JSON.stringify(seats);
-            }");
+                const ti = seats.length >= args.offset ? args.offset - 1 : 0;
+                const t = seats[ti];
+                const rect = rects[t.idx];
+                if (!rect) return JSON.stringify({ s: 'not_found', c: seats.length });
+                const evt = document.createEvent('MouseEvents');
+                evt.initMouseEvent('click', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+                rect.dispatchEvent(evt);
+                return JSON.stringify({ s: 'clicked', c: seats.length, ti: ti, x: t.x, y: t.y });
+            }", new { offset = SeatSelectionOffset });
 
-                var seats = JsonSerializer.Deserialize<List<MelonSeatInfo>>(seatsJson) ?? [];
-                if (seats.Count == 0)
+                using var scanDoc = JsonDocument.Parse(scanClickResult);
+                var status = scanDoc.RootElement.GetProperty("s").GetString();
+                var seatCount = scanDoc.RootElement.GetProperty("c").GetInt32();
+
+                if (status == "empty")
                 {
                     _logger.LogWarning("선택 가능한 좌석 없음. retry={Retry}", retry);
                     await Task.Delay(50, cancellationToken);
                     continue;
                 }
 
-                var targetIndex = seats.Count >= SeatSelectionOffset ? SeatSelectionOffset - 1 : 0;
-                var target = seats[targetIndex];
-                _logger.LogInformation("좌석 선택: available={Count}, targetIdx={TargetIdx}, x={X}, y={Y}", seats.Count, targetIndex, target.X, target.Y);
-
-                var clickResult = await currentFrame.EvaluateAsync<string>(@"(args) => {
-                const rects = document.querySelectorAll('#ez_canvas rect');
-                const rect = rects[args.idx];
-                if (!rect) return 'not_found';
-                const evt = document.createEvent('MouseEvents');
-                evt.initMouseEvent('click', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
-                rect.dispatchEvent(evt);
-                return 'clicked';
-            }", new { idx = target.Idx });
-
-                if (clickResult != "clicked")
+                if (status != "clicked")
                 {
-                    _logger.LogWarning("좌석 클릭 실패: result={Result}", clickResult);
+                    _logger.LogWarning("좌석 클릭 실패: status={Status}, count={Count}", status, seatCount);
                     continue;
                 }
 
-                await Task.Delay(30, cancellationToken);
+                _logger.LogInformation("좌석 스캔+클릭 완료: available={Count}, targetIdx={Idx}, x={X}, y={Y}",
+                    seatCount, scanDoc.RootElement.GetProperty("ti").GetInt32(),
+                    scanDoc.RootElement.GetProperty("x").GetDouble(), scanDoc.RootElement.GetProperty("y").GetDouble());
 
-                var hasConflict = await DetectMelonSeatConflictAsync(currentFrame);
-                if (hasConflict)
+                var validation = await currentFrame.EvaluateAsync<string>(@"() => {
+                const ad = window.__melonAlertDetected === true;
+                const sel = document.querySelectorAll('#partSeatSelected li').length;
+                return JSON.stringify({ ad: ad, sel: sel });
+            }");
+
+                using var valDoc = JsonDocument.Parse(validation);
+                var alertDetected = valDoc.RootElement.GetProperty("ad").GetBoolean();
+                var selectedCount = valDoc.RootElement.GetProperty("sel").GetInt32();
+
+                if (alertDetected)
                 {
                     _logger.LogInformation("좌석 중복 선택 감지 — 다른 좌석으로 재시도. retry={Retry}", retry);
                     await DismissMelonSeatConflictAlertAsync(currentFrame);
                     continue;
                 }
 
-                var selectedCount = await currentFrame.Locator("#partSeatSelected li").CountAsync();
                 if (selectedCount > 0)
                 {
                     _logger.LogInformation("좌석 선택 성공. selectedCount={Count}", selectedCount);
