@@ -1510,7 +1510,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         var localResult = RunLocalCaptchaOcr(screenshotBytes);
-        if (localResult.Length >= 4)
+        if (localResult.Length == 6)
         {
             _logger.LogInformation("CAPTCHA solved via local OCR: {Text}", localResult);
             _ = RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
@@ -1541,7 +1541,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         var ddddocrRaw = RunDdddOcrOnBytes(screenshotBytes);
         var ddddocrFiltered = FilterCaptchaText(ddddocrRaw);
-        if (ddddocrFiltered.Length is >= 4 and <= 8 && ddddocrFiltered.All(char.IsAsciiLetterOrDigit))
+        if (ddddocrFiltered.Length == 6 && ddddocrFiltered.All(char.IsAsciiLetterOrDigit))
             candidates.Add(("original", ddddocrFiltered, 2.0));
 
         var variants = new (string name, int mode, double weight)[]
@@ -1569,7 +1569,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 Cv2.ImEncode(".png", processed, out var pngBytes);
                 var raw = RunDdddOcrOnBytes(pngBytes);
                 var filtered = FilterCaptchaText(raw);
-                if (filtered.Length is >= 4 and <= 8 && filtered.All(char.IsAsciiLetterOrDigit))
+                if (filtered.Length == 6 && filtered.All(char.IsAsciiLetterOrDigit))
                     candidates.Add((item.name, filtered, item.weight));
             }
             catch { }
@@ -1578,7 +1578,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         var validCandidates = candidates.ToList();
         if (validCandidates.Count == 0)
         {
-            if (ddddocrFiltered.Length >= 4)
+            if (ddddocrFiltered.Length == 6)
                 return ddddocrFiltered;
             return string.Empty;
         }
@@ -1896,8 +1896,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
     private async Task SolveCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         const int maxAttempts = 5;
-        const int minLength = 4;
-        const int maxLength = 8;
+        const int melonCaptchaLength = 6;
 
         _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 3초). url={Url}", SafePageUrl(page));
         var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, TimeSpan.FromSeconds(3), cancellationToken);
@@ -1961,7 +1960,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
 
-            if (text.Length < minLength || text.Length > maxLength)
+            if (text.Length != melonCaptchaLength)
             {
                 if (page.IsClosed)
                 {
