@@ -342,7 +342,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
 
         await page.BringToFrontAsync();
-        await EnsureMelonPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+        await EnsureMelonPopupClosedAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
         _melonPopupClosedDuringPrepare = true;
         return $"Melon 준비 완료: {SafePageUrl(page)}";
     }
@@ -523,7 +523,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             await page.BringToFrontAsync();
             if (!_melonPopupClosedDuringPrepare)
             {
-                await EnsureMelonPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
+                await EnsureMelonPopupClosedAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
             }
 
             _melonPopupClosedDuringPrepare = false;
@@ -1018,7 +1018,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 score += 4;
             }
 
-            if (await TryWaitForConditionAsync(async () => await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0, TimeSpan.FromMilliseconds(400), cancellationToken))
+            if (await TryWaitForConditionAsync(async () => await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0, TimeSpan.FromMilliseconds(150), cancellationToken))
             {
                 score += 10;
             }
@@ -2836,6 +2836,21 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private static async Task EnsureMelonPopupClosedAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        try
+        {
+            var hasPopup = await page.EvaluateAsync<bool>("""
+                () => {
+                    const candidates = Array.from(document.querySelectorAll('#popup_notice, .popup, [class*="popup"]'));
+                    return candidates.some(element => {
+                        const style = window.getComputedStyle(element);
+                        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') > 0;
+                    });
+                }
+                """);
+            if (!hasPopup) return;
+        }
+        catch (PlaywrightException) { return; }
+
         var deadline = DateTimeOffset.UtcNow + timeout;
         var selectors = new[]
         {
