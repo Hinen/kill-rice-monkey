@@ -256,8 +256,6 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="18" />
                                 <RowDefinition Height="*" />
-                                <RowDefinition Height="18" />
-                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <StackPanel>
@@ -316,61 +314,7 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Grid.Row="4"
-                                    Style="{StaticResource SoftCardStyle}"
-                                    Background="{StaticResource HeroCalloutBrush}"
-                                    BorderBrush="{StaticResource HeroCalloutStrokeBrush}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="14" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
 
-                                    <Viewbox Width="18" Height="18" VerticalAlignment="Top">
-                                        <Canvas Width="24" Height="24">
-                                            <Path Data="{StaticResource ZapIcon}"
-                                                  StrokeThickness="2"
-                                                  StrokeStartLineCap="Round"
-                                                  StrokeEndLineCap="Round"
-                                                  StrokeLineJoin="Round">
-                                                <Path.Style>
-                                                    <Style TargetType="Path">
-                                                        <Setter Property="Stroke" Value="{StaticResource AccentBrush}" />
-                                                        <Setter Property="Fill" Value="{StaticResource AccentSoftBrush}" />
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
-                                                                <Setter Property="Stroke" Value="{StaticResource SuccessBrush}" />
-                                                                <Setter Property="Fill" Value="{StaticResource SuccessSoftBrush}" />
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding IsErrorStatus}" Value="True">
-                                                                <Setter Property="Stroke" Value="{StaticResource DangerBrush}" />
-                                                                <Setter Property="Fill" Value="{StaticResource DangerSoftBrush}" />
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                                                                <Setter Property="Stroke" Value="{StaticResource WarningBrush}" />
-                                                                <Setter Property="Fill" Value="{StaticResource WarningSoftBrush}" />
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </Path.Style>
-                                            </Path>
-                                        </Canvas>
-                                    </Viewbox>
-
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Style="{StaticResource EyebrowTextStyle}"
-                                                   Foreground="{StaticResource HeroMutedTextBrush}"
-                                                   Text="CURRENT STATE" />
-                                        <TextBlock Margin="0,8,0,0"
-                                                   FontSize="22"
-                                                   FontWeight="Bold"
-                                                   Foreground="{StaticResource PrimaryTextBrush}"
-                                                   TextWrapping="Wrap"
-                                                   Text="{Binding StatusMessage}" />
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
                         </Grid>
                     </Grid>
                 </Border>
