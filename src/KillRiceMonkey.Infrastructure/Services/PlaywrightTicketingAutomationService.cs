@@ -2073,7 +2073,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     try { return await inputLocator.CountAsync() == 0; }
                     catch (PlaywrightException) { return page.IsClosed; }
                 },
-                TimeSpan.FromMilliseconds(300),
+                TimeSpan.FromMilliseconds(500),
                 cancellationToken);
 
             _logger.LogInformation("CAPTCHA attempt {Attempt} totalMs={TotalMs} submitted={Submitted}",
@@ -2099,20 +2099,6 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (submitted)
             {
-                await Task.Delay(200, cancellationToken);
-
-                bool alertAfterSettle = false;
-                try { alertAfterSettle = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
-
-                if (alertAfterSettle)
-                {
-                    _logger.LogInformation("[CAPTCHA] settle 후 alert 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
-                    try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
-                    if (attempt < maxAttempts)
-                        await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                    continue;
-                }
-
                 bool inputReappeared = false;
                 try { inputReappeared = await inputLocator.CountAsync() > 0; } catch { }
 
@@ -2163,6 +2149,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
     private async Task<IFrame> FindMelonSeatFrameAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        foreach (var frame in page.Frames)
+        {
+            if (frame == page.MainFrame) continue;
+            if (!frame.Url.Contains("stepSeat.htm") && !frame.Url.Contains("stepBlock.htm")) continue;
+            try
+            {
+                var canvas = frame.Locator("#ez_canvas");
+                if (await canvas.CountAsync() > 0)
+                {
+                    _logger.LogInformation("[FindSeatFrame] fast-path: #ez_canvas 즉시 발견. frameUrl={Url}", frame.Url);
+                    return frame;
+                }
+            }
+            catch (PlaywrightException) { }
+        }
+
         var deadline = DateTimeOffset.UtcNow + timeout;
         var loggedOnce = false;
         while (DateTimeOffset.UtcNow < deadline)
@@ -2172,7 +2174,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             if (!loggedOnce)
             {
                 var frameUrls = page.Frames.Select(f => f.Url).ToList();
-                _logger.LogInformation("[FindSeatFrame] 탐색 시작. pageUrl={Url}, frameCount={Count}, frameUrls={FrameUrls}",
+                _logger.LogInformation("[FindSeatFrame] fast-path 실패, 폴링 시작. pageUrl={Url}, frameCount={Count}, frameUrls={FrameUrls}",
                     SafePageUrl(page), frameUrls.Count, string.Join(" | ", frameUrls));
                 loggedOnce = true;
             }
@@ -2313,7 +2315,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     continue;
                 }
 
-                await Task.Delay(50, cancellationToken);
+                await Task.Delay(30, cancellationToken);
 
                 var hasConflict = await DetectMelonSeatConflictAsync(currentFrame);
                 if (hasConflict)
