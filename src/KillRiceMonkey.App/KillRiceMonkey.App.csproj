@@ -18,6 +18,12 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="Resources\Fonts\Pretendard-Regular.otf" />
+    <Resource Include="Resources\Fonts\Pretendard-SemiBold.otf" />
+    <Resource Include="Resources\Fonts\Pretendard-Bold.otf" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
