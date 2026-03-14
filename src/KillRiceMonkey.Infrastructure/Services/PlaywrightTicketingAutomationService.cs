@@ -1961,19 +1961,16 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
                 if (captchaSubmittedOnce)
                 {
-                    var extendedGone = await TryWaitForConditionAsync(
-                        async () =>
-                        {
-                            if (page.IsClosed) return true;
-                            try { return await inputLocator.CountAsync() == 0; }
-                            catch (PlaywrightException) { return page.IsClosed; }
-                        },
-                        TimeSpan.FromMilliseconds(1500),
-                        cancellationToken);
-
-                    if (extendedGone || page.IsClosed)
+                    var imgLocator = await FindCaptchaImageAsync(inputLocator, page, captchaFrame);
+                    bool imageVisible = false;
+                    if (imgLocator != null)
                     {
-                        _logger.LogInformation("[CAPTCHA] 정답 제출 후 ScreenshotAsync 실패 + 확장 대기로 input 사라짐 확인 — CAPTCHA 통과. attempt={Attempt}", attempt);
+                        try { imageVisible = await imgLocator.IsVisibleAsync(); } catch { }
+                    }
+
+                    if (!imageVisible)
+                    {
+                        _logger.LogInformation("[CAPTCHA] 정답 제출 후 이미지 invisible — CAPTCHA 통과로 진행. attempt={Attempt}", attempt);
                         return;
                     }
                 }
@@ -2153,30 +2150,17 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             if (!submitted && captchaSubmittedOnce)
             {
-                var extendedWait = await TryWaitForConditionAsync(
-                    async () =>
-                    {
-                        if (page.IsClosed) return true;
-                        try { return await inputLocator.CountAsync() == 0; }
-                        catch (PlaywrightException) { return page.IsClosed; }
-                    },
-                    TimeSpan.FromMilliseconds(1500),
-                    cancellationToken);
-
-                if (extendedWait || page.IsClosed)
+                var imgLocator2 = await FindCaptchaImageAsync(inputLocator, page, captchaFrame);
+                bool imgVisible2 = false;
+                if (imgLocator2 != null)
                 {
-                    bool alertAfterExtended = false;
-                    try { alertAfterExtended = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
+                    try { imgVisible2 = await imgLocator2.IsVisibleAsync(); } catch { }
+                }
 
-                    if (!alertAfterExtended)
-                    {
-                        _logger.LogInformation("[CAPTCHA] 정답 제출 후 확장 대기({Ms}ms)로 input 사라짐 — CAPTCHA 통과. attempt={Attempt}",
-                            1500, attempt);
-                        return;
-                    }
-
-                    _logger.LogInformation("[CAPTCHA] 확장 대기 후 alert 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
-                    try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
+                if (!imgVisible2)
+                {
+                    _logger.LogInformation("[CAPTCHA] submit 후 이미지 invisible — CAPTCHA 통과로 진행. attempt={Attempt}", attempt);
+                    return;
                 }
             }
 
