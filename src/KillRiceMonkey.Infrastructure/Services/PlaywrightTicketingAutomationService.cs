@@ -1974,6 +1974,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 continue;
             }
 
+            try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
+
             try
             {
                 await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 500 });
@@ -2075,19 +2077,72 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 TimeSpan.FromMilliseconds(300),
                 cancellationToken);
 
-            _logger.LogInformation("CAPTCHA attempt {Attempt} totalMs={TotalMs} submitted={Submitted}", attempt, attemptSw.ElapsedMilliseconds, submitted);
+            var seatFrameVisible = page.Frames.Any(f => f != page.MainFrame &&
+                (f.Url.Contains("stepSeat.htm") || f.Url.Contains("stepBlock.htm")));
 
-            if (submitted || page.IsClosed)
+            _logger.LogInformation("CAPTCHA attempt {Attempt} totalMs={TotalMs} submitted={Submitted} seatFrame={SeatFrame}",
+                attempt, attemptSw.ElapsedMilliseconds, submitted, seatFrameVisible);
+
+            if (page.IsClosed)
             {
-                _logger.LogInformation("CAPTCHA solved on attempt {Attempt} (pageClosed={PageClosed})", attempt, page.IsClosed);
+                _logger.LogInformation("CAPTCHA page closed on attempt {Attempt} — treating as success.", attempt);
                 return;
             }
 
-            var seatFrameVisible = page.Frames.Any(f => f != page.MainFrame && f.Url.Contains("stepSeat.htm"));
+            var alertDetected = false;
+            try { alertDetected = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
+
+            if (alertDetected)
+            {
+                _logger.LogInformation("[CAPTCHA] 제출 후 alert 감지 — 틀린 CAPTCHA로 판단, 재시도. attempt={Attempt}", attempt);
+                try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
+                if (attempt < maxAttempts)
+                    await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                continue;
+            }
+
             if (seatFrameVisible)
             {
-                _logger.LogInformation("[CAPTCHA] 좌석 선택 프레임 감지 — CAPTCHA 통과로 간주 (attempt={Attempt}).", attempt);
+                _logger.LogInformation("[CAPTCHA] 좌석/구역 선택 프레임 감지 — CAPTCHA 통과 확인 (attempt={Attempt}).", attempt);
                 return;
+            }
+
+            if (submitted)
+            {
+                var confirmSw = Stopwatch.StartNew();
+                var confirmed = await TryWaitForConditionAsync(
+                    () =>
+                    {
+                        if (page.IsClosed) return Task.FromResult(true);
+                        var hasSeatFrame = page.Frames.Any(f => f != page.MainFrame &&
+                            (f.Url.Contains("stepSeat.htm") || f.Url.Contains("stepBlock.htm")));
+                        return Task.FromResult(hasSeatFrame);
+                    },
+                    TimeSpan.FromMilliseconds(500),
+                    cancellationToken);
+
+                bool alertAfterWait = false;
+                try { alertAfterWait = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
+
+                if (alertAfterWait)
+                {
+                    _logger.LogInformation("[CAPTCHA] 제출 확인 대기 중 alert 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, waitMs={WaitMs}",
+                        attempt, confirmSw.ElapsedMilliseconds);
+                    try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
+                    if (attempt < maxAttempts)
+                        await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
+                }
+
+                if (confirmed || page.IsClosed)
+                {
+                    _logger.LogInformation("[CAPTCHA] CAPTCHA 통과 확인 완료 (attempt={Attempt}, pageClosed={PageClosed}, waitMs={WaitMs}).",
+                        attempt, page.IsClosed, confirmSw.ElapsedMilliseconds);
+                    return;
+                }
+
+                _logger.LogInformation("[CAPTCHA] input 사라졌으나 좌석 프레임 미감지 — 불확실 상태, 재시도. attempt={Attempt}, waitMs={WaitMs}",
+                    attempt, confirmSw.ElapsedMilliseconds);
             }
 
             if (attempt < maxAttempts)
