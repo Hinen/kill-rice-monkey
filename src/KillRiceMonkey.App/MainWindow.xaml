@@ -34,7 +34,7 @@
         </Style>
 
         <Style x:Key="StatusBadgeTextStyle" TargetType="TextBlock">
-            <Setter Property="FontFamily" Value="Bahnschrift SemiCondensed" />
+            <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
             <Setter Property="FontSize" Value="13" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{StaticResource AccentDeepBrush}" />
@@ -49,6 +49,17 @@
                     <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
                 </DataTrigger>
             </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ActionIconPathStyle" TargetType="Path">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Stroke" Value="{StaticResource PrimaryTextBrush}" />
+            <Setter Property="StrokeThickness" Value="2" />
+            <Setter Property="StrokeStartLineCap" Value="Round" />
+            <Setter Property="StrokeEndLineCap" Value="Round" />
+            <Setter Property="StrokeLineJoin" Value="Round" />
+            <Setter Property="Stretch" Value="Uniform" />
         </Style>
     </Window.Resources>
 
@@ -70,6 +81,10 @@
         <Canvas IsHitTestVisible="False">
             <Ellipse Width="420" Height="420" Fill="{StaticResource OrbBrush}" Canvas.Left="-140" Canvas.Top="-150" />
             <Ellipse Width="360" Height="360" Fill="{StaticResource OrbSecondaryBrush}" Canvas.Right="-120" Canvas.Top="120" />
+            <Ellipse Width="118" Height="118" Fill="{StaticResource AccentSoftBrush}" Opacity="0.55" Canvas.Left="132" Canvas.Top="76" />
+            <Ellipse Width="42" Height="42" Fill="{StaticResource AccentDeepBrush}" Opacity="0.18" Canvas.Left="540" Canvas.Top="168" />
+            <Ellipse Width="76" Height="76" Fill="{StaticResource SuccessSoftBrush}" Opacity="0.4" Canvas.Right="210" Canvas.Top="72" />
+            <Ellipse Width="28" Height="28" Fill="{StaticResource WarningBrush}" Opacity="0.2" Canvas.Right="308" Canvas.Top="220" />
         </Canvas>
 
         <ScrollViewer VerticalScrollBarVisibility="Auto"
@@ -88,9 +103,22 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource EyebrowTextStyle}" Text="KILL RICE MONKEY / DESKTOP HELPER" />
-                        <TextBlock Margin="0,8,0,0" Style="{StaticResource SectionTitleTextStyle}" Text="티켓팅 자동화 컨트롤 센터" />
+                    <StackPanel Orientation="Horizontal">
+                        <Viewbox Width="28" Height="28" Margin="0,2,10,0" VerticalAlignment="Top">
+                            <Canvas Width="24" Height="24">
+                                <Path Data="{StaticResource ZapIcon}"
+                                      Fill="{StaticResource AccentSoftBrush}"
+                                      Stroke="{StaticResource AccentBrush}"
+                                      StrokeThickness="2"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round" />
+                            </Canvas>
+                        </Viewbox>
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource EyebrowTextStyle}" Text="KILL RICE MONKEY / DESKTOP HELPER" />
+                            <TextBlock Margin="0,8,0,0" Style="{StaticResource SectionTitleTextStyle}" Text="티켓팅 자동화 컨트롤 센터" />
+                        </StackPanel>
                     </StackPanel>
 
                     <Border Grid.Column="1" Style="{StaticResource StatusBadgeBorderStyle}" VerticalAlignment="Center">
@@ -108,6 +136,24 @@
                     <Border Style="{StaticResource SurfaceCardStyle}" Background="{StaticResource HeroBackgroundBrush}" BorderBrush="{StaticResource HeroPanelStrokeBrush}">
                         <Grid>
                             <Rectangle RadiusX="24" RadiusY="24" Fill="{StaticResource GlossBrush}" Opacity="0.55" />
+                            <Canvas IsHitTestVisible="False">
+                                <Path Width="164"
+                                      Height="164"
+                                      Canvas.Right="-28"
+                                      Canvas.Top="-12"
+                                      Data="{StaticResource RocketIcon}"
+                                      Fill="{StaticResource AccentSoftBrush}"
+                                      Opacity="0.22"
+                                      Stretch="Uniform"
+                                      Stroke="{StaticResource AccentDeepBrush}"
+                                      StrokeThickness="1.6"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round" />
+                                <Ellipse Width="74" Height="74" Fill="{StaticResource AccentSoftBrush}" Opacity="0.2" Canvas.Left="28" Canvas.Bottom="44" />
+                                <Ellipse Width="18" Height="18" Fill="{StaticResource AccentDeepBrush}" Opacity="0.45" Canvas.Left="86" Canvas.Bottom="112" />
+                                <Ellipse Width="30" Height="30" Fill="{StaticResource WarningSoftBrush}" Opacity="0.5" Canvas.Right="116" Canvas.Bottom="68" />
+                            </Canvas>
                             <Grid Margin="8">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -153,9 +199,9 @@
                                                 <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="{StaticResource PrimaryTextBrush}" Text="01" />
+                                            <TextBlock FontFamily="{StaticResource AppFontFamily}" FontSize="26" FontWeight="Bold" Foreground="{StaticResource PrimaryTextBrush}" Text="01" />
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" Text="템플릿 기반 제어" />
+                                                <TextBlock FontFamily="{StaticResource AppFontFamily}" FontSize="16" FontWeight="Bold" Foreground="{StaticResource PrimaryTextBrush}" Text="템플릿 기반 제어" />
                                                 <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="{StaticResource HeroMutedTextBrush}" Text="Yes24, Booth, NOL, Melon, Custom 템플릿을 한 화면에서 전환합니다." />
                                             </StackPanel>
                                         </Grid>
@@ -168,9 +214,9 @@
                                                 <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="{StaticResource PrimaryTextBrush}" Text="02" />
+                                            <TextBlock FontFamily="{StaticResource AppFontFamily}" FontSize="26" FontWeight="Bold" Foreground="{StaticResource PrimaryTextBrush}" Text="02" />
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" Text="실행 상태 피드백" />
+                                                <TextBlock FontFamily="{StaticResource AppFontFamily}" FontSize="16" FontWeight="Bold" Foreground="{StaticResource PrimaryTextBrush}" Text="실행 상태 피드백" />
                                                 <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="{StaticResource HeroMutedTextBrush}" Text="실행 상태와 마지막 결과를 분리해 확인 흐름을 단순화했습니다." />
                                             </StackPanel>
                                         </Grid>
@@ -183,9 +229,9 @@
                                                 <ColumnDefinition Width="16" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="26" Foreground="{StaticResource PrimaryTextBrush}" Text="03" />
+                                            <TextBlock FontFamily="{StaticResource AppFontFamily}" FontSize="26" FontWeight="Bold" Foreground="{StaticResource PrimaryTextBrush}" Text="03" />
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryTextBrush}" Text="명확한 실행 가이드" />
+                                                <TextBlock FontFamily="{StaticResource AppFontFamily}" FontSize="16" FontWeight="Bold" Foreground="{StaticResource PrimaryTextBrush}" Text="명확한 실행 가이드" />
                                                 <TextBlock Margin="0,6,0,0" Style="{StaticResource HelperTextStyle}" Foreground="{StaticResource HeroMutedTextBrush}" Text="핫키와 파일명 규칙을 별도 정보 카드로 분리해 실수 가능성을 줄였습니다." />
                                             </StackPanel>
                                         </Grid>
@@ -407,51 +453,71 @@
                                                      Style="{StaticResource PrimaryButtonStyle}"
                                                      Command="{Binding LaunchNolRemoteDebugCommand}"
                                                      Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                     <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="OPEN" />
-                                                     <TextBlock Margin="8,0,0,0" FontSize="15" Text="NOL Remote Debug 열기" />
-                                                 </StackPanel>
-                                             </Button>
+                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                      <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                                          <Canvas Width="24" Height="24">
+                                                              <Path Style="{StaticResource ActionIconPathStyle}" Data="{StaticResource ExternalLinkIcon}" />
+                                                          </Canvas>
+                                                      </Viewbox>
+                                                      <TextBlock FontSize="15" Text="NOL Remote Debug 열기" />
+                                                  </StackPanel>
+                                              </Button>
 
                                               <Button Margin="0,0,0,12"
                                                       Style="{StaticResource PrimaryButtonStyle}"
                                                       Command="{Binding PrepareNolAutomationCommand}"
                                                       Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                     <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="READY" />
-                                                     <TextBlock Margin="8,0,0,0" FontSize="15" Text="NOL 준비" />
-                                                  </StackPanel>
-                                              </Button>
+                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                      <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                                          <Canvas Width="24" Height="24">
+                                                              <Path Style="{StaticResource ActionIconPathStyle}" Data="{StaticResource ShieldCheckIcon}" />
+                                                          </Canvas>
+                                                      </Viewbox>
+                                                      <TextBlock FontSize="15" Text="NOL 준비" />
+                                                   </StackPanel>
+                                               </Button>
 
                                               <Button Margin="0,0,0,12"
                                                       Style="{StaticResource PrimaryButtonStyle}"
                                                       Command="{Binding LaunchMelonRemoteDebugCommand}"
                                                       Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="OPEN" />
-                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Text="Melon Remote Debug 열기" />
-                                                  </StackPanel>
-                                              </Button>
+                                                   <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                       <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                                           <Canvas Width="24" Height="24">
+                                                               <Path Style="{StaticResource ActionIconPathStyle}" Data="{StaticResource ExternalLinkIcon}" />
+                                                           </Canvas>
+                                                       </Viewbox>
+                                                       <TextBlock FontSize="15" Text="Melon Remote Debug 열기" />
+                                                   </StackPanel>
+                                               </Button>
 
                                               <Button Margin="0,0,0,12"
                                                       Style="{StaticResource PrimaryButtonStyle}"
                                                       Command="{Binding PrepareMelonAutomationCommand}"
                                                       Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Text="READY" />
-                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Text="Melon 준비" />
-                                                  </StackPanel>
-                                              </Button>
+                                                   <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                       <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                                           <Canvas Width="24" Height="24">
+                                                               <Path Style="{StaticResource ActionIconPathStyle}" Data="{StaticResource ShieldCheckIcon}" />
+                                                           </Canvas>
+                                                       </Viewbox>
+                                                       <TextBlock FontSize="15" Text="Melon 준비" />
+                                                   </StackPanel>
+                                               </Button>
 
                                               <Button Width="176"
                                                       Style="{StaticResource PrimaryButtonStyle}"
                                                       Command="{Binding StartAutomationCommand}">
-                                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                                      <TextBlock FontFamily="Bahnschrift SemiCondensed" FontSize="14" Foreground="{StaticResource PrimaryTextBrush}" Text="RUN" />
-                                                      <TextBlock Margin="8,0,0,0" FontSize="15" Foreground="{StaticResource PrimaryTextBrush}" Text="자동화 실행" />
-                                                 </StackPanel>
-                                             </Button>
-                                         </StackPanel>
+                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                       <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                                           <Canvas Width="24" Height="24">
+                                                               <Path Style="{StaticResource ActionIconPathStyle}" Data="{StaticResource PlayIcon}" />
+                                                           </Canvas>
+                                                       </Viewbox>
+                                                       <TextBlock FontSize="15" Foreground="{StaticResource PrimaryTextBrush}" Text="자동화 실행" />
+                                                  </StackPanel>
+                                              </Button>
+                                          </StackPanel>
 
                                         <Border Grid.Column="2" Style="{StaticResource SoftCardStyle}" VerticalAlignment="Stretch">
                                             <Grid>
@@ -460,27 +526,46 @@
                                                     <ColumnDefinition Width="12" />
                                                     <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <Ellipse Width="10" Height="10" Fill="{StaticResource AccentBrush}" VerticalAlignment="Center">
-                                                    <Ellipse.Style>
-                                                        <Style TargetType="Ellipse">
-                                                            <Setter Property="Fill" Value="{StaticResource AccentBrush}" />
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsRunning}" Value="True">
-                                                                    <Setter Property="Fill" Value="{StaticResource WarningBrush}" />
-                                                                </DataTrigger>
-                                                                <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
-                                                                    <Setter Property="Fill" Value="{StaticResource SuccessBrush}" />
-                                                                </DataTrigger>
-                                                                <DataTrigger Binding="{Binding IsErrorStatus}" Value="True">
-                                                                    <Setter Property="Fill" Value="{StaticResource DangerBrush}" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Ellipse.Style>
-                                                </Ellipse>
+                                                <Viewbox Width="18" Height="18" VerticalAlignment="Center">
+                                                    <Canvas Width="24" Height="24">
+                                                        <Path x:Name="CurrentStateIcon"
+                                                              Data="{StaticResource ZapIcon}"
+                                                              Fill="{StaticResource AccentSoftBrush}"
+                                                              Stroke="{StaticResource AccentBrush}"
+                                                              StrokeThickness="2"
+                                                              StrokeStartLineCap="Round"
+                                                              StrokeEndLineCap="Round"
+                                                              StrokeLineJoin="Round">
+                                                            <Path.Style>
+                                                                <Style TargetType="Path">
+                                                                    <Setter Property="Data" Value="{StaticResource ZapIcon}" />
+                                                                    <Setter Property="Stroke" Value="{StaticResource AccentBrush}" />
+                                                                    <Setter Property="Fill" Value="{StaticResource AccentSoftBrush}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                                            <Setter Property="Data" Value="{StaticResource Clock3Icon}" />
+                                                                            <Setter Property="Stroke" Value="{StaticResource WarningBrush}" />
+                                                                            <Setter Property="Fill" Value="Transparent" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
+                                                                            <Setter Property="Data" Value="{StaticResource CheckCircleIcon}" />
+                                                                            <Setter Property="Stroke" Value="{StaticResource SuccessBrush}" />
+                                                                            <Setter Property="Fill" Value="Transparent" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding IsErrorStatus}" Value="True">
+                                                                            <Setter Property="Data" Value="{StaticResource AlertCircleIcon}" />
+                                                                            <Setter Property="Stroke" Value="{StaticResource DangerBrush}" />
+                                                                            <Setter Property="Fill" Value="Transparent" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Path.Style>
+                                                        </Path>
+                                                    </Canvas>
+                                                </Viewbox>
                                                 <StackPanel Grid.Column="2">
                                                     <TextBlock Style="{StaticResource EyebrowTextStyle}" Text="CURRENT STATE" />
-                                                    <TextBlock Margin="0,6,0,0" FontFamily="Bahnschrift SemiCondensed" FontSize="20" FontWeight="SemiBold" Text="{Binding StatusMessage}" />
+                                                    <TextBlock Margin="0,6,0,0" FontFamily="{StaticResource AppFontFamily}" FontSize="20" FontWeight="Bold" Text="{Binding StatusMessage}" />
                                                 </StackPanel>
                                             </Grid>
                                         </Border>

@@ -96,10 +96,22 @@
     <CornerRadius x:Key="CalendarButtonCornerRadius">12</CornerRadius>
     <CornerRadius x:Key="ScrollBarThumbCornerRadius">999</CornerRadius>
 
+    <FontFamily x:Key="AppFontFamily">./Resources/Fonts/#Pretendard</FontFamily>
+
+    <!-- Lucide Icons (ISC License) - https://lucide.dev -->
+    <Geometry x:Key="PlayIcon">M5,5 A2,2 0 0 1 8.008,3.272 L20.005,10.27 A2,2 0 0 1 20.008,13.728 L8.008,20.728 A2,2 0 0 1 5,19 z</Geometry>
+    <Geometry x:Key="ExternalLinkIcon">M15,3 h6 v6 M10,14 L21,3 M18,13 v6 a2,2 0 0 1 -2,2 H5 a2,2 0 0 1 -2,-2 V8 a2,2 0 0 1 2,-2 h6</Geometry>
+    <Geometry x:Key="ShieldCheckIcon">M20,13 c0,5 -3.5,7.5 -7.66,8.95 a1,1 0 0 1 -.67,-.01 C7.5,20.5 4,18 4,13 V6 a1,1 0 0 1 1,-1 c2,0 4.5,-1.2 6.24,-2.72 a1.17,1.17 0 0 1 1.52,0 C14.51,3.81 17,5 19,5 a1,1 0 0 1 1,1 z M9,12 l2,2 l4,-4</Geometry>
+    <Geometry x:Key="ZapIcon">M4,14 a1,1 0 0 1 -.78,-1.63 l9.9,-10.2 a.5,.5 0 0 1 .86,.46 l-1.92,6.02 A1,1 0 0 0 13,10 h7 a1,1 0 0 1 .78,1.63 l-9.9,10.2 a.5,.5 0 0 1 -.86,-.46 l1.92,-6.02 A1,1 0 0 0 11,14 z</Geometry>
+    <Geometry x:Key="RocketIcon">M12,15 v5 s3.03,-.55 4,-2 c1.08,-1.62 0,-5 0,-5 M9,12 a22,22 0 0 1 2,-3.95 A12.88,12.88 0 0 1 22,2 c0,2.72 -.78,7.5 -6,11 a22.4,22.4 0 0 1 -4,2 z M9,12 H4 s.55,-3.03 2,-4 c1.62,-1.08 5,.05 5,.05</Geometry>
+    <Geometry x:Key="Clock3Icon">M12,6 v6 h4 M21,12 a9,9 0 1 1 -18,0 a9,9 0 0 1 18,0 z</Geometry>
+    <Geometry x:Key="CheckCircleIcon">M9,12 l2,2 l4,-4 M21,12 a9,9 0 1 1 -18,0 a9,9 0 0 1 18,0 z</Geometry>
+    <Geometry x:Key="AlertCircleIcon">M12,8 v4 M12,16 h.01 M21,12 a9,9 0 1 1 -18,0 a9,9 0 0 1 18,0 z</Geometry>
+
     <Style TargetType="Window">
         <Setter Property="Background" Value="{StaticResource WindowBackgroundBrush}" />
         <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
-        <Setter Property="FontFamily" Value="Malgun Gothic" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
         <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
         <Setter Property="TextOptions.TextRenderingMode" Value="ClearType" />
     </Style>
@@ -109,29 +121,29 @@
     </Style>
 
     <Style x:Key="EyebrowTextStyle" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Bahnschrift SemiCondensed" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
     </Style>
 
     <Style x:Key="HeroTitleTextStyle" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Bahnschrift SemiCondensed" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
         <Setter Property="FontSize" Value="34" />
-        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontWeight" Value="Bold" />
         <Setter Property="LineHeight" Value="40" />
         <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
     </Style>
 
     <Style x:Key="SectionTitleTextStyle" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Bahnschrift SemiCondensed" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
         <Setter Property="FontSize" Value="24" />
-        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontWeight" Value="Bold" />
         <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
     </Style>
 
     <Style x:Key="SectionLabelTextStyle" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Bahnschrift SemiCondensed" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
@@ -634,7 +646,7 @@
                             <TextBlock Margin="0,0,0,6"
                                        HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
-                                       FontFamily="Bahnschrift SemiCondensed"
+                                       FontFamily="{StaticResource AppFontFamily}"
                                        FontSize="12"
                                        FontWeight="SemiBold"
                                        Foreground="{StaticResource MutedTextBrush}"
@@ -1034,7 +1046,7 @@
         <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Cursor" Value="Hand" />
-        <Setter Property="FontFamily" Value="Bahnschrift SemiCondensed" />
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
         <Setter Property="FontSize" Value="16" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Template">
