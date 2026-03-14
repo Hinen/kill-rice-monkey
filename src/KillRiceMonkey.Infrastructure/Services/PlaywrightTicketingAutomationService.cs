@@ -579,7 +579,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                         break;
                     }
 
-                    await Task.Delay(200, cancellationToken);
+                    await Task.Delay(100, cancellationToken);
                 }
             }
 
@@ -2268,7 +2268,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
             catch (PlaywrightException) { }
 
-            await Task.Delay(100, cancellationToken);
+            await Task.Delay(50, cancellationToken);
         }
     }
 
@@ -2306,7 +2306,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 if (seats.Count == 0)
                 {
                     _logger.LogWarning("선택 가능한 좌석 없음. retry={Retry}", retry);
-                    await Task.Delay(100, cancellationToken);
+                    await Task.Delay(50, cancellationToken);
                     continue;
                 }
 
@@ -2352,7 +2352,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             catch (PlaywrightException ex)
             {
                 _logger.LogWarning("좌석 선택 중 frame detached 감지 — frame 재탐색. retry={Retry}, error={Error}", retry, ex.Message);
-                await Task.Delay(200, cancellationToken);
+                await Task.Delay(100, cancellationToken);
                 currentFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
             }
         }
@@ -2408,7 +2408,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 }
                 catch (PlaywrightException)
                 {
-                    await nextBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 2000, Force = true });
+                    await nextBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
                 }
 
                 _logger.LogInformation("멜론 '좌석 선택 완료' 버튼 클릭 완료.");
@@ -2417,7 +2417,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             catch (PlaywrightException ex) when (attempt < maxFrameRetries - 1)
             {
                 _logger.LogWarning("좌석 선택 완료 버튼 클릭 중 frame detached 감지 — frame 재탐색. attempt={Attempt}, error={Error}", attempt, ex.Message);
-                await Task.Delay(200, cancellationToken);
+                await Task.Delay(100, cancellationToken);
                 currentFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
             }
         }
