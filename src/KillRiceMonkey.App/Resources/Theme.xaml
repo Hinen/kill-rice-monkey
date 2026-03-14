@@ -1114,7 +1114,7 @@
                         <Border x:Name="Glow"
                                 Margin="2"
                                 Background="{StaticResource AccentSoftBrush}"
-                                CornerRadius="999"
+                                CornerRadius="12"
                                 Opacity="0">
                             <Border.Effect>
                                 <DropShadowEffect BlurRadius="26"
@@ -1127,11 +1127,11 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="999"
+                                CornerRadius="12"
                                 SnapsToDevicePixels="True">
                             <Border BorderBrush="{StaticResource StrokeBrush}"
                                     BorderThickness="1"
-                                    CornerRadius="999">
+                                    CornerRadius="12">
                                 <ContentPresenter HorizontalAlignment="Center"
                                                   VerticalAlignment="Center"
                                                   Margin="{TemplateBinding Padding}" />
@@ -1174,7 +1174,7 @@
                         <Border x:Name="Glow"
                                 Margin="2"
                                 Background="{StaticResource AccentSoftBrush}"
-                                CornerRadius="999"
+                                CornerRadius="12"
                                 Opacity="0">
                             <Border.Effect>
                                 <DropShadowEffect BlurRadius="18"
@@ -1187,7 +1187,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="999">
+                                CornerRadius="12">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               Margin="{TemplateBinding Padding}" />
