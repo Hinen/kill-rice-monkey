@@ -647,9 +647,10 @@
                                     </Button>
 
                                     <Border Grid.Column="5"
-                                            Margin="18,0,0,0"
+                                            Margin="12,0,0,0"
                                             Style="{StaticResource SoftCardStyle}"
-                                            VerticalAlignment="Stretch">
+                                            Padding="12,8"
+                                            VerticalAlignment="Center">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
@@ -669,12 +670,13 @@
                                                 </Canvas>
                                             </Viewbox>
 
-                                            <StackPanel Grid.Column="2">
+                                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                                 <TextBlock Style="{StaticResource EyebrowTextStyle}"
-                                                           Text="LIVE STATUS" />
-                                                <TextBlock Margin="0,6,0,0"
-                                                           FontSize="18"
-                                                           FontWeight="Bold"
+                                                           Text="STATUS" />
+                                                <TextBlock Margin="0,3,0,0"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"
                                                            Text="{Binding StatusMessage}" />
                                             </StackPanel>
                                         </Grid>
