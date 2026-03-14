@@ -1921,17 +1921,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return;
         }
 
-        var consecutiveImageNotFound = 0;
-        var captchaSubmittedOnce = false;
-
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (page.IsClosed)
-            {
-                _logger.LogInformation("CAPTCHA page closed before attempt {Attempt} – treating as success.", attempt);
-                return;
-            }
+            if (page.IsClosed) return;
 
             var attemptSw = Stopwatch.StartNew();
 
@@ -1943,63 +1936,45 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
             {
                 _logger.LogWarning("[CAPTCHA] OCR 실패 (attempt={Attempt}): {Message}", attempt, ocrEx.Message);
+                if (page.IsClosed) return;
 
-                if (page.IsClosed)
+                var inputGone = false;
+                try { inputGone = await inputLocator.CountAsync() == 0; } catch { }
+                if (inputGone) { _logger.LogInformation("[CAPTCHA] input 사라짐 — 좌석 진행."); return; }
+
+                bool captchaHidden = false;
+                try
                 {
-                    _logger.LogInformation("[CAPTCHA] 페이지 닫힘 — CAPTCHA 통과로 간주.");
-                    return;
+                    captchaHidden = await page.EvaluateAsync<bool>(@"() => {
+                        const el = document.querySelector('.captcha_area, .wrap_captcha, #divRecaptcha, [class*=""captcha""]');
+                        if (!el) return true;
+                        const s = window.getComputedStyle(el);
+                        return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+                    }");
                 }
+                catch { }
 
-                var inputStillExists = false;
-                try { inputStillExists = await inputLocator.CountAsync() > 0; } catch { }
-
-                if (!inputStillExists)
+                if (captchaHidden)
                 {
-                    _logger.LogInformation("[CAPTCHA] CAPTCHA 입력창 사라짐 — 좌석 선택 단계로 진행.");
+                    _logger.LogInformation("[CAPTCHA] CAPTCHA 영역 hidden 감지 — 통과로 진행. attempt={Attempt}", attempt);
                     return;
-                }
-
-                if (captchaSubmittedOnce)
-                {
-                    var imgLocator = await FindCaptchaImageAsync(inputLocator, page, captchaFrame);
-                    bool imageVisible = false;
-                    if (imgLocator != null)
-                    {
-                        try { imageVisible = await imgLocator.IsVisibleAsync(); } catch { }
-                    }
-
-                    if (!imageVisible)
-                    {
-                        _logger.LogInformation("[CAPTCHA] 정답 제출 후 이미지 invisible — CAPTCHA 통과로 진행. attempt={Attempt}", attempt);
-                        return;
-                    }
                 }
 
                 if (attempt < maxAttempts)
                     await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
                 continue;
             }
-            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
 
             if (string.IsNullOrEmpty(text))
-                consecutiveImageNotFound++;
-            else
-                consecutiveImageNotFound = 0;
-
-            if (consecutiveImageNotFound >= 2 && !captchaSubmittedOnce)
             {
-                _logger.LogInformation("[CAPTCHA] 이미지 미발견 {Count}회 연속 — CAPTCHA 없는 공연으로 판단, 좌석 선택으로 진행.", consecutiveImageNotFound);
+                _logger.LogInformation("[CAPTCHA] OCR 빈 결과 (attempt={Attempt}, {Ms}ms) — 이미지 없음, 좌석 진행.", attempt, attemptSw.ElapsedMilliseconds);
                 return;
             }
 
+            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
+
             if (text.Length != melonCaptchaLength)
             {
-                if (page.IsClosed)
-                {
-                    _logger.LogInformation("CAPTCHA page closed during OCR attempt {Attempt} – treating as success.", attempt);
-                    return;
-                }
-
                 if (attempt < maxAttempts)
                     await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
                 continue;
@@ -2067,10 +2042,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 }
                 catch (PlaywrightException)
                 {
-                    try
-                    {
-                        await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
-                    }
+                    try { await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true }); }
                     catch (PlaywrightException)
                     {
                         try
@@ -2098,74 +2070,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
             }
 
-            captchaSubmittedOnce = true;
-
-            var submitted = await TryWaitForConditionAsync(
-                async () =>
-                {
-                    if (page.IsClosed) return true;
-                    try { return await inputLocator.CountAsync() == 0; }
-                    catch (PlaywrightException) { return page.IsClosed; }
-                },
-                TimeSpan.FromMilliseconds(500),
-                cancellationToken);
-
-            _logger.LogInformation("CAPTCHA attempt {Attempt} totalMs={TotalMs} submitted={Submitted}",
-                attempt, attemptSw.ElapsedMilliseconds, submitted);
-
-            if (page.IsClosed)
-            {
-                _logger.LogInformation("CAPTCHA page closed on attempt {Attempt} — treating as success.", attempt);
-                return;
-            }
+            _logger.LogInformation("[CAPTCHA] submit 완료. alert/input 확인 시작. attempt={Attempt}", attempt);
 
             var alertDetected = false;
             try { alertDetected = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
 
             if (alertDetected)
             {
-                _logger.LogInformation("[CAPTCHA] 제출 후 alert 감지 — 틀린 CAPTCHA로 판단, 재시도. attempt={Attempt}", attempt);
+                _logger.LogInformation("[CAPTCHA] alert 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
                 try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
                 if (attempt < maxAttempts)
                     await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
                 continue;
             }
 
-            if (submitted)
-            {
-                bool inputReappeared = false;
-                try { inputReappeared = await inputLocator.CountAsync() > 0; } catch { }
-
-                if (inputReappeared)
-                {
-                    _logger.LogInformation("[CAPTCHA] input 재출현 — 틀린 CAPTCHA (인라인 에러), 재시도. attempt={Attempt}", attempt);
-                    if (attempt < maxAttempts)
-                        await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                    continue;
-                }
-
-                _logger.LogInformation("[CAPTCHA] CAPTCHA 통과 확인 (input 사라짐 + alert 없음 + input 재출현 없음). attempt={Attempt}", attempt);
-                return;
-            }
-
-            if (!submitted && captchaSubmittedOnce)
-            {
-                var imgLocator2 = await FindCaptchaImageAsync(inputLocator, page, captchaFrame);
-                bool imgVisible2 = false;
-                if (imgLocator2 != null)
-                {
-                    try { imgVisible2 = await imgLocator2.IsVisibleAsync(); } catch { }
-                }
-
-                if (!imgVisible2)
-                {
-                    _logger.LogInformation("[CAPTCHA] submit 후 이미지 invisible — CAPTCHA 통과로 진행. attempt={Attempt}", attempt);
-                    return;
-                }
-            }
-
-            if (attempt < maxAttempts)
-                await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
+            _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료 (alert 없음). 좌석 진행. attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
+            return;
         }
 
         _logger.LogWarning("[CAPTCHA] CAPTCHA 자동 인식 {Max}회 모두 실패 — 좌석 선택 진행 시도.", maxAttempts);
