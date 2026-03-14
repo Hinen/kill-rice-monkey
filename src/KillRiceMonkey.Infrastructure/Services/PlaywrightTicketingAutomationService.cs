@@ -1921,6 +1921,9 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             return;
         }
 
+        var consecutiveImageNotFound = 0;
+        var captchaSubmittedOnce = false;
+
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1956,11 +1959,41 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     return;
                 }
 
+                if (captchaSubmittedOnce)
+                {
+                    var extendedGone = await TryWaitForConditionAsync(
+                        async () =>
+                        {
+                            if (page.IsClosed) return true;
+                            try { return await inputLocator.CountAsync() == 0; }
+                            catch (PlaywrightException) { return page.IsClosed; }
+                        },
+                        TimeSpan.FromMilliseconds(1500),
+                        cancellationToken);
+
+                    if (extendedGone || page.IsClosed)
+                    {
+                        _logger.LogInformation("[CAPTCHA] 정답 제출 후 ScreenshotAsync 실패 + 확장 대기로 input 사라짐 확인 — CAPTCHA 통과. attempt={Attempt}", attempt);
+                        return;
+                    }
+                }
+
                 if (attempt < maxAttempts)
                     await TryRefreshCaptchaImageAsync(page, captchaFrame, cancellationToken);
                 continue;
             }
             _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
+
+            if (string.IsNullOrEmpty(text))
+                consecutiveImageNotFound++;
+            else
+                consecutiveImageNotFound = 0;
+
+            if (consecutiveImageNotFound >= 2 && !captchaSubmittedOnce)
+            {
+                _logger.LogInformation("[CAPTCHA] 이미지 미발견 {Count}회 연속 — CAPTCHA 없는 공연으로 판단, 좌석 선택으로 진행.", consecutiveImageNotFound);
+                return;
+            }
 
             if (text.Length != melonCaptchaLength)
             {
@@ -2068,6 +2101,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
             }
 
+            captchaSubmittedOnce = true;
+
             var submitted = await TryWaitForConditionAsync(
                 async () =>
                 {
@@ -2114,6 +2149,35 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
                 _logger.LogInformation("[CAPTCHA] CAPTCHA 통과 확인 (input 사라짐 + alert 없음 + input 재출현 없음). attempt={Attempt}", attempt);
                 return;
+            }
+
+            if (!submitted && captchaSubmittedOnce)
+            {
+                var extendedWait = await TryWaitForConditionAsync(
+                    async () =>
+                    {
+                        if (page.IsClosed) return true;
+                        try { return await inputLocator.CountAsync() == 0; }
+                        catch (PlaywrightException) { return page.IsClosed; }
+                    },
+                    TimeSpan.FromMilliseconds(1500),
+                    cancellationToken);
+
+                if (extendedWait || page.IsClosed)
+                {
+                    bool alertAfterExtended = false;
+                    try { alertAfterExtended = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
+
+                    if (!alertAfterExtended)
+                    {
+                        _logger.LogInformation("[CAPTCHA] 정답 제출 후 확장 대기({Ms}ms)로 input 사라짐 — CAPTCHA 통과. attempt={Attempt}",
+                            1500, attempt);
+                        return;
+                    }
+
+                    _logger.LogInformation("[CAPTCHA] 확장 대기 후 alert 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
+                    try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
+                }
             }
 
             if (attempt < maxAttempts)
