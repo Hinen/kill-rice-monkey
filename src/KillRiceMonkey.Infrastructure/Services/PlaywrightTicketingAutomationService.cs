@@ -1921,13 +1921,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         const int maxAttempts = 5;
         const int melonCaptchaLength = 6;
 
-        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 3초). url={Url}", SafePageUrl(page));
-        var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, TimeSpan.FromSeconds(3), cancellationToken);
+        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", SafePageUrl(page));
+        var (inputLocator, captchaFrame) = await FindCaptchaInputAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
         if (inputLocator is null)
         {
             foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
             {
-                (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, TimeSpan.FromSeconds(1), cancellationToken);
+                (inputLocator, captchaFrame) = await FindCaptchaInputAsync(contextPage, TimeSpan.FromMilliseconds(300), cancellationToken);
                 if (inputLocator is not null)
                 {
                     page = contextPage;
