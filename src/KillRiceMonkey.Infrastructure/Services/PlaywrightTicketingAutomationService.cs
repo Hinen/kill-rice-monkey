@@ -3142,6 +3142,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         await ClickNolBookingButtonAsync(bookingButton, timeout);
 
         var deadline = DateTimeOffset.UtcNow + timeout;
+        var pageTransitionDetected = false;
+
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -3158,6 +3160,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return await PrepareNolBookingResultPageAsync(page, deadline);
             }
 
+            if (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                pageTransitionDetected = true;
+            }
+
             if (page.IsClosed && openPages.Count > 0)
             {
                 var fallbackPage = openPages[^1];
@@ -3165,6 +3172,40 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
 
             await Task.Delay(PollDelayMilliseconds, cancellationToken);
+        }
+
+        if (pageTransitionDetected || (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase)))
+        {
+            // NOL 대기열 감지 — 페이지 전환 완료까지 무한 대기
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (page.IsClosed)
+                {
+                    var remaining = page.Context.Pages.Where(x => !x.IsClosed).ToList();
+                    if (remaining.Count > 0)
+                        return await PrepareNolBookingResultPageAsync(remaining[^1], DateTimeOffset.UtcNow + timeout);
+                    throw new InvalidOperationException("NOL 대기열 페이지가 닫혔습니다.");
+                }
+
+                if (await HasNolBookingResultAppearedAsync(page, beforeUrl, beforeTitle))
+                {
+                    // NOL 대기열 종료 — 예매 페이지 도착
+                    return await PrepareNolBookingResultPageAsync(page, DateTimeOffset.UtcNow + timeout);
+                }
+
+                var openPages2 = page.Context.Pages.Where(x => !x.IsClosed).ToList();
+                var newPage2 = openPages2.FirstOrDefault(x => !beforePages.Contains(x));
+                if (newPage2 is not null)
+                {
+                    // NOL 대기열 종료 — 새 페이지 감지
+                    return await PrepareNolBookingResultPageAsync(newPage2, DateTimeOffset.UtcNow + timeout);
+                }
+
+                await Task.Delay(100, cancellationToken);
+            }
         }
 
         throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
@@ -3195,6 +3236,8 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         await ClickNolBookingButtonAsync(bookingButton, timeout);
 
         var deadline = DateTimeOffset.UtcNow + timeout;
+        IPage? queuePage = null;
+
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -3203,15 +3246,13 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             var newPage = openPages.FirstOrDefault(x => !beforePages.Contains(x));
             if (newPage is not null)
             {
-                await newPage.BringToFrontAsync();
-                if (SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase) ||
-                    await TryWaitForConditionAsync(
-                        async () => SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase),
-                        TimeSpan.FromMilliseconds(300),
-                        cancellationToken))
+                if (SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
                 {
+                    await newPage.BringToFrontAsync();
                     return newPage;
                 }
+
+                queuePage = newPage;
             }
 
             var foundPopup = openPages.FirstOrDefault(x => SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
@@ -3222,6 +3263,37 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             }
 
             await Task.Delay(PollDelayMilliseconds, cancellationToken);
+        }
+
+        if (queuePage is not null && !queuePage.IsClosed)
+        {
+            _logger.LogInformation("[Melon] 대기열 감지 — onestop.htm 전환까지 무한 대기. queueUrl={Url}", SafePageUrl(queuePage));
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (queuePage.IsClosed)
+                    throw new InvalidOperationException("Melon 대기열 페이지가 닫혔습니다.");
+
+                if (SafePageUrl(queuePage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
+                {
+                    await queuePage.BringToFrontAsync();
+                    _logger.LogInformation("[Melon] 대기열 종료 — onestop.htm 도착. url={Url}", SafePageUrl(queuePage));
+                    return queuePage;
+                }
+
+                var allPages = page.Context.Pages.Where(x => !x.IsClosed).ToList();
+                var popup = allPages.FirstOrDefault(x => SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
+                if (popup is not null)
+                {
+                    await popup.BringToFrontAsync();
+                    _logger.LogInformation("[Melon] 대기열 종료 — 새 onestop.htm 팝업 감지. url={Url}", SafePageUrl(popup));
+                    return popup;
+                }
+
+                await Task.Delay(100, cancellationToken);
+            }
         }
 
         throw new TimeoutException("Melon 예매 버튼 클릭 후 팝업 전환을 확인하지 못했습니다.");
