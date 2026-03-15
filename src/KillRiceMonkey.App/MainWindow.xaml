@@ -595,9 +595,7 @@
                                                          <Border x:Name="ThumbBorder"
                                                                  Margin="1"
                                                                  Background="{StaticResource MutedTextBrush}"
-                                                                 BorderBrush="{StaticResource StrokeBrush}"
-                                                                 BorderThickness="1"
-                                                                 CornerRadius="999"
+                                                                 CornerRadius="3"
                                                                  Opacity="0.42" />
                                                          <ControlTemplate.Triggers>
                                                              <Trigger Property="IsMouseOver" Value="True">
@@ -617,13 +615,11 @@
                                              </Setter>
                                          </Style>
 
-                                         <ControlTemplate x:Key="LogVerticalScrollBarTemplate" TargetType="ScrollBar">
+                                          <ControlTemplate x:Key="LogVerticalScrollBarTemplate" TargetType="ScrollBar">
                                              <Grid Width="{TemplateBinding Width}" Background="Transparent">
                                                  <Border Margin="1,0"
                                                          Background="{StaticResource InputBackgroundBrush}"
-                                                         BorderBrush="{StaticResource StrokeBrush}"
-                                                         BorderThickness="1"
-                                                         CornerRadius="999"
+                                                         CornerRadius="3"
                                                          Opacity="0.18" />
                                                  <Track x:Name="PART_Track"
                                                         IsDirectionReversed="True">
@@ -642,13 +638,11 @@
                                              </Grid>
                                          </ControlTemplate>
 
-                                         <ControlTemplate x:Key="LogHorizontalScrollBarTemplate" TargetType="ScrollBar">
+                                          <ControlTemplate x:Key="LogHorizontalScrollBarTemplate" TargetType="ScrollBar">
                                              <Grid Height="{TemplateBinding Height}" Background="Transparent">
                                                  <Border Margin="0,1"
                                                          Background="{StaticResource InputBackgroundBrush}"
-                                                         BorderBrush="{StaticResource StrokeBrush}"
-                                                         BorderThickness="1"
-                                                         CornerRadius="999"
+                                                         CornerRadius="3"
                                                          Opacity="0.18" />
                                                  <Track x:Name="PART_Track"
                                                         Orientation="Horizontal">
