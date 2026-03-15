@@ -116,7 +116,37 @@ public static class MelonPages
 </html>
 """;
 
-    public static string OnestopPopup() => """
+    public static string OnestopPopup(bool hasCaptcha) => hasCaptcha ? OnestopWithCaptcha() : OnestopNoCaptcha();
+
+    private static string OnestopNoCaptcha() => """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Melon Mock - 예매 팝업</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", sans-serif; background: #eef2f6; color: #102a43; }
+    .layout { max-width: 980px; margin: 0 auto; padding: 24px; }
+    .card { background: #ffffff; border-radius: 20px; box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12); padding: 24px; }
+    h1 { margin: 0 0 16px; font-size: 28px; }
+    #seatFrame { width: 100%; height: 500px; border: none; border-radius: 18px; background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="card">
+      <h1>Melon Mock - 예매 팝업 (캡차 없음)</h1>
+      <iframe id="seatFrame" src="/reservation/popup/stepSeat.htm" style="width:100%;height:500px;border:none;"></iframe>
+    </div>
+  </div>
+  <script>window.__melonAlertDetected = false;</script>
+</body>
+</html>
+""";
+
+    private static string OnestopWithCaptcha() => """
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -182,7 +212,79 @@ public static class MelonPages
 </html>
 """;
 
-    public static string SeatFrame() => """
+    public static string SeatFrame(bool hasZone) => hasZone ? SeatFrameWithZone() : SeatFrameNoZone();
+
+    private static string SeatFrameNoZone() => """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Melon Mock - 좌석 선택 (구역 없음)</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", sans-serif; background: #ffffff; color: #102a43; }
+    .wrap { padding: 20px; text-align: center; }
+    svg { width: min(100%, 620px); height: 430px; border: 1px solid #d9e2ec; border-radius: 18px; background: #f8fafc; margin: 0 auto 16px; display: block; }
+    #partSeatSelected { width: min(100%, 620px); margin: 0 auto 16px; padding: 16px; border: 1px solid #d9e2ec; border-radius: 16px; text-align: left; background: #f8fafc; }
+    #partSeatSelected ul { margin: 0; padding-left: 20px; min-height: 24px; }
+    #nextTicketSelection { padding: 12px 20px; border: none; border-radius: 12px; background: #00c73c; color: #ffffff; font-weight: 700; cursor: pointer; }
+    #seatCompleteMessage { margin-top: 14px; color: #1f8f4d; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <svg id="ez_canvas" viewBox="0 0 560 430" xmlns="http://www.w3.org/2000/svg">
+    </svg>
+
+    <div id="partSeatSelected">
+      <ul></ul>
+    </div>
+
+    <button id="nextTicketSelection" type="button" style="display:none;">좌석 선택 완료</button>
+    <div id="seatCompleteMessage"></div>
+  </div>
+
+  <script>
+    window.__melonAlertDetected = false;
+
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    const canvas = document.getElementById('ez_canvas');
+    const selectedSeatList = document.querySelector('#partSeatSelected ul');
+    const completeButton = document.getElementById('nextTicketSelection');
+    const completeMessage = document.getElementById('seatCompleteMessage');
+
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 10; col++) {
+        const rect = document.createElementNS(svgNamespace, 'rect');
+        rect.setAttribute('x', String(50 + col * 20));
+        rect.setAttribute('y', String(50 + row * 20));
+        rect.setAttribute('width', '12');
+        rect.setAttribute('height', '12');
+        rect.setAttribute('fill', '#4488CC');
+        rect.addEventListener('click', function() {
+          if (this.dataset.selected === 'true') return;
+          this.dataset.selected = 'true';
+          this.setAttribute('fill', '#FFD700');
+          const item = document.createElement('li');
+          item.textContent = 'A석 ' + (row + 1) + '열 ' + (col + 1) + '번';
+          selectedSeatList.appendChild(item);
+          completeButton.style.display = 'inline-block';
+          window.__melonAlertDetected = false;
+        });
+        canvas.appendChild(rect);
+      }
+    }
+
+    completeButton.addEventListener('click', function() {
+      completeMessage.textContent = '좌석 선택 완료!';
+    });
+  </script>
+</body>
+</html>
+""";
+
+    private static string SeatFrameWithZone() => """
 <!DOCTYPE html>
 <html lang="ko">
 <head>

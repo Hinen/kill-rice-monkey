@@ -340,7 +340,33 @@ public static class NolPages
 </html>
 """;
 
-    public static string CaptchaPage() => """
+    public static string CaptchaPage(bool hasCaptcha = true) => hasCaptcha ? CaptchaWithForm() : CaptchaNone();
+
+    private static string CaptchaNone() => """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NOL Mock - 예매 (캡차 없음)</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: "Segoe UI", sans-serif; background: linear-gradient(160deg, #e8eef5, #f0f4ff); color: #1d3354; }
+        .booking-shell { width: min(400px, calc(100vw - 32px)); padding: 36px 28px; background: rgba(255,255,255,0.95); border-radius: 24px; box-shadow: 0 20px 50px rgba(0,32,96,0.12); text-align: center; }
+        h1 { margin: 0 0 8px; font-size: 30px; }
+        p { margin: 0; color: #17804b; font-weight: 700; }
+    </style>
+</head>
+<body>
+    <main class="booking-shell">
+        <h1>예매 진행</h1>
+        <p>캡차 없이 바로 예매가 진행됩니다.</p>
+    </main>
+</body>
+</html>
+""";
+
+    private static string CaptchaWithForm() => """
 <!DOCTYPE html>
 <html lang="ko">
 <head>

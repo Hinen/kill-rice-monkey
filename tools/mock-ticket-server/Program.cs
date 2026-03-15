@@ -1,15 +1,19 @@
 using MockTicketServer.Pages;
 
 var queueSeconds = args.Length > 0 && int.TryParse(args[0], out var s) ? s : 60;
+var hasCaptcha = !args.Contains("--no-captcha", StringComparer.OrdinalIgnoreCase);
+var hasZone = !args.Contains("--no-zone", StringComparer.OrdinalIgnoreCase);
 
-var builder = WebApplication.CreateBuilder(args);
+var filteredArgs = args.Where(a => !a.StartsWith("--no-", StringComparison.OrdinalIgnoreCase)).ToArray();
+var builder = WebApplication.CreateBuilder(filteredArgs);
 var port = Environment.GetEnvironmentVariable("MOCK_PORT") ?? "8080";
 builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 var app = builder.Build();
 
-app.Logger.LogInformation("Mock Ticket Server 시작. 대기열: {Queue}초, 포트: {Port}", queueSeconds, port);
+app.Logger.LogInformation("Mock Ticket Server 시작. 대기열: {Queue}초, 캡차: {Captcha}, 구역: {Zone}, 포트: {Port}",
+    queueSeconds, hasCaptcha, hasZone, port);
 
 app.Use(async (context, next) =>
 {
@@ -46,7 +50,7 @@ app.MapGet("/captcha", (HttpContext ctx) =>
     if ((string)ctx.Items["SiteType"]! != "nol")
         return Results.NotFound("NOL 전용 경로입니다.");
     app.Logger.LogInformation("[NOL] 캡차 페이지 요청.");
-    return Results.Content(NolPages.CaptchaPage(), "text/html; charset=utf-8");
+    return Results.Content(NolPages.CaptchaPage(hasCaptcha), "text/html; charset=utf-8");
 });
 
 // ──────────────── Melon Routes ────────────────
@@ -72,7 +76,7 @@ app.MapGet("/reservation/popup/onestop.htm", (HttpContext ctx) =>
     if ((string)ctx.Items["SiteType"]! != "melon")
         return Results.NotFound("Melon 전용 경로입니다.");
     app.Logger.LogInformation("[Melon] 예매 팝업(onestop) 요청.");
-    return Results.Content(MelonPages.OnestopPopup(), "text/html; charset=utf-8");
+    return Results.Content(MelonPages.OnestopPopup(hasCaptcha), "text/html; charset=utf-8");
 });
 
 app.MapGet("/reservation/popup/stepSeat.htm", (HttpContext ctx) =>
@@ -80,7 +84,7 @@ app.MapGet("/reservation/popup/stepSeat.htm", (HttpContext ctx) =>
     if ((string)ctx.Items["SiteType"]! != "melon")
         return Results.NotFound("Melon 전용 경로입니다.");
     app.Logger.LogInformation("[Melon] 좌석 프레임 요청.");
-    return Results.Content(MelonPages.SeatFrame(), "text/html; charset=utf-8");
+    return Results.Content(MelonPages.SeatFrame(hasZone), "text/html; charset=utf-8");
 });
 
 // ──────────────── Fallback ────────────────
