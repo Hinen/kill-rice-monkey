@@ -329,7 +329,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     _runCts.Token.ThrowIfCancellationRequested();
                     attempt++;
 
-                    if (!await _ticketingAutomationService.IsNolPageReadyAsync(_runCts.Token))
+                    if (!await Task.Run(() => _ticketingAutomationService.IsNolPageReadyAsync(_runCts.Token), _runCts.Token))
                     {
                         StatusMessage = $"NOL 페이지 대기 중 ({attempt}회 폴링)";
                         await Task.Delay(200, _runCts.Token);
@@ -337,7 +337,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     StatusMessage = "NOL 자동화 실행 중";
-                    var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
+                    var result = await Task.Run(() => _ticketingAutomationService.RunAsync(request, progress, _runCts.Token), _runCts.Token);
 
                     if (result.IsSuccess)
                     {
@@ -360,7 +360,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     _runCts.Token.ThrowIfCancellationRequested();
                     attempt++;
 
-                    if (!await _ticketingAutomationService.IsMelonPageReadyAsync(_runCts.Token))
+                    if (!await Task.Run(() => _ticketingAutomationService.IsMelonPageReadyAsync(_runCts.Token), _runCts.Token))
                     {
                         StatusMessage = $"Melon 페이지 대기 중 ({attempt}회 폴링)";
                         await Task.Delay(50, _runCts.Token);
@@ -368,7 +368,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     StatusMessage = "Melon 자동화 실행 중";
-                    var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
+                    var result = await Task.Run(() => _ticketingAutomationService.RunAsync(request, progress, _runCts.Token), _runCts.Token);
 
                     if (result.IsSuccess)
                     {
@@ -386,7 +386,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             else
             {
                 StatusMessage = "active 상태: 다단계 이미지 클릭 실행 중";
-                var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
+                var result = await Task.Run(() => _ticketingAutomationService.RunAsync(request, progress, _runCts.Token), _runCts.Token);
                 AppendLog(result.Message);
                 StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
                 LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
