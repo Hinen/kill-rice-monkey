@@ -13,6 +13,10 @@ if not "%1"=="" (
     if "!QUEUE_SECONDS!"=="" set QUEUE_SECONDS=60
 )
 
+:: Kill any previous mock server
+taskkill /FI "WINDOWTITLE eq MockTicketServer" /F > nul 2>&1
+timeout /t 1 /nobreak > nul
+
 echo [1/3] Starting mock server (queue: %QUEUE_SECONDS%s, port 8080)...
 echo.
 
