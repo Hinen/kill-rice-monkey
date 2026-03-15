@@ -579,7 +579,7 @@
                                                 <TextBlock FontSize="13"
                                                            LineHeight="22"
                                                            TextWrapping="NoWrap"
-                                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                                           Foreground="{StaticResource MutedTextBrush}"
                                                            Text="{Binding}" />
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>

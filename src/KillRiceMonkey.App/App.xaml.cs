@@ -31,6 +31,25 @@ public partial class App : System.Windows.Application
 
         Log.Information("Application log directory: {LogDirectory}", logDirectory);
 
+        DispatcherUnhandledException += (_, args) =>
+        {
+            Log.Fatal(args.Exception, "[CRASH] DispatcherUnhandledException");
+            args.Handled = true;
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            if (args.ExceptionObject is Exception ex)
+                Log.Fatal(ex, "[CRASH] AppDomain.UnhandledException");
+            Log.CloseAndFlush();
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            Log.Fatal(args.Exception, "[CRASH] UnobservedTaskException");
+            args.SetObserved();
+        };
+
         _host = Host.CreateDefaultBuilder()
             .ConfigureAppConfiguration(config =>
             {
