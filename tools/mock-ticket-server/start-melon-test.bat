@@ -1,17 +1,21 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 echo ============================================
 echo  Melon Mock 티켓팅 테스트 환경 시작
 echo ============================================
 echo.
 
-:: 대기열 시간 (초) - 기본 60초
-set QUEUE_SECONDS=60
-if not "%1"=="" set QUEUE_SECONDS=%1
+:: 대기열 시간 (초) - CLI 인자 또는 직접 입력
+if not "%1"=="" (
+    set QUEUE_SECONDS=%1
+) else (
+    set /p QUEUE_SECONDS="대기열 시간(초, 기본 60): "
+    if "!QUEUE_SECONDS!"=="" set QUEUE_SECONDS=60
+)
 
 echo [1/3] Mock 서버 시작 (대기열: %QUEUE_SECONDS%초)...
-echo       관리자 권한이 필요합니다 (포트 80 사용)
+echo       포트 8080 사용
 echo.
 
 :: Mock 서버를 백그라운드로 시작
