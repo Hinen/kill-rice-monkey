@@ -570,16 +570,119 @@
                                     Style="{StaticResource SoftCardStyle}"
                                     Background="{StaticResource SummarySurfaceBrush}"
                                     Padding="16,14">
-                                <ScrollViewer VerticalScrollBarVisibility="Visible"
-                                              MaxHeight="200"
-                                              ScrollChanged="LogScrollViewer_ScrollChanged">
-                                    <ScrollViewer.Resources>
-                                        <Style TargetType="ScrollBar">
-                                            <Setter Property="Width" Value="10" />
-                                            <Setter Property="Opacity" Value="0.7" />
-                                        </Style>
-                                    </ScrollViewer.Resources>
-                                    <ItemsControl ItemsSource="{Binding RunLogs}">
+                                 <ScrollViewer VerticalScrollBarVisibility="Visible"
+                                               MaxHeight="200"
+                                               ScrollChanged="LogScrollViewer_ScrollChanged">
+                                     <ScrollViewer.Resources>
+                                         <Style x:Key="LogScrollBarRepeatButtonStyle" TargetType="RepeatButton">
+                                             <Setter Property="Focusable" Value="False" />
+                                             <Setter Property="Background" Value="Transparent" />
+                                             <Setter Property="BorderBrush" Value="Transparent" />
+                                             <Setter Property="BorderThickness" Value="0" />
+                                             <Setter Property="Template">
+                                                 <Setter.Value>
+                                                     <ControlTemplate TargetType="RepeatButton">
+                                                         <Border Background="{TemplateBinding Background}" />
+                                                     </ControlTemplate>
+                                                 </Setter.Value>
+                                             </Setter>
+                                         </Style>
+
+                                         <Style x:Key="LogScrollBarThumbStyle" TargetType="Thumb">
+                                             <Setter Property="Template">
+                                                 <Setter.Value>
+                                                     <ControlTemplate TargetType="Thumb">
+                                                         <Border x:Name="ThumbBorder"
+                                                                 Margin="1"
+                                                                 Background="{StaticResource MutedTextBrush}"
+                                                                 BorderBrush="{StaticResource StrokeBrush}"
+                                                                 BorderThickness="1"
+                                                                 CornerRadius="999"
+                                                                 Opacity="0.42" />
+                                                         <ControlTemplate.Triggers>
+                                                             <Trigger Property="IsMouseOver" Value="True">
+                                                                 <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.62" />
+                                                             </Trigger>
+                                                             <Trigger Property="IsDragging" Value="True">
+                                                                 <Setter TargetName="ThumbBorder" Property="Background" Value="{StaticResource AccentBrush}" />
+                                                                 <Setter TargetName="ThumbBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                                                 <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.74" />
+                                                             </Trigger>
+                                                             <Trigger Property="IsEnabled" Value="False">
+                                                                 <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.25" />
+                                                             </Trigger>
+                                                         </ControlTemplate.Triggers>
+                                                     </ControlTemplate>
+                                                 </Setter.Value>
+                                             </Setter>
+                                         </Style>
+
+                                         <ControlTemplate x:Key="LogVerticalScrollBarTemplate" TargetType="ScrollBar">
+                                             <Grid Width="{TemplateBinding Width}" Background="Transparent">
+                                                 <Border Margin="1,0"
+                                                         Background="{StaticResource InputBackgroundBrush}"
+                                                         BorderBrush="{StaticResource StrokeBrush}"
+                                                         BorderThickness="1"
+                                                         CornerRadius="999"
+                                                         Opacity="0.18" />
+                                                 <Track x:Name="PART_Track"
+                                                        IsDirectionReversed="True">
+                                                     <Track.DecreaseRepeatButton>
+                                                         <RepeatButton Command="ScrollBar.PageUpCommand"
+                                                                       Style="{StaticResource LogScrollBarRepeatButtonStyle}" />
+                                                     </Track.DecreaseRepeatButton>
+                                                     <Track.Thumb>
+                                                         <Thumb Style="{StaticResource LogScrollBarThumbStyle}" />
+                                                     </Track.Thumb>
+                                                     <Track.IncreaseRepeatButton>
+                                                         <RepeatButton Command="ScrollBar.PageDownCommand"
+                                                                       Style="{StaticResource LogScrollBarRepeatButtonStyle}" />
+                                                     </Track.IncreaseRepeatButton>
+                                                 </Track>
+                                             </Grid>
+                                         </ControlTemplate>
+
+                                         <ControlTemplate x:Key="LogHorizontalScrollBarTemplate" TargetType="ScrollBar">
+                                             <Grid Height="{TemplateBinding Height}" Background="Transparent">
+                                                 <Border Margin="0,1"
+                                                         Background="{StaticResource InputBackgroundBrush}"
+                                                         BorderBrush="{StaticResource StrokeBrush}"
+                                                         BorderThickness="1"
+                                                         CornerRadius="999"
+                                                         Opacity="0.18" />
+                                                 <Track x:Name="PART_Track"
+                                                        Orientation="Horizontal">
+                                                     <Track.DecreaseRepeatButton>
+                                                         <RepeatButton Command="ScrollBar.PageLeftCommand"
+                                                                       Style="{StaticResource LogScrollBarRepeatButtonStyle}" />
+                                                     </Track.DecreaseRepeatButton>
+                                                     <Track.Thumb>
+                                                         <Thumb Style="{StaticResource LogScrollBarThumbStyle}" />
+                                                     </Track.Thumb>
+                                                     <Track.IncreaseRepeatButton>
+                                                         <RepeatButton Command="ScrollBar.PageRightCommand"
+                                                                       Style="{StaticResource LogScrollBarRepeatButtonStyle}" />
+                                                     </Track.IncreaseRepeatButton>
+                                                 </Track>
+                                             </Grid>
+                                         </ControlTemplate>
+
+                                         <Style TargetType="ScrollBar">
+                                             <Setter Property="SnapsToDevicePixels" Value="True" />
+                                             <Setter Property="OverridesDefaultStyle" Value="True" />
+                                             <Setter Property="Background" Value="Transparent" />
+                                             <Setter Property="Width" Value="7" />
+                                             <Setter Property="Template" Value="{StaticResource LogVerticalScrollBarTemplate}" />
+                                             <Style.Triggers>
+                                                 <Trigger Property="Orientation" Value="Horizontal">
+                                                     <Setter Property="Height" Value="7" />
+                                                     <Setter Property="Width" Value="Auto" />
+                                                     <Setter Property="Template" Value="{StaticResource LogHorizontalScrollBarTemplate}" />
+                                                 </Trigger>
+                                             </Style.Triggers>
+                                         </Style>
+                                     </ScrollViewer.Resources>
+                                     <ItemsControl ItemsSource="{Binding RunLogs}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <TextBlock FontSize="13"
