@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Interop;
 using KillRiceMonkey.App.ViewModels;
 
@@ -61,6 +62,14 @@ public partial class MainWindow : Window
         }
 
         return IntPtr.Zero;
+    }
+
+    private void LogScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.ExtentHeightChange > 0 && sender is ScrollViewer scrollViewer)
+        {
+            scrollViewer.ScrollToEnd();
+        }
     }
 
     [DllImport("user32.dll")]

@@ -550,15 +550,43 @@
                             </Border>
                         </Grid>
 
-                        <Border Grid.Row="2"
-                                Style="{StaticResource SoftCardStyle}"
-                                Background="{StaticResource SummarySurfaceBrush}"
-                                Padding="16,14">
-                            <TextBlock FontSize="14"
-                                       LineHeight="24"
-                                       TextWrapping="Wrap"
-                                       Text="{Binding LastRunSummary}" />
-                        </Border>
+                        <Grid Grid.Row="2">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="12" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Border Style="{StaticResource SoftCardStyle}"
+                                    Background="{StaticResource SummarySurfaceBrush}"
+                                    Padding="16,14">
+                                <TextBlock FontSize="14"
+                                           LineHeight="24"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding LastRunSummary}" />
+                            </Border>
+
+                            <Border Grid.Row="2"
+                                    Style="{StaticResource SoftCardStyle}"
+                                    Background="{StaticResource SummarySurfaceBrush}"
+                                    Padding="16,14">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                              MaxHeight="200"
+                                              ScrollChanged="LogScrollViewer_ScrollChanged">
+                                    <ItemsControl ItemsSource="{Binding RunLogs}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock FontSize="13"
+                                                           LineHeight="22"
+                                                           TextWrapping="NoWrap"
+                                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                                           Text="{Binding}" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Border>
+                        </Grid>
                     </Grid>
                 </Border>
             </Grid>

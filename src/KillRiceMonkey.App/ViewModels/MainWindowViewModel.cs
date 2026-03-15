@@ -1,9 +1,8 @@
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Windows;
 using System.Windows.Input;
 
 namespace KillRiceMonkey.App.ViewModels;
@@ -28,6 +27,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool _isRunning;
     private string _statusMessage = "템플릿 선택 필요";
     private string _lastRunSummary = "자동화 실행 기록이 없습니다.";
+    private readonly ObservableCollection<string> _runLogs = [];
     private DateTimeOffset _nolAutomationReadyAt;
     private DateTimeOffset _melonAutomationReadyAt;
     private CancellationTokenSource? _runCts;
@@ -175,6 +175,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         private set => SetProperty(ref _lastRunSummary, value);
     }
 
+    public ObservableCollection<string> RunLogs => _runLogs;
+
     public bool IsImageDirectoryEditable => HasSelectedTemplate && ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Custom;
 
     public bool HasSelectedTemplate => !string.IsNullOrWhiteSpace(SelectedTemplate);
@@ -287,6 +289,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         _runCts?.Dispose();
         _runCts = new CancellationTokenSource();
+        _runLogs.Clear();
+        AppendLog($"{SelectedTemplate} 자동화 시작");
 
         IsRunning = true;
 
@@ -308,6 +312,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 IsNolTemplate || IsMelonTemplate ? DesiredDate?.ToString("yyyy.MM.dd") : null,
                 IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : null));
 
+            var progress = new Progress<AutomationProgress>(automationProgress =>
+            {
+                StatusMessage = automationProgress.Stage;
+                if (!string.IsNullOrWhiteSpace(automationProgress.LogMessage))
+                {
+                    AppendLog(automationProgress.LogMessage);
+                }
+            });
+
             if (templateType == TicketingTemplateType.Nol)
             {
                 var attempt = 0;
@@ -324,15 +337,17 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     StatusMessage = "NOL 자동화 실행 중";
-                    var result = await _ticketingAutomationService.RunAsync(request, _runCts.Token);
+                    var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
 
                     if (result.IsSuccess)
                     {
+                        AppendLog(result.Message);
                         StatusMessage = "성공 종료";
                         LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
                         return;
                     }
 
+                    AppendLog($"시도 실패 — {result.Message}");
                     LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {attempt}회 시도 실패 — {result.Message}";
                     await Task.Delay(500, _runCts.Token);
                 }
@@ -353,15 +368,17 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     StatusMessage = "Melon 자동화 실행 중";
-                    var result = await _ticketingAutomationService.RunAsync(request, _runCts.Token);
+                    var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
 
                     if (result.IsSuccess)
                     {
+                        AppendLog(result.Message);
                         StatusMessage = "성공 종료";
                         LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
                         return;
                     }
 
+                    AppendLog($"시도 실패 — {result.Message}");
                     LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {attempt}회 시도 실패 — {result.Message}";
                     await Task.Delay(100, _runCts.Token);
                 }
@@ -369,7 +386,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             else
             {
                 StatusMessage = "active 상태: 다단계 이미지 클릭 실행 중";
-                var result = await _ticketingAutomationService.RunAsync(request, _runCts.Token);
+                var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
+                AppendLog(result.Message);
                 StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
                 LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
             }
@@ -378,11 +396,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         {
             StatusMessage = "취소 종료";
             LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 사용자에 의해 취소되었습니다.";
+            AppendLog("사용자에 의해 취소되었습니다.");
         }
         catch (Exception ex)
         {
             StatusMessage = "예외 종료";
             LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 예외 발생: {ex.Message}";
+            AppendLog($"예외 발생: {ex.Message}");
         }
         finally
         {
@@ -536,6 +556,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         PrepareNolAutomationCommand.NotifyCanExecuteChanged();
         LaunchMelonRemoteDebugCommand.NotifyCanExecuteChanged();
         PrepareMelonAutomationCommand.NotifyCanExecuteChanged();
+    }
+
+    private void AppendLog(string message)
+    {
+        _runLogs.Add($"{DateTimeOffset.Now:HH:mm:ss} | {message}");
     }
 
     private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
