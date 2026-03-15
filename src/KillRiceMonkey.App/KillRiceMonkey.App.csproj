@@ -30,6 +30,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <PublishDir>publish-output</PublishDir>
   </PropertyGroup>
 
 </Project>
