@@ -2,32 +2,27 @@
 setlocal EnableDelayedExpansion
 
 echo ============================================
-echo  NOL Mock 티켓팅 테스트 환경 시작
+echo  NOL Mock Ticketing Test
 echo ============================================
 echo.
 
-:: 대기열 시간 (초) - CLI 인자 또는 직접 입력
 if not "%1"=="" (
     set QUEUE_SECONDS=%1
 ) else (
-    set /p QUEUE_SECONDS="대기열 시간(초, 기본 60): "
+    set /p QUEUE_SECONDS="Queue duration in seconds (default 60): "
     if "!QUEUE_SECONDS!"=="" set QUEUE_SECONDS=60
 )
 
-echo [1/3] Mock 서버 시작 (대기열: %QUEUE_SECONDS%초)...
-echo       포트 8080 사용
+echo [1/3] Starting mock server (queue: %QUEUE_SECONDS%s, port 8080)...
 echo.
 
-:: Mock 서버를 백그라운드로 시작
 start "MockTicketServer" /MIN dotnet run --project "%~dp0MockTicketServer.csproj" -- %QUEUE_SECONDS%
 
-:: 서버 시작 대기
 timeout /t 3 /nobreak > nul
 
-echo [2/3] Chrome 시작 (remote-debug + host 리다이렉트)...
+echo [2/3] Starting Chrome (remote-debug + host redirect)...
 echo.
 
-:: Chrome 경로 찾기
 set CHROME_PATH=
 for %%p in (
     "%ProgramFiles%\Google\Chrome\Application\chrome.exe"
@@ -38,15 +33,14 @@ for %%p in (
 )
 
 if "%CHROME_PATH%"=="" (
-    echo [오류] Chrome을 찾을 수 없습니다.
+    echo [ERROR] Chrome not found.
     pause
     exit /b 1
 )
 
-echo Chrome 경로: %CHROME_PATH%
+echo Chrome: %CHROME_PATH%
 echo.
 
-:: Chrome 실행 - NOL 도메인을 localhost:8080으로 리다이렉트
 start "" "%CHROME_PATH%" ^
     --remote-debugging-port=9222 ^
     --host-rules="MAP tickets.interpark.com 127.0.0.1:8080" ^
@@ -55,21 +49,21 @@ start "" "%CHROME_PATH%" ^
     --user-data-dir="%TEMP%\chrome-nol-mock" ^
     "http://tickets.interpark.com/goods/12345"
 
-echo [3/3] 준비 완료!
+echo [3/3] Ready!
 echo.
 echo ============================================
-echo  테스트 방법:
-echo  1. Chrome에서 NOL Mock 페이지가 열립니다
-echo  2. KillRiceMonkey 프로그램을 시작하세요
-echo  3. NOL 템플릿 선택 후 자동화를 실행하세요
-echo     - 관람일: 2026.04.11
-echo     - 회차: 1회 19:00
-echo  4. 프로그램이 날짜/회차/예매를 순서대로 처리합니다
-echo  5. 대기열 %QUEUE_SECONDS%초 대기 후 캡차 페이지로 이동
+echo  Test scenario:
+echo  1. Chrome opens NOL Mock page
+echo  2. Start KillRiceMonkey program
+echo  3. Select NOL template, then run automation
+echo     - Date: 2026.04.11
+echo     - Round: 1st 19:00
+echo  4. Auto: date/round/booking click
+echo  5. Queue page waits %QUEUE_SECONDS%s
+echo  6. Captcha auto-input
 echo ============================================
 echo.
-echo 종료하려면 아무 키나 누르세요...
+echo Press any key to stop...
 pause > nul
 
-:: 정리
 taskkill /FI "WINDOWTITLE eq MockTicketServer" /F > nul 2>&1
