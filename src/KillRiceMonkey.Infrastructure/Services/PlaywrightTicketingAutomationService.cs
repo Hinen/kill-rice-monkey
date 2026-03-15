@@ -116,7 +116,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             .Build();
     }
 
-    public async Task<AutomationRunResult> RunAsync(TicketingJobRequest request, CancellationToken cancellationToken)
+    public Task<AutomationRunResult> RunAsync(TicketingJobRequest request, CancellationToken cancellationToken)
+        => RunAsync(request, null, cancellationToken);
+
+    public async Task<AutomationRunResult> RunAsync(TicketingJobRequest request, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         try
         {
@@ -124,12 +127,12 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             {
                 if (request.TemplateType == TicketingTemplateType.Nol)
                 {
-                    return await RunNolAutomationAsync(request, token);
+                    return await RunNolAutomationAsync(request, progress, token);
                 }
 
                 if (request.TemplateType == TicketingTemplateType.Melon)
                 {
-                    return await RunMelonAutomationAsync(request, token);
+                    return await RunMelonAutomationAsync(request, progress, token);
                 }
 
                 if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
@@ -347,7 +350,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return $"Melon 준비 완료: {SafePageUrl(page)}";
     }
 
-    private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
+    private async Task<AutomationRunResult> RunNolAutomationAsync(TicketingJobRequest request, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         if (request.MatchThreshold <= 0 || request.MatchThreshold > 1)
         {
@@ -392,7 +395,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             _logger.LogInformation("NOL screen automation started. runId={RunId}, date={Date}, round={Round}", runId, desiredDate, desiredRound);
 
             SetStage("attach-existing-browser");
-            var cdpResult = await TryRunNolAutomationViaConnectedBrowserAsync(desiredDate, desiredRound, timeout, cancellationToken);
+            var cdpResult = await TryRunNolAutomationViaConnectedBrowserAsync(desiredDate, desiredRound, timeout, progress, cancellationToken);
             if (cdpResult is not null)
             {
                 return cdpResult;
@@ -426,7 +429,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task<AutomationRunResult?> TryRunNolAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredRound, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task<AutomationRunResult?> TryRunNolAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredRound, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         IPage? page = null;
         try
@@ -445,10 +448,18 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 await EnsureNolPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
             }
             _popupClosedDuringPrepare = false;
+            progress?.Report(new AutomationProgress("날짜 선택 중"));
             await SelectNolDateAsync(page, desiredDate, timeout, cancellationToken);
+            progress?.Report(new AutomationProgress("날짜 선택 완료", "날짜 선택 완료"));
+            progress?.Report(new AutomationProgress("회차 선택 중"));
             await SelectNolRoundAsync(page, desiredRound, timeout, cancellationToken);
-            var captchaPage = await ClickNolBookingAsync(page, timeout, cancellationToken);
+            progress?.Report(new AutomationProgress("회차 선택 완료", "회차 선택 완료"));
+            progress?.Report(new AutomationProgress("예매 클릭 중"));
+            var captchaPage = await ClickNolBookingAsync(page, timeout, progress, cancellationToken);
+            progress?.Report(new AutomationProgress("예매 클릭 완료", "예매 클릭 → 대기열/캡차 진입"));
+            progress?.Report(new AutomationProgress("캡차 입력 중"));
             await SolveCaptchaAsync(captchaPage, timeout, cancellationToken);
+            progress?.Report(new AutomationProgress("캡차 입력 완료", "캡차 처리 완료"));
             return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택, CAPTCHA 입력 완료.", DateTimeOffset.Now);
         }
         catch (Exception ex)
@@ -463,7 +474,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task<AutomationRunResult> RunMelonAutomationAsync(TicketingJobRequest request, CancellationToken cancellationToken)
+    private async Task<AutomationRunResult> RunMelonAutomationAsync(TicketingJobRequest request, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         if (request.StepTimeoutSeconds <= 0)
         {
@@ -485,7 +496,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         try
         {
-            var cdpResult = await TryRunMelonAutomationViaConnectedBrowserAsync(desiredDate, desiredTime, timeout, cancellationToken);
+            var cdpResult = await TryRunMelonAutomationViaConnectedBrowserAsync(desiredDate, desiredTime, timeout, progress, cancellationToken);
             if (cdpResult is not null)
             {
                 return cdpResult;
@@ -506,7 +517,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task<AutomationRunResult?> TryRunMelonAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredTime, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task<AutomationRunResult?> TryRunMelonAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredTime, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         IPage? page = null;
         IPage? captchaPage = null;
@@ -529,16 +540,22 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
             _melonPopupClosedDuringPrepare = false;
 
             _logger.LogInformation("[Melon] 날짜 선택 시작. date={Date}", desiredDate);
+            progress?.Report(new AutomationProgress("날짜 선택 중"));
             await SelectMelonDateAsync(page, desiredDate, timeout, cancellationToken);
             _logger.LogInformation("[Melon] 날짜 선택 완료.");
+            progress?.Report(new AutomationProgress("날짜 선택 완료", "날짜 선택 완료"));
 
             _logger.LogInformation("[Melon] 시간 선택 시작. time={Time}", desiredTime);
+            progress?.Report(new AutomationProgress("시간 선택 중"));
             await SelectMelonTimeAsync(page, desiredTime, timeout, cancellationToken);
             _logger.LogInformation("[Melon] 시간 선택 완료.");
+            progress?.Report(new AutomationProgress("시간 선택 완료", "시간 선택 완료"));
 
             _logger.LogInformation("[Melon] 예매하기 버튼 클릭 시작.");
-            captchaPage = await ClickMelonBookingAsync(page, timeout, cancellationToken);
+            progress?.Report(new AutomationProgress("예매 클릭 중"));
+            captchaPage = await ClickMelonBookingAsync(page, timeout, progress, cancellationToken);
             _logger.LogInformation("[Melon] 예매 팝업 열림. popupUrl={Url}", SafePageUrl(captchaPage));
+            progress?.Report(new AutomationProgress("예매 팝업 열림", "예매 팝업 열림 (대기열 포함 가능)"));
 
             captchaPage.Dialog += async (_, dialog) =>
             {
@@ -549,9 +566,11 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
             var captchaSw = Stopwatch.StartNew();
             _logger.LogInformation("[Melon] CAPTCHA 풀이 시작.");
+            progress?.Report(new AutomationProgress("캡차 입력 중"));
             await SolveCaptchaAsync(captchaPage, timeout, cancellationToken);
             _logger.LogInformation("[PERF] SolveCaptcha: {Ms}ms. popupUrl={Url}, isClosed={IsClosed}",
                 captchaSw.ElapsedMilliseconds, SafePageUrl(captchaPage), captchaPage.IsClosed);
+            progress?.Report(new AutomationProgress("캡차 입력 완료", "캡차 처리 완료"));
 
             if (captchaPage.IsClosed)
             {
@@ -566,8 +585,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 {
                     _logger.LogInformation("[Melon] 좌석 선택 시도 {Attempt}/{Max}. popupUrl={Url}, frameCount={FrameCount}",
                         seatAttempt + 1, maxSeatRetries, SafePageUrl(captchaPage), captchaPage.Frames.Count);
-                    await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, cancellationToken);
+                    progress?.Report(new AutomationProgress("좌석 선택 중"));
+                    await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, progress, cancellationToken);
                     _logger.LogInformation("[Melon] 좌석 선택 및 완료 버튼 클릭 성공!");
+                    progress?.Report(new AutomationProgress("좌석 선택 완료", "좌석 선택 및 완료 버튼 클릭"));
                     return new AutomationRunResult(true, $"Melon 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredTime} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
                 }
                 catch (Exception seatEx) when (seatAttempt < maxSeatRetries - 1)
@@ -2091,7 +2112,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         _logger.LogWarning("[CAPTCHA] CAPTCHA 자동 인식 {Max}회 모두 실패 — 좌석 선택 진행 시도.", maxAttempts);
     }
 
-    private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         var totalSw = Stopwatch.StartNew();
         _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}",
@@ -2107,7 +2128,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (zoneRequired)
         {
             stepSw.Restart();
-            await WaitForMelonZoneSelectionAsync(seatFrame, cancellationToken);
+            await WaitForMelonZoneSelectionAsync(seatFrame, progress, cancellationToken);
             _logger.LogInformation("[PERF] WaitForMelonZoneSelection: {Ms}ms", stepSw.ElapsedMilliseconds);
         }
 
@@ -2199,8 +2220,10 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         return false;
     }
 
-    private async Task WaitForMelonZoneSelectionAsync(IFrame seatFrame, CancellationToken cancellationToken)
+    private async Task WaitForMelonZoneSelectionAsync(IFrame seatFrame, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
+        progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역 선택 대기 — 사용자 클릭 필요"));
+
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -3126,7 +3149,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         public int Index { get; set; }
     }
 
-    private static async Task<IPage> ClickNolBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private static async Task<IPage> ClickNolBookingAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var bookingButton = page.Locator("#productSide a.sideBtn.is-primary").First;
@@ -3176,11 +3199,20 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         if (pageTransitionDetected || (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase)))
         {
-            // NOL 대기열 감지 — 페이지 전환 완료까지 무한 대기
+            var queueSw = Stopwatch.StartNew();
+            var lastQueueReportBucket = 0L;
+            progress?.Report(new AutomationProgress("대기열 대기 중...", "대기열 진입 — 페이지 전환 대기"));
 
             while (!cancellationToken.IsCancellationRequested)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                var queueReportBucket = (long)(queueSw.Elapsed.TotalSeconds / 10);
+                if (queueReportBucket > lastQueueReportBucket)
+                {
+                    lastQueueReportBucket = queueReportBucket;
+                    progress?.Report(new AutomationProgress($"대기열 대기 중... ({(int)queueSw.Elapsed.TotalSeconds}초)"));
+                }
 
                 if (page.IsClosed)
                 {
@@ -3211,7 +3243,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
     }
 
-    private async Task<IPage> ClickMelonBookingAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task<IPage> ClickMelonBookingAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -3268,10 +3300,20 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         if (queuePage is not null && !queuePage.IsClosed)
         {
             _logger.LogInformation("[Melon] 대기열 감지 — onestop.htm 전환까지 무한 대기. queueUrl={Url}", SafePageUrl(queuePage));
+            var queueSw = Stopwatch.StartNew();
+            var lastQueueReportBucket = 0L;
+            progress?.Report(new AutomationProgress("대기열 대기 중...", "대기열 진입 — 페이지 전환 대기"));
 
             while (!cancellationToken.IsCancellationRequested)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                var queueReportBucket = (long)(queueSw.Elapsed.TotalSeconds / 10);
+                if (queueReportBucket > lastQueueReportBucket)
+                {
+                    lastQueueReportBucket = queueReportBucket;
+                    progress?.Report(new AutomationProgress($"대기열 대기 중... ({(int)queueSw.Elapsed.TotalSeconds}초)"));
+                }
 
                 if (queuePage.IsClosed)
                     throw new InvalidOperationException("Melon 대기열 페이지가 닫혔습니다.");
