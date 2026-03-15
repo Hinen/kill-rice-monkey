@@ -570,9 +570,15 @@
                                     Style="{StaticResource SoftCardStyle}"
                                     Background="{StaticResource SummarySurfaceBrush}"
                                     Padding="16,14">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                <ScrollViewer VerticalScrollBarVisibility="Visible"
                                               MaxHeight="200"
                                               ScrollChanged="LogScrollViewer_ScrollChanged">
+                                    <ScrollViewer.Resources>
+                                        <Style TargetType="ScrollBar">
+                                            <Setter Property="Width" Value="10" />
+                                            <Setter Property="Opacity" Value="0.7" />
+                                        </Style>
+                                    </ScrollViewer.Resources>
                                     <ItemsControl ItemsSource="{Binding RunLogs}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
