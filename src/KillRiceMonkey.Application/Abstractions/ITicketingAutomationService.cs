@@ -4,6 +4,7 @@ namespace KillRiceMonkey.Application.Abstractions;
 
 public interface ITicketingAutomationService
 {
+    Task<AutomationRunResult> RunAsync(TicketingJobRequest request, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken);
     Task<AutomationRunResult> RunAsync(TicketingJobRequest request, CancellationToken cancellationToken);
     Task<bool> IsNolRemoteDebugBrowserAvailableAsync(CancellationToken cancellationToken);
     Task<bool> IsNolAutomationPreparedAsync(CancellationToken cancellationToken);
