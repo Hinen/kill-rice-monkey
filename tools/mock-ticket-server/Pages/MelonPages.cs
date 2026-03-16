@@ -250,6 +250,7 @@ public static class MelonPages
 
     const svgNamespace = 'http://www.w3.org/2000/svg';
     const conflictSeatCount = {{conflictSeats}};
+    const conflictStartIndex = 4;
     const canvas = document.getElementById('ez_canvas');
     const selectedSeatList = document.querySelector('#partSeatSelected ul');
     const completeButton = document.getElementById('nextTicketSelection');
@@ -296,7 +297,7 @@ public static class MelonPages
         rect.setAttribute('width', '12');
         rect.setAttribute('height', '12');
         rect.setAttribute('fill', '#4488CC');
-        if (seatIndex < conflictSeatCount) {
+        if (seatIndex >= conflictStartIndex && seatIndex < conflictStartIndex + conflictSeatCount) {
           rect.dataset.conflict = 'true';
         }
         seatIndex += 1;
@@ -370,6 +371,7 @@ public static class MelonPages
 
     const svgNamespace = 'http://www.w3.org/2000/svg';
     const conflictSeatCount = {{conflictSeats}};
+    const conflictStartIndex = 4;
     const canvas = document.getElementById('ez_canvas');
     const zoneGroup = document.getElementById('ez_canvas_zone');
     const info = document.getElementById('txtSelectSeatInfo');
@@ -420,7 +422,7 @@ public static class MelonPages
       rect.setAttribute('data-seat-zone', zone);
       rect.setAttribute('data-seat-row', String(row + 1));
       rect.setAttribute('data-seat-number', String(col + 1));
-      if (seatIndex < conflictSeatCount) {
+      if (seatIndex >= conflictStartIndex && seatIndex < conflictStartIndex + conflictSeatCount) {
         rect.dataset.conflict = 'true';
       }
       seatIndex += 1;

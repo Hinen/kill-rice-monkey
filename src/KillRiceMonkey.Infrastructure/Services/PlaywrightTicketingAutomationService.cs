@@ -578,7 +578,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 return new AutomationRunResult(false, "CAPTCHA 풀이 후 팝업 닫힘 — 재시도.", DateTimeOffset.Now);
             }
 
-            const int maxSeatRetries = 3;
+            const int maxSeatRetries = 10;
             for (var seatAttempt = 0; seatAttempt < maxSeatRetries; seatAttempt++)
             {
                 try
