@@ -2399,8 +2399,21 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                     await nextBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 1000, Force = true });
                 }
 
+                await Task.Delay(200, cancellationToken);
+
+                if (await DetectMelonSeatConflictAsync(currentFrame))
+                {
+                    _logger.LogWarning("좌석 선택 완료 클릭 후 중복 좌석 감지 — 좌석 재선택 필요. attempt={Attempt}", attempt);
+                    await DismissMelonSeatConflictAlertAsync(currentFrame);
+                    throw new InvalidOperationException("좌석 선택 완료 시 중복 좌석 감지됨 — 재시도 필요.");
+                }
+
                 _logger.LogInformation("멜론 '좌석 선택 완료' 버튼 클릭 완료.");
                 return;
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
             }
             catch (PlaywrightException ex) when (attempt < maxFrameRetries - 1)
             {
