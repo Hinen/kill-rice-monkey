@@ -98,6 +98,19 @@
             </Style.Triggers>
         </Style>
 
+        <Style x:Key="ResumeActionButtonStyle" TargetType="Button" BasedOn="{StaticResource GlassButtonStyle}">
+            <Setter Property="MinWidth" Value="132" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource SuccessBrush}" />
+            <Setter Property="Background" Value="{StaticResource SuccessSoftBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsPaused}" Value="False">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         <Style x:Key="ResultCardBorderStyle" TargetType="Border" BasedOn="{StaticResource SurfaceCardStyle}">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsSuccessStatus}" Value="True">
@@ -375,7 +388,11 @@
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="10" />
                                 <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="18" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="12" />
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -441,7 +458,24 @@
                                 </StackPanel>
                             </Button>
 
-                            <Button Grid.Column="4"
+                            <Border Grid.Column="4"
+                                    Padding="14,10"
+                                    CornerRadius="16"
+                                    BorderThickness="1"
+                                    Background="#122033"
+                                    BorderBrush="#26445E"
+                                    VerticalAlignment="Center"
+                                    Visibility="{Binding IsSeatPauseSupported, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <CheckBox IsChecked="{Binding PauseBeforeSeatSelection, UpdateSourceTrigger=PropertyChanged}"
+                                          VerticalAlignment="Center"
+                                          Foreground="{StaticResource PrimaryTextBrush}"
+                                          FontFamily="{StaticResource AppFontFamily}"
+                                          FontSize="12"
+                                          FontWeight="SemiBold"
+                                          Content="좌석 선택 전 일시정지" />
+                            </Border>
+
+                            <Button Grid.Column="6"
                                     Style="{StaticResource RunActionButtonStyle}"
                                     Command="{Binding StartAutomationCommand}">
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
@@ -455,7 +489,22 @@
                                 </StackPanel>
                             </Button>
 
-                            <Border Grid.Column="6"
+                            <Button Grid.Column="8"
+                                    Style="{StaticResource ResumeActionButtonStyle}"
+                                    Command="{Binding ResumeAutomationCommand}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Stroke="{StaticResource SuccessBrush}"
+                                                  Data="{StaticResource PlayIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="RESUME" />
+                                </StackPanel>
+                            </Button>
+
+                            <Border Grid.Column="10"
                                     Margin="12,0,0,0"
                                     Style="{StaticResource SoftCardStyle}"
                                     Padding="12,8"

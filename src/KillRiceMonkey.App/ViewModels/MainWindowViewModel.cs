@@ -31,6 +31,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private DateTimeOffset _nolAutomationReadyAt;
     private DateTimeOffset _melonAutomationReadyAt;
     private CancellationTokenSource? _runCts;
+    private bool _pauseBeforeSeatSelection;
+    private ManualResetEventSlim? _pauseGate;
+    private bool _isPaused;
 
     public MainWindowViewModel(ITicketingAutomationService ticketingAutomationService)
     {
@@ -40,6 +43,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         LaunchMelonRemoteDebugCommand = new AsyncCommand(LaunchMelonRemoteDebugAsync, () => !IsRunning && IsMelonTemplate);
         PrepareMelonAutomationCommand = new AsyncCommand(PrepareMelonAutomationAsync, () => !IsRunning && IsMelonTemplate);
         StartAutomationCommand = new AsyncCommand(StartAutomationAsync, () => !IsRunning && HasSelectedTemplate);
+        ResumeAutomationCommand = new AsyncCommand(ResumeAutomationAsync, () => IsPaused);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -55,6 +59,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public AsyncCommand LaunchMelonRemoteDebugCommand { get; }
 
     public AsyncCommand PrepareMelonAutomationCommand { get; }
+
+    public AsyncCommand ResumeAutomationCommand { get; }
 
     public string? SelectedTemplate
     {
@@ -130,6 +136,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         set => SetProperty(ref _stepTimeoutSeconds, value);
     }
 
+    public bool PauseBeforeSeatSelection
+    {
+        get => _pauseBeforeSeatSelection;
+        set => SetProperty(ref _pauseBeforeSeatSelection, value);
+    }
+
     public string HotkeyText
     {
         get => _hotkeyText;
@@ -175,6 +187,20 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         private set => SetProperty(ref _lastRunSummary, value);
     }
 
+    public bool IsPaused
+    {
+        get => _isPaused;
+        private set
+        {
+            if (!SetProperty(ref _isPaused, value))
+            {
+                return;
+            }
+
+            ResumeAutomationCommand.NotifyCanExecuteChanged();
+        }
+    }
+
     public ObservableCollection<string> RunLogs => _runLogs;
 
     public bool IsImageDirectoryEditable => HasSelectedTemplate && ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Custom;
@@ -184,6 +210,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public bool IsNolTemplate => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Nol;
 
     public bool IsMelonTemplate => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Melon;
+
+    public bool IsSeatPauseSupported => IsMelonTemplate;
 
     public bool IsSuccessStatus => string.Equals(StatusMessage, "성공 종료", StringComparison.Ordinal);
 
@@ -289,6 +317,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         _runCts?.Dispose();
         _runCts = new CancellationTokenSource();
+        ResetPauseGate();
+        if (PauseBeforeSeatSelection && IsSeatPauseSupported)
+        {
+            _pauseGate = new ManualResetEventSlim(false);
+        }
+
         _runLogs.Clear();
         AppendLog($"{SelectedTemplate} 자동화 시작");
 
@@ -310,11 +344,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 MatchThreshold,
                 StepTimeoutSeconds,
                 IsNolTemplate || IsMelonTemplate ? DesiredDate?.ToString("yyyy.MM.dd") : null,
-                IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : null));
+                IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : null),
+                PauseBeforeSeatSelection && IsSeatPauseSupported,
+                _pauseGate);
 
             var progress = new Progress<AutomationProgress>(automationProgress =>
             {
                 StatusMessage = automationProgress.Stage;
+                UpdatePauseState(automationProgress.Stage);
                 if (!string.IsNullOrWhiteSpace(automationProgress.LogMessage))
                 {
                     AppendLog(automationProgress.LogMessage);
@@ -406,10 +443,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
         finally
         {
+            IsPaused = false;
             IsRunning = false;
+            ResetPauseGate();
             _runCts?.Dispose();
             _runCts = null;
         }
+    }
+
+    private Task ResumeAutomationAsync()
+    {
+        _pauseGate?.Set();
+        IsPaused = false;
+        return Task.CompletedTask;
     }
 
     private async Task LaunchNolRemoteDebugAsync()
@@ -551,6 +597,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(HasSelectedTemplate));
         OnPropertyChanged(nameof(IsNolTemplate));
         OnPropertyChanged(nameof(IsMelonTemplate));
+        OnPropertyChanged(nameof(IsSeatPauseSupported));
         StartAutomationCommand.NotifyCanExecuteChanged();
         LaunchNolRemoteDebugCommand.NotifyCanExecuteChanged();
         PrepareNolAutomationCommand.NotifyCanExecuteChanged();
@@ -561,6 +608,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private void AppendLog(string message)
     {
         _runLogs.Add($"{DateTimeOffset.Now:HH:mm:ss} | {message}");
+    }
+
+    private void UpdatePauseState(string stage)
+    {
+        IsPaused = string.Equals(stage, "좌석 선택 대기 — 일시정지", StringComparison.Ordinal);
+    }
+
+    private void ResetPauseGate()
+    {
+        IsPaused = false;
+        _pauseGate?.Dispose();
+        _pauseGate = null;
     }
 
     private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
