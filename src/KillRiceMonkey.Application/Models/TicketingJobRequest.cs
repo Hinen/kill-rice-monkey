@@ -6,4 +6,6 @@ public sealed record TicketingJobRequest(
     double MatchThreshold,
     int StepTimeoutSeconds,
     string? DesiredDate = null,
-    string? DesiredRound = null);
+    string? DesiredRound = null,
+    bool PauseBeforeSeatSelection = false,
+    ManualResetEventSlim? PauseGate = null);

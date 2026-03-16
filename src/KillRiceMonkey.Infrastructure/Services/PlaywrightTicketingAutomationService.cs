@@ -496,7 +496,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
 
         try
         {
-            var cdpResult = await TryRunMelonAutomationViaConnectedBrowserAsync(desiredDate, desiredTime, timeout, progress, cancellationToken);
+            var cdpResult = await TryRunMelonAutomationViaConnectedBrowserAsync(request, desiredDate, desiredTime, timeout, progress, cancellationToken);
             if (cdpResult is not null)
             {
                 return cdpResult;
@@ -517,7 +517,7 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
         }
     }
 
-    private async Task<AutomationRunResult?> TryRunMelonAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredTime, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<AutomationRunResult?> TryRunMelonAutomationViaConnectedBrowserAsync(TicketingJobRequest request, DateOnly desiredDate, string desiredTime, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         IPage? page = null;
         IPage? captchaPage = null;
@@ -585,6 +585,16 @@ public sealed class PlaywrightTicketingAutomationService : ITicketingAutomationS
                 {
                     _logger.LogInformation("[Melon] 좌석 선택 시도 {Attempt}/{Max}. popupUrl={Url}, frameCount={FrameCount}",
                         seatAttempt + 1, maxSeatRetries, SafePageUrl(captchaPage), captchaPage.Frames.Count);
+
+                    if (seatAttempt == 0 && request.PauseGate is { } gate)
+                    {
+                        _logger.LogInformation("[Melon] 좌석 선택 전 일시정지 — 사용자 재개 대기 중.");
+                        progress?.Report(new AutomationProgress("좌석 선택 대기 — 일시정지", "좌석 선택 전 일시정지됨. 재개 버튼을 눌러주세요."));
+                        await Task.Run(() => gate.Wait(cancellationToken), cancellationToken);
+                        _logger.LogInformation("[Melon] 일시정지 해제 — 좌석 선택 진행.");
+                        progress?.Report(new AutomationProgress("좌석 선택 중", "일시정지 해제 — 좌석 선택 진행"));
+                    }
+
                     progress?.Report(new AutomationProgress("좌석 선택 중"));
                     await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, progress, cancellationToken);
                     _logger.LogInformation("[Melon] 좌석 선택 및 완료 버튼 클릭 성공!");
