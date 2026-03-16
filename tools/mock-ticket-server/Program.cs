@@ -3,8 +3,15 @@ using MockTicketServer.Pages;
 var queueSeconds = args.Length > 0 && int.TryParse(args[0], out var s) ? s : 60;
 var hasCaptcha = !args.Contains("--no-captcha", StringComparer.OrdinalIgnoreCase);
 var hasZone = !args.Contains("--no-zone", StringComparer.OrdinalIgnoreCase);
+var conflictSeats = args
+    .Select(arg => arg.Split('=', 2))
+    .Where(parts => parts.Length == 2 && parts[0].Equals("--conflict-seats", StringComparison.OrdinalIgnoreCase))
+    .Select(parts => int.TryParse(parts[1], out var value) ? Math.Max(0, value) : 0)
+    .FirstOrDefault();
 
-var filteredArgs = args.Where(a => !a.StartsWith("--no-", StringComparison.OrdinalIgnoreCase)).ToArray();
+var filteredArgs = args.Where(a =>
+    !a.StartsWith("--no-", StringComparison.OrdinalIgnoreCase) &&
+    !a.StartsWith("--conflict-seats=", StringComparison.OrdinalIgnoreCase)).ToArray();
 var builder = WebApplication.CreateBuilder(filteredArgs);
 var port = Environment.GetEnvironmentVariable("MOCK_PORT") ?? "8080";
 builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
@@ -12,8 +19,8 @@ builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 var app = builder.Build();
 
-app.Logger.LogInformation("Mock Ticket Server 시작. 대기열: {Queue}초, 캡차: {Captcha}, 구역: {Zone}, 포트: {Port}",
-    queueSeconds, hasCaptcha, hasZone, port);
+app.Logger.LogInformation("Mock Ticket Server 시작. 대기열: {Queue}초, 캡차: {Captcha}, 구역: {Zone}, 충돌 좌석: {ConflictSeats}, 포트: {Port}",
+    queueSeconds, hasCaptcha, hasZone, conflictSeats, port);
 
 app.Use(async (context, next) =>
 {
@@ -84,7 +91,7 @@ app.MapGet("/reservation/popup/stepSeat.htm", (HttpContext ctx) =>
     if ((string)ctx.Items["SiteType"]! != "melon")
         return Results.NotFound("Melon 전용 경로입니다.");
     app.Logger.LogInformation("[Melon] 좌석 프레임 요청.");
-    return Results.Content(MelonPages.SeatFrame(hasZone), "text/html; charset=utf-8");
+    return Results.Content(MelonPages.SeatFrame(hasZone, conflictSeats), "text/html; charset=utf-8");
 });
 
 // ──────────────── Fallback ────────────────

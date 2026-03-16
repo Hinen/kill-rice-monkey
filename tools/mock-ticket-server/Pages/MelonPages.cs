@@ -212,9 +212,9 @@ public static class MelonPages
 </html>
 """;
 
-    public static string SeatFrame(bool hasZone) => hasZone ? SeatFrameWithZone() : SeatFrameNoZone();
+    public static string SeatFrame(bool hasZone, int conflictSeats) => hasZone ? SeatFrameWithZone(conflictSeats) : SeatFrameNoZone(conflictSeats);
 
-    private static string SeatFrameNoZone() => """
+    private static string SeatFrameNoZone(int conflictSeats) => $$"""
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -249,34 +249,75 @@ public static class MelonPages
     window.__melonAlertDetected = false;
 
     const svgNamespace = 'http://www.w3.org/2000/svg';
+    const conflictSeatCount = {{conflictSeats}};
     const canvas = document.getElementById('ez_canvas');
     const selectedSeatList = document.querySelector('#partSeatSelected ul');
     const completeButton = document.getElementById('nextTicketSelection');
     const completeMessage = document.getElementById('seatCompleteMessage');
+    let seatIndex = 0;
+
+    function syncCompleteButton() {
+      completeButton.style.display = selectedSeatList.childElementCount > 0 ? 'inline-block' : 'none';
+    }
+
+    function selectSeat(rect, label) {
+      if (rect.dataset.selected === 'true' || rect.dataset.soldout === 'true') {
+        return;
+      }
+
+      rect.dataset.selected = 'true';
+      rect.dataset.seatLabel = label;
+      rect.setAttribute('fill', '#FFD700');
+      const item = document.createElement('li');
+      item.textContent = label;
+      rect.__selectedItem = item;
+      selectedSeatList.appendChild(item);
+      syncCompleteButton();
+      completeMessage.textContent = '';
+      window.__melonAlertDetected = false;
+    }
+
+    function markSeatSoldOut(rect) {
+      rect.dataset.selected = 'false';
+      rect.dataset.soldout = 'true';
+      rect.setAttribute('fill', '#DDDDDD');
+      if (rect.__selectedItem) {
+        rect.__selectedItem.remove();
+        rect.__selectedItem = null;
+      }
+    }
 
     for (let row = 0; row < 8; row++) {
       for (let col = 0; col < 10; col++) {
         const rect = document.createElementNS(svgNamespace, 'rect');
+        const label = 'A석 ' + (row + 1) + '열 ' + (col + 1) + '번';
         rect.setAttribute('x', String(50 + col * 20));
         rect.setAttribute('y', String(50 + row * 20));
         rect.setAttribute('width', '12');
         rect.setAttribute('height', '12');
         rect.setAttribute('fill', '#4488CC');
+        if (seatIndex < conflictSeatCount) {
+          rect.dataset.conflict = 'true';
+        }
+        seatIndex += 1;
         rect.addEventListener('click', function() {
-          if (this.dataset.selected === 'true') return;
-          this.dataset.selected = 'true';
-          this.setAttribute('fill', '#FFD700');
-          const item = document.createElement('li');
-          item.textContent = 'A석 ' + (row + 1) + '열 ' + (col + 1) + '번';
-          selectedSeatList.appendChild(item);
-          completeButton.style.display = 'inline-block';
-          window.__melonAlertDetected = false;
+          selectSeat(this, label);
         });
         canvas.appendChild(rect);
       }
     }
 
     completeButton.addEventListener('click', function() {
+      const conflictingSeats = Array.from(canvas.querySelectorAll('rect[data-selected="true"][data-conflict="true"]'));
+      if (conflictingSeats.length > 0) {
+        window.__melonAlertDetected = true;
+        conflictingSeats.forEach(markSeatSoldOut);
+        syncCompleteButton();
+        completeMessage.textContent = '';
+        alert('다른 고객에게 먼저 선택된 좌석입니다.');
+        return;
+      }
+
       completeMessage.textContent = '좌석 선택 완료!';
     });
   </script>
@@ -284,7 +325,7 @@ public static class MelonPages
 </html>
 """;
 
-    private static string SeatFrameWithZone() => """
+    private static string SeatFrameWithZone(int conflictSeats) => $$"""
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -328,15 +369,49 @@ public static class MelonPages
     window.__melonAlertDetected = false;
 
     const svgNamespace = 'http://www.w3.org/2000/svg';
+    const conflictSeatCount = {{conflictSeats}};
     const canvas = document.getElementById('ez_canvas');
     const zoneGroup = document.getElementById('ez_canvas_zone');
     const info = document.getElementById('txtSelectSeatInfo');
     const selectedSeatList = document.querySelector('#partSeatSelected ul');
     const completeButton = document.getElementById('nextTicketSelection');
     const completeMessage = document.getElementById('seatCompleteMessage');
+    let seatIndex = 0;
+
+    function syncCompleteButton() {
+      completeButton.style.display = selectedSeatList.childElementCount > 0 ? 'inline-block' : 'none';
+    }
+
+    function selectSeat(rect, label) {
+      if (rect.dataset.selected === 'true' || rect.dataset.soldout === 'true') {
+        return;
+      }
+
+      rect.dataset.selected = 'true';
+      rect.dataset.seatLabel = label;
+      rect.setAttribute('fill', '#FFD700');
+      const item = document.createElement('li');
+      item.textContent = label;
+      rect.__selectedItem = item;
+      selectedSeatList.appendChild(item);
+      syncCompleteButton();
+      completeMessage.textContent = '';
+      window.__melonAlertDetected = false;
+    }
+
+    function markSeatSoldOut(rect) {
+      rect.dataset.selected = 'false';
+      rect.dataset.soldout = 'true';
+      rect.setAttribute('fill', '#DDDDDD');
+      if (rect.__selectedItem) {
+        rect.__selectedItem.remove();
+        rect.__selectedItem = null;
+      }
+    }
 
     function createSeat(row, col, zone) {
       const rect = document.createElementNS(svgNamespace, 'rect');
+      const label = zone + '석 ' + (row + 1) + '열 ' + (col + 1) + '번';
       rect.setAttribute('x', String(50 + col * 20));
       rect.setAttribute('y', String(50 + row * 20));
       rect.setAttribute('width', '12');
@@ -345,19 +420,13 @@ public static class MelonPages
       rect.setAttribute('data-seat-zone', zone);
       rect.setAttribute('data-seat-row', String(row + 1));
       rect.setAttribute('data-seat-number', String(col + 1));
+      if (seatIndex < conflictSeatCount) {
+        rect.dataset.conflict = 'true';
+      }
+      seatIndex += 1;
 
       rect.addEventListener('click', () => {
-        if (rect.dataset.selected === 'true') {
-          return;
-        }
-
-        rect.dataset.selected = 'true';
-        rect.setAttribute('fill', '#FFD700');
-        const item = document.createElement('li');
-        item.textContent = zone + '석 ' + (row + 1) + '열 ' + (col + 1) + '번';
-        selectedSeatList.appendChild(item);
-        completeButton.style.display = 'inline-block';
-        window.__melonAlertDetected = false;
+        selectSeat(rect, label);
       });
 
       canvas.appendChild(rect);
@@ -369,6 +438,12 @@ public static class MelonPages
         currentZoneGroup.remove();
       }
 
+      canvas.querySelectorAll('rect[data-seat-zone]').forEach((seat) => seat.remove());
+      selectedSeatList.innerHTML = '';
+      completeMessage.textContent = '';
+      window.__melonAlertDetected = false;
+      seatIndex = 0;
+      syncCompleteButton();
       info.style.display = 'none';
 
       for (let row = 0; row < 8; row += 1) {
@@ -385,6 +460,16 @@ public static class MelonPages
     });
 
     completeButton.addEventListener('click', () => {
+      const conflictingSeats = Array.from(canvas.querySelectorAll('rect[data-selected="true"][data-conflict="true"]'));
+      if (conflictingSeats.length > 0) {
+        window.__melonAlertDetected = true;
+        conflictingSeats.forEach(markSeatSoldOut);
+        syncCompleteButton();
+        completeMessage.textContent = '';
+        alert('다른 고객에게 먼저 선택된 좌석입니다.');
+        return;
+      }
+
       completeMessage.textContent = '좌석 선택 완료!';
     });
   </script>
