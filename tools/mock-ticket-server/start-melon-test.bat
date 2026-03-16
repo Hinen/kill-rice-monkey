@@ -20,6 +20,10 @@ if /i "!CAPTCHA_YN!"=="n" set EXTRA_FLAGS=!EXTRA_FLAGS! --no-captcha
 set /p ZONE_YN="Include zone selection? (Y/n, default Y): "
 if /i "!ZONE_YN!"=="n" set EXTRA_FLAGS=!EXTRA_FLAGS! --no-zone
 
+set /p CONFLICT_SEATS="Conflict seats count (default 0): "
+if "!CONFLICT_SEATS!"=="" set CONFLICT_SEATS=0
+if not "!CONFLICT_SEATS!"=="0" set EXTRA_FLAGS=!EXTRA_FLAGS! --conflict-seats=!CONFLICT_SEATS!
+
 :: Kill any previous mock server
 taskkill /FI "WINDOWTITLE eq MockTicketServer" /F > nul 2>&1
 timeout /t 1 /nobreak > nul
@@ -64,7 +68,7 @@ start "" "%CHROME_PATH%" ^
 echo [3/3] Ready!
 echo.
 echo ============================================
-echo  Config: queue=%QUEUE_SECONDS%s%EXTRA_FLAGS%
+echo  Config: queue=%QUEUE_SECONDS%s, conflict=%CONFLICT_SEATS%%EXTRA_FLAGS%
 echo  Test scenario:
 echo  1. Chrome opens Melon Mock page
 echo  2. Start KillRiceMonkey program
@@ -76,6 +80,7 @@ echo  5. Queue popup waits %QUEUE_SECONDS%s
 echo  6. Captcha (if enabled)
 echo  7. Zone selection (if enabled): click a zone manually
 echo  8. Seat auto-select and complete
+echo     (conflict=%CONFLICT_SEATS%: first %CONFLICT_SEATS% seats trigger duplicate alert)
 echo ============================================
 echo.
 echo Press any key to stop...
