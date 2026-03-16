@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Kill Rice Monkey"
+        Icon="Assets/app.ico"
         Width="1024"
         Height="680"
         ResizeMode="CanMinimize"
