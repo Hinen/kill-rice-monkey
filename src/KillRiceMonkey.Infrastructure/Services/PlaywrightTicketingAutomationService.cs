@@ -27,7 +27,7 @@ public sealed partial class PlaywrightTicketingAutomationService : ITicketingAut
     private static readonly Regex DigitsOnlyPattern = new("\\D", RegexOptions.Compiled);
     private static readonly Regex NolRoundPattern = new(@"^\D*(?<round>\d{1,2})\s*(?:회차|회|희|히|외)?\s*(?<time>\d{1,2}(?::|\.|,)?\d{2})", RegexOptions.Compiled);
     private static readonly double[] MatchScales = [1.00, 0.95, 1.05, 0.90, 1.10];
-    private const int SeatSelectionOffset = 5;
+    private const int SeatSelectionOffset = 1;
     private const int Yes24LegendPaddingX = 8;
     private const double Yes24LegendSearchStartRatio = 0.70;
     private const double Yes24LegendMinIgnoreRatio = 0.55;

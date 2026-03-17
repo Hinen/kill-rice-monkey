@@ -250,7 +250,7 @@ public static class MelonPages
 
     const svgNamespace = 'http://www.w3.org/2000/svg';
     const conflictSeatCount = {{conflictSeats}};
-    const conflictStartIndex = 4;
+    const conflictStartIndex = 0;
     const canvas = document.getElementById('ez_canvas');
     const selectedSeatList = document.querySelector('#partSeatSelected ul');
     const completeButton = document.getElementById('nextTicketSelection');
@@ -371,7 +371,7 @@ public static class MelonPages
 
     const svgNamespace = 'http://www.w3.org/2000/svg';
     const conflictSeatCount = {{conflictSeats}};
-    const conflictStartIndex = 4;
+    const conflictStartIndex = 0;
     const canvas = document.getElementById('ez_canvas');
     const zoneGroup = document.getElementById('ez_canvas_zone');
     const info = document.getElementById('txtSelectSeatInfo');
