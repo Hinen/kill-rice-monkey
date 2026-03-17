@@ -22,6 +22,5 @@ tools/*.png
 tools/inspect-*.mjs
 tools/inspect-*.ps1
 
-captcha-samples/melon/*.png
-captcha-samples/melon/test_*.png
+captcha-samples/
 publish-output/
