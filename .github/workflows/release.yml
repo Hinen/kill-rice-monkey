@@ -29,13 +29,14 @@ jobs:
 
       - name: Publish
         run: dotnet publish src/KillRiceMonkey.App/KillRiceMonkey.App.csproj -c Release --no-build
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: _unused
 
       - name: Remove unnecessary runtimes
         run: |
           $pub = "src/KillRiceMonkey.App/publish-output"
-          Remove-Item -Recurse -Force "$pub/.playwright" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$pub/.playwright/node/darwin-arm64" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$pub/.playwright/node/darwin-x64" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$pub/.playwright/node/linux-arm64" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$pub/.playwright/node/linux-x64" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "$pub/runtimes/linux-x64" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "$pub/runtimes/win-x86" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "$pub/runtimes/browser" -ErrorAction SilentlyContinue
