@@ -115,7 +115,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             var captchaSw = Stopwatch.StartNew();
             _logger.LogInformation("[Melon] CAPTCHA 풀이 시작.");
             progress?.Report(new AutomationProgress("캡차 입력 중"));
-            await SolveCaptchaAsync(captchaPage, timeout, cancellationToken);
+            await SolveMelonCaptchaAsync(captchaPage, timeout, cancellationToken);
             _logger.LogInformation("[PERF] SolveCaptcha: {Ms}ms. popupUrl={Url}, isClosed={IsClosed}",
                 captchaSw.ElapsedMilliseconds, SafePageUrl(captchaPage), captchaPage.IsClosed);
             progress?.Report(new AutomationProgress("캡차 입력 완료", "캡차 처리 완료"));
@@ -997,6 +997,307 @@ public sealed partial class PlaywrightTicketingAutomationService
 
         throw new TimeoutException("Melon 예매 버튼 클릭 후 팝업 전환을 확인하지 못했습니다.");
     }
+    private async Task SolveMelonCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 5;
+        const int melonCaptchaLength = 6;
+
+        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", SafePageUrl(page));
+        var (inputLocator, captchaFrame) = await FindMelonCaptchaInputAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
+        if (inputLocator is null)
+        {
+            foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
+            {
+                (inputLocator, captchaFrame) = await FindMelonCaptchaInputAsync(contextPage, TimeSpan.FromMilliseconds(300), cancellationToken);
+                if (inputLocator is not null)
+                {
+                    page = contextPage;
+                    break;
+                }
+            }
+        }
+
+        if (inputLocator is null)
+        {
+            _logger.LogInformation("CAPTCHA 입력창 없음 — CAPTCHA 없는 공연으로 판단, 좌석 선택으로 진행.");
+            return;
+        }
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (page.IsClosed) return;
+
+            var attemptSw = Stopwatch.StartNew();
+
+            string text;
+            try
+            {
+                text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
+            }
+            catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
+            {
+                _logger.LogWarning("[CAPTCHA] OCR 실패 (attempt={Attempt}): {Message}", attempt, ocrEx.Message);
+                if (page.IsClosed) return;
+
+                var inputGone = false;
+                try { inputGone = await inputLocator.CountAsync() == 0; } catch { }
+                if (inputGone) { _logger.LogInformation("[CAPTCHA] input 사라짐 — 좌석 진행."); return; }
+
+                bool captchaHidden = false;
+                try
+                {
+                    captchaHidden = await page.EvaluateAsync<bool>(@"() => {
+                        const el = document.querySelector('.captcha_area, .wrap_captcha, #divRecaptcha, [class*=""captcha""]');
+                        if (!el) return true;
+                        const s = window.getComputedStyle(el);
+                        return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+                    }");
+                }
+                catch { }
+
+                if (captchaHidden)
+                {
+                    _logger.LogInformation("[CAPTCHA] CAPTCHA 영역 hidden 감지 — 통과로 진행. attempt={Attempt}", attempt);
+                    return;
+                }
+
+                if (attempt < maxAttempts)
+                    await TryRefreshMelonCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                continue;
+            }
+
+            if (string.IsNullOrEmpty(text))
+            {
+                _logger.LogInformation("[CAPTCHA] OCR 빈 결과 (attempt={Attempt}, {Ms}ms) — 이미지 없음, 좌석 진행.", attempt, attemptSw.ElapsedMilliseconds);
+                return;
+            }
+
+            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
+
+            if (text.Length != melonCaptchaLength)
+            {
+                if (attempt < maxAttempts)
+                    await TryRefreshMelonCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                continue;
+            }
+
+            try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
+
+            try
+            {
+                await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 500 });
+            }
+            catch (TimeoutException)
+            {
+                try
+                {
+                    await inputLocator.First.EvaluateAsync(@"(el, val) => {
+                        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                        if (setter) { setter.call(el, val); } else { el.value = val; }
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        if (typeof jQuery !== 'undefined') { jQuery(el).val(val).trigger('input').trigger('change'); }
+                    }", text);
+                }
+                catch (PlaywrightException ex)
+                {
+                    _logger.LogWarning(ex, "CAPTCHA 입력 실패");
+                    continue;
+                }
+            }
+
+            const string submitSelector = "button:text-is('입력완료'), a:has-text('입력완료'), a[onclick*='fnCheck']";
+            ILocator? submitLocator = null;
+            var submitCount = 0;
+
+            if (captchaFrame is not null)
+            {
+                var frameSubmit = captchaFrame.Locator(submitSelector);
+                try { submitCount = await frameSubmit.CountAsync(); } catch (PlaywrightException) { }
+                if (submitCount > 0) submitLocator = frameSubmit;
+            }
+
+            if (submitLocator is null)
+            {
+                var pageSubmit = page.Locator(submitSelector);
+                try
+                {
+                    var pageCount = await pageSubmit.CountAsync();
+                    if (pageCount > 0)
+                    {
+                        submitLocator = pageSubmit;
+                        submitCount = pageCount;
+                    }
+                }
+                catch (PlaywrightException) { }
+            }
+
+            if (submitLocator is not null && submitCount > 0)
+            {
+                try
+                {
+                    await submitLocator.First.EvaluateAsync(@"el => {
+                        if (el.disabled) el.disabled = false;
+                        el.click();
+                    }");
+                }
+                catch (PlaywrightException)
+                {
+                    try { await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true }); }
+                    catch (PlaywrightException)
+                    {
+                        try
+                        {
+                            await inputLocator.First.EvaluateAsync(@"el => {
+                                if (typeof fnCheck === 'function') { fnCheck(); }
+                                else if (el.form) { el.form.submit(); }
+                                else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
+                            }");
+                        }
+                        catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
+                    }
+                }
+            }
+            else
+            {
+                try
+                {
+                    await inputLocator.First.EvaluateAsync(@"el => {
+                        if (typeof fnCheck === 'function') { fnCheck(); }
+                        else if (el.form) { el.form.submit(); }
+                        else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
+                    }");
+                }
+                catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
+            }
+
+            _logger.LogInformation("[CAPTCHA] submit 완료. alert/input 확인 시작. attempt={Attempt}", attempt);
+
+            var alertDetected = false;
+            try { alertDetected = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
+
+            if (alertDetected)
+            {
+                _logger.LogInformation("[CAPTCHA] alert 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
+                try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
+                if (attempt < maxAttempts)
+                    await TryRefreshMelonCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                continue;
+            }
+
+            _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료 (alert 없음). 좌석 진행. attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
+            return;
+        }
+
+        _logger.LogWarning("[CAPTCHA] CAPTCHA 자동 인식 {Max}회 모두 실패 — 좌석 선택 진행 시도.", maxAttempts);
+    }
+
+    private async Task TryRefreshMelonCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
+    {
+        if (page.IsClosed)
+            return;
+
+        ILocator FrameOrPage(string selector) =>
+            captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
+
+        async Task<bool> EvalJs(string script)
+        {
+            return captchaFrame is not null
+                ? await captchaFrame.EvaluateAsync<bool>(script)
+                : await page.EvaluateAsync<bool>(script);
+        }
+
+        try
+        {
+            var jsResult = await EvalJs(@"() => {
+                if (typeof fnCapchaRefresh === 'function') { fnCapchaRefresh(); return true; }
+                if (typeof fnRefresh === 'function') { fnRefresh(); return true; }
+                if (typeof captchaRefresh === 'function') { captchaRefresh(); return true; }
+                if (typeof refreshCaptcha === 'function') { refreshCaptcha(); return true; }
+                return false;
+            }");
+
+            if (jsResult)
+            {
+                await Task.Delay(50, cancellationToken);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "CAPTCHA JS 새로고침 실패");
+        }
+
+        const string refreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, #btnReload, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
+        try
+        {
+            var refreshLocator = FrameOrPage(refreshSelector);
+            var count = await refreshLocator.CountAsync();
+            if (count > 0)
+            {
+                await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
+                await Task.Delay(50, cancellationToken);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "CAPTCHA 새로고침 버튼 클릭 실패");
+        }
+
+        try
+        {
+            await EvalJs(@"() => {
+                var imgs = document.querySelectorAll('#imgCaptcha, #captchaImg, img[src*=""captcha"" i], img[src*=""cap_img"" i]');
+                for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
+                return true;
+            }");
+            await Task.Delay(50, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "CAPTCHA 새로고침 모든 방법 실패");
+        }
+    }
+
+    private static async Task<(ILocator? inputLocator, IFrame? frame)> FindMelonCaptchaInputAsync(
+        IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        const string inputSelector = "#txtCaptcha, [class*='captchaInput'] input, [class*='captchaInput'], input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
+        var infinite = timeout == Timeout.InfiniteTimeSpan;
+        var deadline = infinite ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var mainInput = page.Locator(inputSelector);
+                if (await mainInput.CountAsync() > 0)
+                    return (mainInput, null);
+            }
+            catch (PlaywrightException) { }
+
+            foreach (var frame in page.Frames)
+            {
+                if (frame == page.MainFrame) continue;
+                try
+                {
+                    var frameInput = frame.Locator(inputSelector);
+                    if (await frameInput.CountAsync() > 0)
+                        return (frameInput, frame);
+                }
+                catch (PlaywrightException) { }
+            }
+
+            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+        }
+
+        return (null, null);
+    }
+
     private static bool IsMatchingMelonTime(string actual, string desired)
     {
         var actualDigits = DigitsOnlyPattern.Replace(actual, string.Empty);
