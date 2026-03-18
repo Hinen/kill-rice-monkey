@@ -1069,8 +1069,10 @@ public sealed partial class PlaywrightTicketingAutomationService
 
             if (string.IsNullOrEmpty(text))
             {
-                _logger.LogInformation("[CAPTCHA] OCR 빈 결과 (attempt={Attempt}, {Ms}ms) — 이미지 없음, 좌석 진행.", attempt, attemptSw.ElapsedMilliseconds);
-                return;
+                _logger.LogWarning("[CAPTCHA] OCR 빈 결과 (attempt={Attempt}, {Ms}ms) — 이미지 미로드 또는 인식 실패, 재시도.", attempt, attemptSw.ElapsedMilliseconds);
+                if (attempt < maxAttempts)
+                    await TryRefreshMelonCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                continue;
             }
 
             _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
