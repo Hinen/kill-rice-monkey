@@ -1,22 +1,12 @@
-using DdddOcrSharp;
-using Microsoft.Playwright;
 using Microsoft.Extensions.Logging;
+using Microsoft.Playwright;
 using OpenCvSharp;
-using OpenCvSharp.Extensions;
-using Polly;
-using System.Globalization;
-using System.Drawing;
 using System.Diagnostics;
-using System.Net.Http;
-using System.Runtime.InteropServices;
-using System.Text.Json;
+using System.Globalization;
 using System.Text.RegularExpressions;
-using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
-using Windows.Globalization;
-using Windows.Graphics.Imaging;
-using Windows.Media.Ocr;
-using Windows.Storage.Streams;
+using StepTemplate = KillRiceMonkey.Infrastructure.Services.PlaywrightRuntime.StepTemplate;
+using TemplateBounds = KillRiceMonkey.Infrastructure.Services.PlaywrightRuntime.TemplateBounds;
 
 namespace KillRiceMonkey.Infrastructure.Services;
 
@@ -34,7 +24,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return new AutomationRunResult(false, "단계별 제한 시간은 1초 이상이어야 합니다.", DateTimeOffset.Now);
         }
 
-        if (!TryParseDesiredDate(request.DesiredDate, out var desiredDate))
+        if (!PlaywrightRuntime.TryParseDesiredDate(request.DesiredDate, out var desiredDate))
         {
             return new AutomationRunResult(false, "관람일 형식이 올바르지 않습니다. 예: 2026.04.11", DateTimeOffset.Now);
         }
@@ -44,7 +34,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return new AutomationRunResult(false, "회차 값이 비어 있습니다. 예: 1회 19:00", DateTimeOffset.Now);
         }
 
-        var desiredRound = NormalizeText(request.DesiredRound);
+        var desiredRound = PlaywrightRuntime.NormalizeText(request.DesiredRound);
         var timeout = TimeSpan.FromSeconds(request.StepTimeoutSeconds);
         var runId = Guid.NewGuid().ToString("N");
         var phase = "screen-start";
@@ -59,7 +49,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 phase,
                 desiredDate,
                 desiredRound,
-                GetLogDirectoryPath());
+                PlaywrightRuntime.GetLogDirectoryPath());
         }
 
         try
@@ -91,13 +81,13 @@ public sealed partial class PlaywrightTicketingAutomationService
         }
         catch (TimeoutException ex)
         {
-            _logger.LogError(ex, "NOL screen automation failed. runId={RunId}, phase={Phase}, date={Date}, round={Round}, logDir={LogDir}", runId, phase, desiredDate, desiredRound, GetLogDirectoryPath());
-            return new AutomationRunResult(false, $"NOL 화면 자동화 시간 초과: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
+            _logger.LogError(ex, "NOL screen automation failed. runId={RunId}, phase={Phase}, date={Date}, round={Round}, logDir={LogDir}", runId, phase, desiredDate, desiredRound, PlaywrightRuntime.GetLogDirectoryPath());
+            return new AutomationRunResult(false, $"NOL 화면 자동화 시간 초과: {ex.Message} | 상세 로그: {PlaywrightRuntime.GetLogDirectoryPath()}", DateTimeOffset.Now);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "NOL screen automation failed. runId={RunId}, phase={Phase}, date={Date}, round={Round}, logDir={LogDir}", runId, phase, desiredDate, desiredRound, GetLogDirectoryPath());
-            return new AutomationRunResult(false, $"NOL 화면 자동화 예외: {ex.Message} | 상세 로그: {GetLogDirectoryPath()}", DateTimeOffset.Now);
+            _logger.LogError(ex, "NOL screen automation failed. runId={RunId}, phase={Phase}, date={Date}, round={Round}, logDir={LogDir}", runId, phase, desiredDate, desiredRound, PlaywrightRuntime.GetLogDirectoryPath());
+            return new AutomationRunResult(false, $"NOL 화면 자동화 예외: {ex.Message} | 상세 로그: {PlaywrightRuntime.GetLogDirectoryPath()}", DateTimeOffset.Now);
         }
     }
 
@@ -113,7 +103,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 return null;
             }
 
-            _logger.LogInformation("Connected-browser NOL automation selected page. url={Url}", SafePageUrl(page));
+            _logger.LogInformation("Connected-browser NOL automation selected page. url={Url}", PlaywrightRuntime.SafePageUrl(page));
             await page.BringToFrontAsync();
             if (!_popupClosedDuringPrepare)
             {
@@ -194,8 +184,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 }
             }
 
-            _playwright ??= await Playwright.CreateAsync();
-            _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, NolCdpEndpoint, cancellationToken);
+            _preparedNolConnectedBrowser = await _runtime.TryConnectToExistingChromiumBrowserAsync(NolCdpEndpoint, cancellationToken);
             if (_preparedNolConnectedBrowser is null)
             {
                 _preparedNolPage = null;
@@ -221,10 +210,10 @@ public sealed partial class PlaywrightTicketingAutomationService
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            return SafePageUrl(page).Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase) &&
+            return PlaywrightRuntime.SafePageUrl(page).Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase) &&
                    await page.Locator("#productSide").CountAsync() > 0;
         }
-        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        catch (PlaywrightException ex) when (PlaywrightRuntime.IsClosedTargetError(ex))
         {
             return false;
         }
@@ -244,7 +233,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         {
             try
             {
-                if (SafePageUrl(_preparedNolPage).Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase) &&
+                if (PlaywrightRuntime.SafePageUrl(_preparedNolPage).Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase) &&
                     await _preparedNolPage.Locator("#productSide").CountAsync() > 0)
                 {
                     return true;
@@ -259,8 +248,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         {
             try
             {
-                _playwright ??= await Playwright.CreateAsync();
-                _preparedNolConnectedBrowser = await TryConnectToExistingChromiumBrowserAsync(_playwright, NolCdpEndpoint, cancellationToken);
+                _preparedNolConnectedBrowser = await _runtime.TryConnectToExistingChromiumBrowserAsync(NolCdpEndpoint, cancellationToken);
             }
             catch
             {
@@ -276,7 +264,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         foreach (var page in _preparedNolConnectedBrowser.Contexts.SelectMany(x => x.Pages).Where(x => !x.IsClosed))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var url = SafePageUrl(page);
+            var url = PlaywrightRuntime.SafePageUrl(page);
             if (!url.Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -305,7 +293,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var url = SafePageUrl(page);
+            var url = PlaywrightRuntime.SafePageUrl(page);
             var score = 0;
             if (url.Contains("tickets.interpark.com", StringComparison.OrdinalIgnoreCase))
             {
@@ -317,7 +305,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 score += 4;
             }
 
-            if (await TryWaitForConditionAsync(async () => await page.Locator("#productSide").CountAsync() > 0, TimeSpan.FromMilliseconds(400), cancellationToken))
+            if (await PlaywrightRuntime.TryWaitForConditionAsync(async () => await page.Locator("#productSide").CountAsync() > 0, TimeSpan.FromMilliseconds(400), cancellationToken))
             {
                 score += 10;
             }
@@ -334,7 +322,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                     score += 3;
                 }
             }
-            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+            catch (PlaywrightException ex) when (PlaywrightRuntime.IsClosedTargetError(ex))
             {
                 continue;
             }
@@ -362,12 +350,12 @@ public sealed partial class PlaywrightTicketingAutomationService
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                using var frame = CaptureScreen();
-                using var grayFrame = ToGray(frame.Image);
-                var anchor = TryFindTemplateBounds(grayFrame, template, threshold, out _);
+                using var frame = PlaywrightRuntime.CaptureScreen();
+                using var grayFrame = PlaywrightRuntime.ToGray(frame.Image);
+                var anchor = PlaywrightRuntime.TryFindTemplateBounds(grayFrame, template, threshold, out _);
                 if (anchor is null)
                 {
-                    await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                    await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
                     continue;
                 }
 
@@ -375,9 +363,9 @@ public sealed partial class PlaywrightTicketingAutomationService
                 var calendarRect = CreateNolRect(anchor.Value.Left + (int)Math.Round(NolCalendarLeftOffset * scale), anchor.Value.Top + (int)Math.Round(NolCalendarTopOffset * scale), (int)Math.Round(NolCalendarWidth * scale), (int)Math.Round(NolCalendarHeight * scale), frame.Image.Width, frame.Image.Height);
                 var monthRect = CreateNolRect(calendarRect.Left, calendarRect.Top, calendarRect.Width, (int)Math.Round(NolCalendarMonthHeaderHeight * scale), frame.Image.Width, frame.Image.Height);
                 var monthText = await ReadNolOcrTextAsync(frame.Image, monthRect, cancellationToken);
-                if (!TryParseMonth(monthText, out var displayedMonth))
+                if (!PlaywrightRuntime.TryParseMonth(monthText, out var displayedMonth))
                 {
-                    await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                    await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
                     continue;
                 }
 
@@ -386,7 +374,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 if (monthDifference == 0)
                 {
                     var cellCenter = GetNolCalendarCellCenter(calendarRect, desiredDate, scale);
-                    ClickAt(frame.OffsetX + cellCenter.X, frame.OffsetY + cellCenter.Y);
+                    PlaywrightRuntime.ClickAt(frame.OffsetX + cellCenter.X, frame.OffsetY + cellCenter.Y);
                     await Task.Delay(200, cancellationToken);
                     return;
                 }
@@ -400,7 +388,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                     ? calendarRect.Left + (int)Math.Round(NolCalendarNextArrowCenterX * scale)
                     : calendarRect.Left + (int)Math.Round(NolCalendarPrevArrowCenterX * scale);
                 var arrowY = calendarRect.Top + (int)Math.Round(NolCalendarArrowCenterY * scale);
-                ClickAt(frame.OffsetX + arrowX, frame.OffsetY + arrowY);
+                PlaywrightRuntime.ClickAt(frame.OffsetX + arrowX, frame.OffsetY + arrowY);
                 await Task.Delay(250, cancellationToken);
             }
 
@@ -424,17 +412,17 @@ public sealed partial class PlaywrightTicketingAutomationService
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                using var frame = CaptureScreen();
-                using var grayFrame = ToGray(frame.Image);
-                var anchor = TryFindTemplateBounds(grayFrame, roundHeaderTemplate, threshold, out _);
+                using var frame = PlaywrightRuntime.CaptureScreen();
+                using var grayFrame = PlaywrightRuntime.ToGray(frame.Image);
+                var anchor = PlaywrightRuntime.TryFindTemplateBounds(grayFrame, roundHeaderTemplate, threshold, out _);
                 if (anchor is null)
                 {
-                    await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                    await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
                     continue;
                 }
 
                 var scale = GetNolTemplateScale(anchor.Value, NolPanelToggleWidth);
-                var bookingBounds = TryFindTemplateBounds(grayFrame, bookingButtonTemplate, Math.Min(0.82, threshold + 0.02), out _);
+                var bookingBounds = PlaywrightRuntime.TryFindTemplateBounds(grayFrame, bookingButtonTemplate, Math.Min(0.82, threshold + 0.02), out _);
                 var roundTop = anchor.Value.Top + (int)Math.Round(NolRoundListTopOffset * scale);
                 var roundBottom = bookingBounds is not null
                     ? bookingBounds.Value.Top - (int)Math.Round(12 * scale)
@@ -467,7 +455,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                         continue;
                     }
 
-                    ClickAt(frame.OffsetX + rowRect.Left + (rowRect.Width / 2), frame.OffsetY + rowRect.Top + (rowRect.Height / 2));
+                    PlaywrightRuntime.ClickAt(frame.OffsetX + rowRect.Left + (rowRect.Width / 2), frame.OffsetY + rowRect.Top + (rowRect.Height / 2));
                     await Task.Delay(200, cancellationToken);
                     return recognizedText;
                 }
@@ -486,7 +474,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                     return fallbackRound;
                 }
 
-                await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
             }
 
             var observedCandidates = observedRoundTexts.Count == 0
@@ -509,91 +497,18 @@ public sealed partial class PlaywrightTicketingAutomationService
         }
 
         using var roi = new Mat(source, rect);
-        var text = await RecognizeNolTextAsync(roi, applyThreshold: false, cancellationToken);
+        var text = await PlaywrightRuntime.RecognizeTextAsync(roi, applyThreshold: false, cancellationToken);
         if (!string.IsNullOrWhiteSpace(text))
         {
             return text;
         }
 
-        return await RecognizeNolTextAsync(roi, applyThreshold: true, cancellationToken);
-    }
-
-    private static async Task<string> RecognizeNolTextAsync(Mat source, bool applyThreshold, CancellationToken cancellationToken)
-    {
-        using var prepared = PrepareNolOcrMat(source, applyThreshold);
-        using var bgra = new Mat();
-        if (prepared.Channels() == 4)
-        {
-            prepared.CopyTo(bgra);
-        }
-        else if (prepared.Channels() == 3)
-        {
-            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.BGR2BGRA);
-        }
-        else
-        {
-            Cv2.CvtColor(prepared, bgra, ColorConversionCodes.GRAY2BGRA);
-        }
-
-        var size = checked((int)(bgra.Total() * bgra.ElemSize()));
-        var bytes = new byte[size];
-        Marshal.Copy(bgra.Data, bytes, 0, size);
-
-        using var writer = new DataWriter();
-        writer.WriteBytes(bytes);
-        var buffer = writer.DetachBuffer();
-        using var softwareBitmap = SoftwareBitmap.CreateCopyFromBuffer(buffer, BitmapPixelFormat.Bgra8, bgra.Width, bgra.Height, BitmapAlphaMode.Premultiplied);
-        var result = await GetNolOcrEngine().RecognizeAsync(softwareBitmap);
-        cancellationToken.ThrowIfCancellationRequested();
-        return NormalizeText(result.Text);
-    }
-
-    private static Mat PrepareNolOcrMat(Mat source, bool applyThreshold)
-    {
-        using var gray = ToGray(source);
-        var resized = new Mat();
-        Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor), interpolation: InterpolationFlags.Linear);
-        if (!applyThreshold)
-        {
-            return resized;
-        }
-
-        var binary = new Mat();
-        Cv2.GaussianBlur(resized, resized, new OpenCvSharp.Size(3, 3), 0);
-        Cv2.Threshold(resized, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
-        resized.Dispose();
-        return binary;
-    }
-
-    private static OcrEngine GetNolOcrEngine()
-    {
-        if (_nolOcrEngine is not null)
-        {
-            return _nolOcrEngine;
-        }
-
-        var preferredLanguage = new Language("ko-KR");
-        if (OcrEngine.IsLanguageSupported(preferredLanguage))
-        {
-            _nolOcrEngine = OcrEngine.TryCreateFromLanguage(preferredLanguage);
-        }
-
-        _nolOcrEngine ??= OcrEngine.TryCreateFromUserProfileLanguages();
-        if (_nolOcrEngine is null)
-        {
-            var fallbackLanguage = OcrEngine.AvailableRecognizerLanguages.FirstOrDefault();
-            if (fallbackLanguage is not null)
-            {
-                _nolOcrEngine = OcrEngine.TryCreateFromLanguage(fallbackLanguage);
-            }
-        }
-
-        return _nolOcrEngine ?? throw new InvalidOperationException("Windows OCR 엔진을 초기화하지 못했습니다. OCR 언어 팩 설치를 확인하세요.");
+        return await PlaywrightRuntime.RecognizeTextAsync(roi, applyThreshold: true, cancellationToken);
     }
 
     private static string NormalizeNolRoundOcrText(string value)
     {
-        var normalized = NormalizeText(value)
+        var normalized = PlaywrightRuntime.NormalizeText(value)
             .Replace("회차", "회", StringComparison.Ordinal)
             .Replace('희', '회')
             .Replace('히', '회')
@@ -624,7 +539,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         }
 
         var target = candidates[roundIndex - 1];
-        ClickAt(offsetX + target.CenterX, offsetY + target.CenterY);
+        PlaywrightRuntime.ClickAt(offsetX + target.CenterX, offsetY + target.CenterY);
         selectedRound = $"{roundIndex}회";
         return true;
     }
@@ -654,7 +569,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return false;
         }
 
-        ClickAt(offsetX + rowRect.Left + (rowRect.Width / 2), offsetY + rowRect.Top + (rowRect.Height / 2));
+        PlaywrightRuntime.ClickAt(offsetX + rowRect.Left + (rowRect.Width / 2), offsetY + rowRect.Top + (rowRect.Height / 2));
         selectedRound = $"{roundIndex}회";
         return true;
     }
@@ -667,7 +582,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         }
 
         using var roi = new Mat(source, roundArea);
-        using var gray = ToGray(roi);
+        using var gray = PlaywrightRuntime.ToGray(roi);
         using var blurred = new Mat();
         Cv2.GaussianBlur(gray, blurred, new OpenCvSharp.Size(5, 5), 0);
         using var edges = new Mat();
@@ -781,16 +696,16 @@ public sealed partial class PlaywrightTicketingAutomationService
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                using var frame = CaptureScreen();
-                using var grayFrame = ToGray(frame.Image);
-                var match = TryFindTemplateBounds(grayFrame, template, threshold, out _);
+                using var frame = PlaywrightRuntime.CaptureScreen();
+                using var grayFrame = PlaywrightRuntime.ToGray(frame.Image);
+                var match = PlaywrightRuntime.TryFindTemplateBounds(grayFrame, template, threshold, out _);
                 if (match is not null)
                 {
-                    ClickAt(frame.OffsetX + match.Value.CenterX, frame.OffsetY + match.Value.CenterY);
+                    PlaywrightRuntime.ClickAt(frame.OffsetX + match.Value.CenterX, frame.OffsetY + match.Value.CenterY);
                     return true;
                 }
 
-                await Task.Delay(PollDelayMilliseconds, cancellationToken);
+                await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
             }
 
             return false;
@@ -815,7 +730,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             throw new InvalidOperationException($"NOL 템플릿 이미지를 읽지 못했습니다: {resourceName}");
         }
 
-        return new StepTemplate("single", null, false, BuildScaledTemplates(encoded));
+        return new StepTemplate("single", null, false, PlaywrightRuntime.BuildScaledTemplates(encoded));
     }
 
     private static void DisposeStepTemplate(StepTemplate template)
@@ -893,14 +808,14 @@ public sealed partial class PlaywrightTicketingAutomationService
         var calendar = side.Locator(".sideCalendar");
         var desiredMonth = new DateOnly(desiredDate.Year, desiredDate.Month, 1);
 
-        await WaitForConditionAsync(async () => await calendar.CountAsync() > 0, timeout, cancellationToken, "NOL 달력 영역을 찾지 못했습니다.");
+        await PlaywrightRuntime.WaitForConditionAsync(async () => await calendar.CountAsync() > 0, timeout, cancellationToken, "NOL 달력 영역을 찾지 못했습니다.");
 
         for (var attempt = 0; attempt < 24; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var currentMonthText = NormalizeText(await calendar.Locator("li[data-view='month current']").InnerTextAsync());
-            if (!TryParseMonth(currentMonthText, out var currentMonth))
+            var currentMonthText = PlaywrightRuntime.NormalizeText(await calendar.Locator("li[data-view='month current']").InnerTextAsync());
+            if (!PlaywrightRuntime.TryParseMonth(currentMonthText, out var currentMonth))
             {
                 throw new InvalidOperationException($"NOL 달력 월 텍스트를 해석하지 못했습니다: {currentMonthText}");
             }
@@ -917,9 +832,9 @@ public sealed partial class PlaywrightTicketingAutomationService
                 throw new InvalidOperationException($"NOL 달력에서 {desiredDate:yyyy.MM} 월로 이동할 수 없습니다.");
             }
 
-            await ClickNolElementAsync(nav.First);
-            await WaitForConditionAsync(
-                async () => NormalizeText(await calendar.Locator("li[data-view='month current']").InnerTextAsync()) != currentMonthText,
+            await PlaywrightRuntime.ClickElementAsync(nav.First);
+            await PlaywrightRuntime.WaitForConditionAsync(
+                async () => PlaywrightRuntime.NormalizeText(await calendar.Locator("li[data-view='month current']").InnerTextAsync()) != currentMonthText,
                 timeout,
                 cancellationToken,
                 "NOL 달력 월 전환을 확인하지 못했습니다.");
@@ -930,24 +845,24 @@ public sealed partial class PlaywrightTicketingAutomationService
         for (var index = 0; index < count; index++)
         {
             var cell = days.Nth(index);
-            var dayText = NormalizeText(await cell.InnerTextAsync());
+            var dayText = PlaywrightRuntime.NormalizeText(await cell.InnerTextAsync());
             var className = await cell.GetAttributeAsync("class") ?? string.Empty;
             if (dayText != desiredDate.Day.ToString(CultureInfo.InvariantCulture) || IsNolDisabledClass(className))
             {
                 continue;
             }
 
-            await ClickNolElementAsync(cell);
-            if (!await TryWaitForConditionAsync(
-                    async () => NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
+            await PlaywrightRuntime.ClickElementAsync(cell);
+            if (!await PlaywrightRuntime.TryWaitForConditionAsync(
+                    async () => PlaywrightRuntime.NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
                     TimeSpan.FromMilliseconds(800),
                     cancellationToken))
             {
                 await cell.EvaluateAsync("element => { element.scrollIntoView({ block: 'center', inline: 'center' }); element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window })); element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window })); element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
             }
 
-            await WaitForConditionAsync(
-                async () => NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
+            await PlaywrightRuntime.WaitForConditionAsync(
+                async () => PlaywrightRuntime.NormalizeText(await side.Locator(".containerTop .selectedData .date").InnerTextAsync()).Contains(desiredDate.ToString("yyyy.MM.dd", CultureInfo.InvariantCulture), StringComparison.Ordinal),
                 timeout,
                 cancellationToken,
                 "NOL 관람일 선택 반영을 확인하지 못했습니다.");
@@ -961,7 +876,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         var side = page.Locator("#productSide");
         var roundsLocator = side.Locator(".sideTimeTable .timeTableLabel[role='button']");
 
-        await WaitForConditionAsync(async () => await roundsLocator.CountAsync() > 0, timeout, cancellationToken, "NOL 회차 목록을 찾지 못했습니다.");
+        await PlaywrightRuntime.WaitForConditionAsync(async () => await roundsLocator.CountAsync() > 0, timeout, cancellationToken, "NOL 회차 목록을 찾지 못했습니다.");
 
         var roundItems = await page.EvaluateAsync<NolRoundItem[]>("""
             () => [...document.querySelectorAll('#productSide .sideTimeTable .timeTableLabel[role="button"]')]
@@ -970,14 +885,14 @@ public sealed partial class PlaywrightTicketingAutomationService
 
         foreach (var item in roundItems ?? [])
         {
-            var roundText = NormalizeText(item.Text);
+            var roundText = PlaywrightRuntime.NormalizeText(item.Text);
             if (!IsMatchingNolRound(roundText, desiredRound) || IsNolDisabledClass(item.ClassName))
             {
                 continue;
             }
 
             if (item.ClassName.Contains("is-toggled", StringComparison.OrdinalIgnoreCase) &&
-                await TryWaitForConditionAsync(
+                await PlaywrightRuntime.TryWaitForConditionAsync(
                     async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
                     TimeSpan.FromMilliseconds(300),
                     cancellationToken))
@@ -985,8 +900,8 @@ public sealed partial class PlaywrightTicketingAutomationService
                 return;
             }
 
-            await ClickNolElementAsync(roundsLocator.Nth(item.Index));
-            await WaitForConditionAsync(
+            await PlaywrightRuntime.ClickElementAsync(roundsLocator.Nth(item.Index));
+            await PlaywrightRuntime.WaitForConditionAsync(
                 async () => IsMatchingNolRound(await side.Locator(".containerMiddle .selectedData .time").InnerTextAsync(), desiredRound),
                 timeout,
                 cancellationToken,
@@ -1001,7 +916,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         const int maxAttempts = 5;
         const int melonCaptchaLength = 6;
 
-        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", SafePageUrl(page));
+        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", PlaywrightRuntime.SafePageUrl(page));
         var (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
         if (inputLocator is null)
         {
@@ -1032,7 +947,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             string text;
             try
             {
-                text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
+                text = await _runtime.RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
             }
             catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
             {
@@ -1291,7 +1206,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 catch (PlaywrightException) { }
             }
 
-            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
 
         return (null, null);
@@ -1314,10 +1229,10 @@ public sealed partial class PlaywrightTicketingAutomationService
         }
 
         var beforeUrl = page.Url;
-        var beforeTitle = await GetPageTitleOrEmptyAsync(page);
+        var beforeTitle = await PlaywrightRuntime.GetPageTitleOrEmptyAsync(page);
         var beforePages = page.Context.Pages.Where(x => !x.IsClosed).ToHashSet();
         await bookingButton.ScrollIntoViewIfNeededAsync();
-        await ClickNolBookingButtonAsync(bookingButton, timeout);
+        await PlaywrightRuntime.ClickBookingButtonAsync(bookingButton, timeout);
 
         var deadline = DateTimeOffset.UtcNow + timeout;
         var pageTransitionDetected = false;
@@ -1349,7 +1264,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 return await PrepareNolBookingResultPageAsync(fallbackPage, deadline);
             }
 
-            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
 
         if (pageTransitionDetected || (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase)))
@@ -1397,40 +1312,6 @@ public sealed partial class PlaywrightTicketingAutomationService
 
         throw new TimeoutException("NOL 예매하기 클릭 후 페이지 전환을 확인하지 못했습니다.");
     }
-    private static async Task ClickNolBookingButtonAsync(ILocator bookingButton, TimeSpan timeout)
-    {
-        var clickTimeout = (float)Math.Min(timeout.TotalMilliseconds, 5000);
-        PlaywrightException? firstClickException = null;
-
-        try
-        {
-            await bookingButton.ClickAsync(new LocatorClickOptions
-            {
-                Timeout = clickTimeout
-            });
-            return;
-        }
-        catch (PlaywrightException ex)
-        {
-            firstClickException = ex;
-        }
-
-        try
-        {
-            await bookingButton.ClickAsync(new LocatorClickOptions
-            {
-                Force = true,
-                Timeout = clickTimeout
-            });
-        }
-        catch (PlaywrightException ex) when (firstClickException is not null)
-        {
-            throw new InvalidOperationException(
-                $"NOL 예매하기 버튼 클릭에 실패했습니다. firstAttempt={firstClickException.Message}; secondAttempt={ex.Message}",
-                ex);
-        }
-    }
-
     private static async Task<IPage> PrepareNolBookingResultPageAsync(IPage page, DateTimeOffset deadline)
     {
         await page.BringToFrontAsync();
@@ -1444,7 +1325,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return true;
         }
 
-        var currentTitle = await GetPageTitleOrEmptyAsync(page);
+        var currentTitle = await PlaywrightRuntime.GetPageTitleOrEmptyAsync(page);
         return !string.IsNullOrWhiteSpace(currentTitle) &&
                !string.Equals(currentTitle, beforeTitle, StringComparison.Ordinal) &&
                await page.Locator("#productSide").CountAsync() == 0;
@@ -1483,13 +1364,13 @@ public sealed partial class PlaywrightTicketingAutomationService
             return string.Equals(actualRoundNumber, desiredRoundNumber, StringComparison.Ordinal);
         }
 
-        return string.Equals(NormalizeText(normalizedActual), NormalizeText(normalizedDesired), StringComparison.Ordinal);
+        return string.Equals(PlaywrightRuntime.NormalizeText(normalizedActual), PlaywrightRuntime.NormalizeText(normalizedDesired), StringComparison.Ordinal);
     }
     private static bool TryParseNolRound(string value, out string round, out string time)
     {
         round = string.Empty;
         time = string.Empty;
-        var normalized = NormalizeText(value)
+        var normalized = PlaywrightRuntime.NormalizeText(value)
             .Replace("회차", "회", StringComparison.Ordinal)
             .Replace('희', '회')
             .Replace('히', '회')
@@ -1500,7 +1381,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return false;
         }
 
-        round = $"{NormalizeText(match.Groups["round"].Value)}회";
+        round = $"{PlaywrightRuntime.NormalizeText(match.Groups["round"].Value)}회";
         time = NormalizeNolTime(match.Groups["time"].Value);
         return !string.IsNullOrWhiteSpace(round) && !string.IsNullOrWhiteSpace(time);
     }
@@ -1508,7 +1389,7 @@ public sealed partial class PlaywrightTicketingAutomationService
     private static bool TryParseNolRoundLabel(string value, out string round)
     {
         round = string.Empty;
-        var normalized = NormalizeText(value).Replace("회차", "회", StringComparison.Ordinal);
+        var normalized = PlaywrightRuntime.NormalizeText(value).Replace("회차", "회", StringComparison.Ordinal);
         if (Regex.IsMatch(normalized, "^\\d+$", RegexOptions.Compiled))
         {
             round = $"{normalized}회";
@@ -1521,26 +1402,26 @@ public sealed partial class PlaywrightTicketingAutomationService
             return false;
         }
 
-        round = NormalizeText(match.Groups["round"].Value);
+        round = PlaywrightRuntime.NormalizeText(match.Groups["round"].Value);
         return !string.IsNullOrWhiteSpace(round);
     }
 
     private static bool TryExtractLeadingRoundNumber(string value, out string roundNumber)
     {
         roundNumber = string.Empty;
-        var match = Regex.Match(NormalizeText(value), @"^\D*(?<round>\d{1,2})(?:\D|$)", RegexOptions.Compiled);
+        var match = Regex.Match(PlaywrightRuntime.NormalizeText(value), @"^\D*(?<round>\d{1,2})(?:\D|$)", RegexOptions.Compiled);
         if (!match.Success)
         {
             return false;
         }
 
-        roundNumber = NormalizeText(match.Groups["round"].Value);
+        roundNumber = PlaywrightRuntime.NormalizeText(match.Groups["round"].Value);
         return !string.IsNullOrWhiteSpace(roundNumber);
     }
 
     private static string NormalizeNolTime(string value)
     {
-        var digits = DigitsOnlyPattern.Replace(value, string.Empty);
+        var digits = PlaywrightRuntime.DigitsOnlyPattern.Replace(value, string.Empty);
         if (digits.Length == 3)
         {
             return $"{digits[0]}:{digits[1..]}";
@@ -1551,7 +1432,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return $"{digits[..2]}:{digits[2..]}";
         }
 
-        return NormalizeText(value).Replace('.', ':').Replace(',', ':');
+        return PlaywrightRuntime.NormalizeText(value).Replace('.', ':').Replace(',', ':');
     }
 
     private static async Task<bool> TryDismissVisibleNolPopupsAsync(IPage page)
@@ -1573,31 +1454,6 @@ public sealed partial class PlaywrightTicketingAutomationService
         return dismissed;
     }
 
-    private static bool IsClosedTargetError(PlaywrightException ex)
-    {
-        return ex.Message.Contains("Target page, context or browser has been closed", StringComparison.OrdinalIgnoreCase) ||
-               ex.Message.Contains("Browser has been closed", StringComparison.OrdinalIgnoreCase) ||
-               ex.Message.Contains("Target closed", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static async Task ClickNolElementAsync(ILocator locator)
-    {
-        try
-        {
-            await locator.ClickAsync(new LocatorClickOptions
-            {
-                Force = true,
-                Timeout = 1500
-            });
-        }
-        catch (PlaywrightException)
-        {
-            await locator.EvaluateAsync("element => { element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (typeof element.click === 'function') { element.click(); } }");
-        }
-    }
-
-
-
     private static async Task<string> DescribeNolPageStateAsync(IPage? page)
     {
         if (page is null)
@@ -1609,18 +1465,18 @@ public sealed partial class PlaywrightTicketingAutomationService
         {
             var popupCount = await page.Locator(".popup.is-visible").CountAsync();
             var currentUrl = page.Url;
-            var currentTitle = await GetPageTitleOrEmptyAsync(page);
+            var currentTitle = await PlaywrightRuntime.GetPageTitleOrEmptyAsync(page);
             var pageCount = page.Context.Pages.Count;
             var productSideCount = await page.Locator("#productSide").CountAsync();
             var roundButtonCount = await page.Locator(".sideTimeTable .timeTableLabel[role='button']").CountAsync();
             var bookingButtonCount = await page.Locator("#productSide a.sideBtn.is-primary").CountAsync();
-            var selectedDateText = await GetLocatorTextOrEmptyAsync(page.Locator("#productSide .containerTop .selectedData .date").First);
-            var selectedRoundText = await GetLocatorTextOrEmptyAsync(page.Locator("#productSide .containerMiddle .selectedData .time").First);
+            var selectedDateText = await PlaywrightRuntime.GetLocatorTextOrEmptyAsync(page.Locator("#productSide .containerTop .selectedData .date").First);
+            var selectedRoundText = await PlaywrightRuntime.GetLocatorTextOrEmptyAsync(page.Locator("#productSide .containerMiddle .selectedData .time").First);
             var openPages = string.Join(", ",
-                page.Context.Pages.Select((x, index) => $"[{index}]closed={x.IsClosed};url={SafePageUrl(x)}"));
+                page.Context.Pages.Select((x, index) => $"[{index}]closed={x.IsClosed};url={PlaywrightRuntime.SafePageUrl(x)}"));
             return $"pageClosed={page.IsClosed}, url={currentUrl}, title={currentTitle}, popupCount={popupCount}, productSideCount={productSideCount}, roundButtonCount={roundButtonCount}, bookingButtonCount={bookingButtonCount}, selectedDate={selectedDateText}, selectedRound={selectedRoundText}, contextPageCount={pageCount}, openPages={openPages}";
         }
-        catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+        catch (PlaywrightException ex) when (PlaywrightRuntime.IsClosedTargetError(ex))
         {
             return $"page-state-unavailable:{ex.Message}";
         }

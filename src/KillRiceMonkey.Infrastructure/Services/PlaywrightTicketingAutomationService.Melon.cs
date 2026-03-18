@@ -1,22 +1,9 @@
-using DdddOcrSharp;
-using Microsoft.Playwright;
 using Microsoft.Extensions.Logging;
-using OpenCvSharp;
-using OpenCvSharp.Extensions;
-using Polly;
-using System.Globalization;
-using System.Drawing;
+using Microsoft.Playwright;
 using System.Diagnostics;
-using System.Net.Http;
-using System.Runtime.InteropServices;
+using System.Globalization;
 using System.Text.Json;
-using System.Text.RegularExpressions;
-using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
-using Windows.Globalization;
-using Windows.Graphics.Imaging;
-using Windows.Media.Ocr;
-using Windows.Storage.Streams;
 
 namespace KillRiceMonkey.Infrastructure.Services;
 
@@ -29,7 +16,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return new AutomationRunResult(false, "단계별 제한 시간은 1초 이상이어야 합니다.", DateTimeOffset.Now);
         }
 
-        if (!TryParseDesiredDate(request.DesiredDate, out var desiredDate))
+        if (!PlaywrightRuntime.TryParseDesiredDate(request.DesiredDate, out var desiredDate))
         {
             return new AutomationRunResult(false, "관람일 형식이 올바르지 않습니다. 예: 2026.03.14", DateTimeOffset.Now);
         }
@@ -39,7 +26,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             return new AutomationRunResult(false, "시간 값이 비어 있습니다. 예: 18:00", DateTimeOffset.Now);
         }
 
-        var desiredTime = NormalizeText(request.DesiredRound);
+        var desiredTime = PlaywrightRuntime.NormalizeText(request.DesiredRound);
         var timeout = TimeSpan.FromSeconds(request.StepTimeoutSeconds);
 
         try
@@ -78,7 +65,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 return null;
             }
 
-            _logger.LogInformation("Connected-browser Melon automation selected page. url={Url}", SafePageUrl(page));
+            _logger.LogInformation("Connected-browser Melon automation selected page. url={Url}", PlaywrightRuntime.SafePageUrl(page));
             await page.BringToFrontAsync();
             if (!_melonPopupClosedDuringPrepare)
             {
@@ -102,7 +89,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             _logger.LogInformation("[Melon] 예매하기 버튼 클릭 시작.");
             progress?.Report(new AutomationProgress("예매 클릭 중"));
             captchaPage = await ClickMelonBookingAsync(page, timeout, progress, cancellationToken);
-            _logger.LogInformation("[Melon] 예매 팝업 열림. popupUrl={Url}", SafePageUrl(captchaPage));
+            _logger.LogInformation("[Melon] 예매 팝업 열림. popupUrl={Url}", PlaywrightRuntime.SafePageUrl(captchaPage));
             progress?.Report(new AutomationProgress("예매 팝업 열림", "예매 팝업 열림 (대기열 포함 가능)"));
 
             captchaPage.Dialog += async (_, dialog) =>
@@ -117,7 +104,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             progress?.Report(new AutomationProgress("캡차 입력 중"));
             await SolveMelonCaptchaAsync(captchaPage, timeout, cancellationToken);
             _logger.LogInformation("[PERF] SolveCaptcha: {Ms}ms. popupUrl={Url}, isClosed={IsClosed}",
-                captchaSw.ElapsedMilliseconds, SafePageUrl(captchaPage), captchaPage.IsClosed);
+                captchaSw.ElapsedMilliseconds, PlaywrightRuntime.SafePageUrl(captchaPage), captchaPage.IsClosed);
             progress?.Report(new AutomationProgress("캡차 입력 완료", "캡차 처리 완료"));
 
             if (captchaPage.IsClosed)
@@ -132,7 +119,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 try
                 {
                     _logger.LogInformation("[Melon] 좌석 선택 시도 {Attempt}/{Max}. popupUrl={Url}, frameCount={FrameCount}",
-                        seatAttempt + 1, maxSeatRetries, SafePageUrl(captchaPage), captchaPage.Frames.Count);
+                        seatAttempt + 1, maxSeatRetries, PlaywrightRuntime.SafePageUrl(captchaPage), captchaPage.Frames.Count);
 
                     if (seatAttempt == 0 && request.PauseGate is { } gate)
                     {
@@ -152,7 +139,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 catch (Exception seatEx) when (seatAttempt < maxSeatRetries - 1)
                 {
                     _logger.LogWarning(seatEx, "[Melon] 좌석 선택 실패 (attempt={Attempt}/{Max}). 같은 팝업에서 재시도합니다. popupUrl={Url}, isClosed={IsClosed}",
-                        seatAttempt + 1, maxSeatRetries, SafePageUrl(captchaPage), captchaPage.IsClosed);
+                        seatAttempt + 1, maxSeatRetries, PlaywrightRuntime.SafePageUrl(captchaPage), captchaPage.IsClosed);
 
                     if (captchaPage.IsClosed)
                     {
@@ -172,12 +159,12 @@ public sealed partial class PlaywrightTicketingAutomationService
             if (captchaPage is not null && !captchaPage.IsClosed)
             {
                 _logger.LogWarning("[Melon] 실패 발생했으나 팝업은 닫지 않음 (재시도 시 재활용). popupUrl={Url}, exType={ExType}",
-                    SafePageUrl(captchaPage), ex.GetType().Name);
+                    PlaywrightRuntime.SafePageUrl(captchaPage), ex.GetType().Name);
             }
 
             if (page is not null)
             {
-                _logger.LogError(ex, "[Melon] 자동화 실패. 예외를 상위로 전파합니다. pageUrl={Url}", SafePageUrl(page));
+                _logger.LogError(ex, "[Melon] 자동화 실패. 예외를 상위로 전파합니다. pageUrl={Url}", PlaywrightRuntime.SafePageUrl(page));
                 throw new InvalidOperationException($"Melon 기존 브라우저 DOM 자동화 실패: {ex.Message}", ex);
             }
 
@@ -192,7 +179,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         {
             if (captchaPage is not null && !captchaPage.IsClosed)
             {
-                _logger.LogInformation("[Melon] onestop 팝업 닫기: url={Url}", SafePageUrl(captchaPage));
+                _logger.LogInformation("[Melon] onestop 팝업 닫기: url={Url}", PlaywrightRuntime.SafePageUrl(captchaPage));
                 await captchaPage.CloseAsync();
             }
         }
@@ -205,11 +192,11 @@ public sealed partial class PlaywrightTicketingAutomationService
         try
         {
             var remainingPopups = mainPage.Context.Pages
-                .Where(p => p != mainPage && !p.IsClosed && SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
+                .Where(p => p != mainPage && !p.IsClosed && PlaywrightRuntime.SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
                 .ToList();
             foreach (var popup in remainingPopups)
             {
-                _logger.LogInformation("[Melon] 잔여 팝업 닫기: url={Url}", SafePageUrl(popup));
+                _logger.LogInformation("[Melon] 잔여 팝업 닫기: url={Url}", PlaywrightRuntime.SafePageUrl(popup));
                 try { await popup.CloseAsync(); } catch (PlaywrightException) { }
             }
         }
@@ -264,8 +251,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 }
             }
 
-            _playwright ??= await Playwright.CreateAsync();
-            _preparedMelonConnectedBrowser = await TryConnectToExistingMelonBrowserAsync(_playwright, cancellationToken);
+            _preparedMelonConnectedBrowser = await TryConnectToExistingMelonBrowserAsync(cancellationToken);
             if (_preparedMelonConnectedBrowser is null)
             {
                 _preparedMelonPage = null;
@@ -289,7 +275,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(SafePageUrl(page).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase));
+        return Task.FromResult(PlaywrightRuntime.SafePageUrl(page).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase));
     }
 
     private Task ReleasePreparedMelonConnectionAsync()
@@ -304,7 +290,7 @@ public sealed partial class PlaywrightTicketingAutomationService
     {
         if (_preparedMelonPage is not null && !_preparedMelonPage.IsClosed)
         {
-            if (SafePageUrl(_preparedMelonPage).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase))
+            if (PlaywrightRuntime.SafePageUrl(_preparedMelonPage).Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -314,8 +300,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         {
             try
             {
-                _playwright ??= await Playwright.CreateAsync();
-                _preparedMelonConnectedBrowser = await TryConnectToExistingMelonBrowserAsync(_playwright, cancellationToken);
+                _preparedMelonConnectedBrowser = await TryConnectToExistingMelonBrowserAsync(cancellationToken);
             }
             catch
             {
@@ -331,7 +316,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         foreach (var page in _preparedMelonConnectedBrowser.Contexts.SelectMany(x => x.Pages).Where(x => !x.IsClosed))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var url = SafePageUrl(page);
+            var url = PlaywrightRuntime.SafePageUrl(page);
             if (!url.Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -344,9 +329,9 @@ public sealed partial class PlaywrightTicketingAutomationService
         return false;
     }
 
-    private static Task<IBrowser?> TryConnectToExistingMelonBrowserAsync(IPlaywright playwright, CancellationToken cancellationToken)
+    private Task<IBrowser?> TryConnectToExistingMelonBrowserAsync(CancellationToken cancellationToken)
     {
-        return TryConnectToExistingChromiumBrowserAsync(playwright, MelonCdpEndpoint, cancellationToken);
+        return _runtime.TryConnectToExistingChromiumBrowserAsync(MelonCdpEndpoint, cancellationToken);
     }
     private static async Task<IPage?> FindConnectedMelonPageAsync(IBrowser browser, CancellationToken cancellationToken)
     {
@@ -355,7 +340,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var url = SafePageUrl(page);
+            var url = PlaywrightRuntime.SafePageUrl(page);
             var score = 0;
             if (url.Contains("ticket.melon.com", StringComparison.OrdinalIgnoreCase))
             {
@@ -367,7 +352,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 score += 4;
             }
 
-            if (await TryWaitForConditionAsync(async () => await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0, TimeSpan.FromMilliseconds(150), cancellationToken))
+            if (await PlaywrightRuntime.TryWaitForConditionAsync(async () => await page.Locator("#ticketing_process_box .wrap_ticketing_process").CountAsync() > 0, TimeSpan.FromMilliseconds(150), cancellationToken))
             {
                 score += 10;
             }
@@ -384,7 +369,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                     score += 3;
                 }
             }
-            catch (PlaywrightException ex) when (IsClosedTargetError(ex))
+            catch (PlaywrightException ex) when (PlaywrightRuntime.IsClosedTargetError(ex))
             {
                 continue;
             }
@@ -404,7 +389,7 @@ public sealed partial class PlaywrightTicketingAutomationService
     {
         var totalSw = Stopwatch.StartNew();
         _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}",
-            SafePageUrl(page), page.IsClosed, page.Frames.Count);
+            PlaywrightRuntime.SafePageUrl(page), page.IsClosed, page.Frames.Count);
 
         var stepSw = Stopwatch.StartNew();
         var seatFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
@@ -459,7 +444,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             {
                 var frameUrls = page.Frames.Select(f => f.Url).ToList();
                 _logger.LogInformation("[FindSeatFrame] fast-path 실패, 폴링 시작. pageUrl={Url}, frameCount={Count}, frameUrls={FrameUrls}",
-                    SafePageUrl(page), frameUrls.Count, string.Join(" | ", frameUrls));
+                    PlaywrightRuntime.SafePageUrl(page), frameUrls.Count, string.Join(" | ", frameUrls));
                 loggedOnce = true;
             }
 
@@ -478,12 +463,12 @@ public sealed partial class PlaywrightTicketingAutomationService
                 catch (PlaywrightException) { }
             }
 
-            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
 
         var finalFrameUrls = page.Frames.Select(f => f.Url).ToList();
         _logger.LogError("[FindSeatFrame] 타임아웃! pageUrl={Url}, frameCount={Count}, frameUrls={FrameUrls}",
-            SafePageUrl(page), finalFrameUrls.Count, string.Join(" | ", finalFrameUrls));
+            PlaywrightRuntime.SafePageUrl(page), finalFrameUrls.Count, string.Join(" | ", finalFrameUrls));
         throw new TimeoutException("멜론 좌석맵 iframe(#ez_canvas)을 찾지 못했습니다.");
     }
 
@@ -672,7 +657,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             try
             {
                 var nextBtn = currentFrame.Locator("#nextTicketSelection");
-                await WaitForConditionAsync(
+                await PlaywrightRuntime.WaitForConditionAsync(
                     async () => await nextBtn.CountAsync() > 0,
                     timeout,
                     cancellationToken,
@@ -815,7 +800,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             {
             }
 
-            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
     }
     private static async Task SelectMelonDateAsync(IPage page, DateOnly desiredDate, TimeSpan timeout, CancellationToken cancellationToken)
@@ -824,7 +809,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         var listItems = page.Locator("#list_date .item_date[data-perfday]");
         var calendarButton = page.Locator($"#cal_wrapper .ticketCalendarBtn[data-perfday='{desiredPerfday}']:not([disabled])").First;
 
-        await WaitForConditionAsync(
+        await PlaywrightRuntime.WaitForConditionAsync(
             async () => await listItems.CountAsync() > 0 || await calendarButton.CountAsync() > 0,
             timeout,
             cancellationToken,
@@ -839,8 +824,8 @@ public sealed partial class PlaywrightTicketingAutomationService
                 continue;
             }
 
-            await ClickNolElementAsync(item);
-            await WaitForConditionAsync(
+            await PlaywrightRuntime.ClickElementAsync(item);
+            await PlaywrightRuntime.WaitForConditionAsync(
                 async () => (await item.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase),
                 timeout,
                 cancellationToken,
@@ -850,8 +835,8 @@ public sealed partial class PlaywrightTicketingAutomationService
 
         if (await calendarButton.CountAsync() > 0)
         {
-            await ClickNolElementAsync(calendarButton);
-            await WaitForConditionAsync(
+            await PlaywrightRuntime.ClickElementAsync(calendarButton);
+            await PlaywrightRuntime.WaitForConditionAsync(
                 async () => (await calendarButton.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase) ||
                           await page.Locator($"#list_date .item_date[data-perfday='{desiredPerfday}'].on").CountAsync() > 0,
                 timeout,
@@ -866,7 +851,7 @@ public sealed partial class PlaywrightTicketingAutomationService
     {
         var timesLocator = page.Locator("#list_time .item_time");
 
-        await WaitForConditionAsync(async () => await timesLocator.CountAsync() > 0, timeout, cancellationToken, "Melon 시간 목록을 찾지 못했습니다.");
+        await PlaywrightRuntime.WaitForConditionAsync(async () => await timesLocator.CountAsync() > 0, timeout, cancellationToken, "Melon 시간 목록을 찾지 못했습니다.");
 
         var count = await timesLocator.CountAsync();
         for (var index = 0; index < count; index++)
@@ -878,7 +863,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 continue;
             }
 
-            var timeText = NormalizeText(await item.InnerTextAsync());
+            var timeText = PlaywrightRuntime.NormalizeText(await item.InnerTextAsync());
             if (!IsMatchingMelonTime(timeText, desiredTime))
             {
                 continue;
@@ -889,8 +874,8 @@ public sealed partial class PlaywrightTicketingAutomationService
                 return;
             }
 
-            await ClickNolElementAsync(item);
-            await WaitForConditionAsync(
+            await PlaywrightRuntime.ClickElementAsync(item);
+            await PlaywrightRuntime.WaitForConditionAsync(
                 async () => (await item.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase),
                 timeout,
                 cancellationToken,
@@ -905,10 +890,10 @@ public sealed partial class PlaywrightTicketingAutomationService
         cancellationToken.ThrowIfCancellationRequested();
 
         var existingPopup = page.Context.Pages
-            .FirstOrDefault(p => p != page && !p.IsClosed && SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(p => p != page && !p.IsClosed && PlaywrightRuntime.SafePageUrl(p).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
         if (existingPopup is not null)
         {
-            _logger.LogInformation("[Melon] 기존 onestop.htm 팝업 재사용. url={Url}", SafePageUrl(existingPopup));
+            _logger.LogInformation("[Melon] 기존 onestop.htm 팝업 재사용. url={Url}", PlaywrightRuntime.SafePageUrl(existingPopup));
             await existingPopup.BringToFrontAsync();
             return existingPopup;
         }
@@ -922,7 +907,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         var beforePages = page.Context.Pages.Where(x => !x.IsClosed).ToHashSet();
         await bookingButton.ScrollIntoViewIfNeededAsync();
         _logger.LogInformation("예매하기 버튼 클릭 시도. beforePagesCount={Count}", beforePages.Count);
-        await ClickNolBookingButtonAsync(bookingButton, timeout);
+        await PlaywrightRuntime.ClickBookingButtonAsync(bookingButton, timeout);
 
         var deadline = DateTimeOffset.UtcNow + timeout;
         IPage? queuePage = null;
@@ -935,7 +920,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             var newPage = openPages.FirstOrDefault(x => !beforePages.Contains(x));
             if (newPage is not null)
             {
-                if (SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
+                if (PlaywrightRuntime.SafePageUrl(newPage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
                 {
                     await newPage.BringToFrontAsync();
                     return newPage;
@@ -944,19 +929,19 @@ public sealed partial class PlaywrightTicketingAutomationService
                 queuePage = newPage;
             }
 
-            var foundPopup = openPages.FirstOrDefault(x => SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
+            var foundPopup = openPages.FirstOrDefault(x => PlaywrightRuntime.SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
             if (foundPopup is not null)
             {
                 await foundPopup.BringToFrontAsync();
                 return foundPopup;
             }
 
-            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
 
         if (queuePage is not null && !queuePage.IsClosed)
         {
-            _logger.LogInformation("[Melon] 대기열 감지 — onestop.htm 전환까지 무한 대기. queueUrl={Url}", SafePageUrl(queuePage));
+            _logger.LogInformation("[Melon] 대기열 감지 — onestop.htm 전환까지 무한 대기. queueUrl={Url}", PlaywrightRuntime.SafePageUrl(queuePage));
             var queueSw = Stopwatch.StartNew();
             var lastQueueReportBucket = 0L;
             progress?.Report(new AutomationProgress("대기열 대기 중...", "대기열 진입 — 페이지 전환 대기"));
@@ -975,19 +960,19 @@ public sealed partial class PlaywrightTicketingAutomationService
                 if (queuePage.IsClosed)
                     throw new InvalidOperationException("Melon 대기열 페이지가 닫혔습니다.");
 
-                if (SafePageUrl(queuePage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
+                if (PlaywrightRuntime.SafePageUrl(queuePage).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase))
                 {
                     await queuePage.BringToFrontAsync();
-                    _logger.LogInformation("[Melon] 대기열 종료 — onestop.htm 도착. url={Url}", SafePageUrl(queuePage));
+                    _logger.LogInformation("[Melon] 대기열 종료 — onestop.htm 도착. url={Url}", PlaywrightRuntime.SafePageUrl(queuePage));
                     return queuePage;
                 }
 
                 var allPages = page.Context.Pages.Where(x => !x.IsClosed).ToList();
-                var popup = allPages.FirstOrDefault(x => SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
+                var popup = allPages.FirstOrDefault(x => PlaywrightRuntime.SafePageUrl(x).Contains("/reservation/popup/onestop.htm", StringComparison.OrdinalIgnoreCase));
                 if (popup is not null)
                 {
                     await popup.BringToFrontAsync();
-                    _logger.LogInformation("[Melon] 대기열 종료 — 새 onestop.htm 팝업 감지. url={Url}", SafePageUrl(popup));
+                    _logger.LogInformation("[Melon] 대기열 종료 — 새 onestop.htm 팝업 감지. url={Url}", PlaywrightRuntime.SafePageUrl(popup));
                     return popup;
                 }
 
@@ -1002,7 +987,7 @@ public sealed partial class PlaywrightTicketingAutomationService
         const int maxAttempts = 5;
         const int melonCaptchaLength = 6;
 
-        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", SafePageUrl(page));
+        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", PlaywrightRuntime.SafePageUrl(page));
         var (inputLocator, captchaFrame) = await FindMelonCaptchaInputAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
         if (inputLocator is null)
         {
@@ -1033,7 +1018,7 @@ public sealed partial class PlaywrightTicketingAutomationService
             string text;
             try
             {
-                text = await RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
+                text = await _runtime.RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
             }
             catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
             {
@@ -1294,7 +1279,7 @@ public sealed partial class PlaywrightTicketingAutomationService
                 catch (PlaywrightException) { }
             }
 
-            await Task.Delay(PollDelayMilliseconds, cancellationToken);
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
 
         return (null, null);
@@ -1302,14 +1287,14 @@ public sealed partial class PlaywrightTicketingAutomationService
 
     private static bool IsMatchingMelonTime(string actual, string desired)
     {
-        var actualDigits = DigitsOnlyPattern.Replace(actual, string.Empty);
-        var desiredDigits = DigitsOnlyPattern.Replace(desired, string.Empty);
+        var actualDigits = PlaywrightRuntime.DigitsOnlyPattern.Replace(actual, string.Empty);
+        var desiredDigits = PlaywrightRuntime.DigitsOnlyPattern.Replace(desired, string.Empty);
         if (actualDigits.Length >= 4 && desiredDigits.Length >= 4)
         {
             return actualDigits[..4] == desiredDigits[..4];
         }
 
-        return string.Equals(NormalizeText(actual), NormalizeText(desired), StringComparison.Ordinal);
+        return string.Equals(PlaywrightRuntime.NormalizeText(actual), PlaywrightRuntime.NormalizeText(desired), StringComparison.Ordinal);
     }
     private sealed record MelonSeatInfo(
         [property: System.Text.Json.Serialization.JsonPropertyName("x")] double X,
