@@ -881,7 +881,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private static StepTemplate LoadNolScreenTemplate(string fileName)
     {
-        var assembly = typeof(PlaywrightTicketingAutomationService).Assembly;
+        var assembly = typeof(NolAutomationService).Assembly;
         var resourceName = NolTemplateResourcePrefix + fileName;
         using var stream = assembly.GetManifestResourceStream(resourceName)
             ?? throw new FileNotFoundException($"NOL 템플릿 리소스를 찾지 못했습니다: {resourceName}");
