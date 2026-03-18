@@ -610,6 +610,36 @@ public sealed partial class PlaywrightTicketingAutomationService : ITicketingAut
             return string.Empty;
         }
 
+        try
+        {
+            var imageReady = await imgLocator.EvaluateAsync<bool>(@"el => {
+                if (el.tagName === 'IMG') return el.complete && el.naturalWidth > 0;
+                if (el.tagName === 'CANVAS') return el.width > 0 && el.height > 0;
+                return true;
+            }");
+
+            if (!imageReady)
+            {
+                _logger.LogInformation("[CAPTCHA] 이미지 미로드 — onload 대기 시작.");
+                imageReady = await imgLocator.EvaluateAsync<bool>(@"el => new Promise(resolve => {
+                    if (el.tagName !== 'IMG' || (el.complete && el.naturalWidth > 0)) { resolve(true); return; }
+                    const timer = setTimeout(() => resolve(false), 2000);
+                    el.addEventListener('load', () => { clearTimeout(timer); resolve(true); }, { once: true });
+                    el.addEventListener('error', () => { clearTimeout(timer); resolve(false); }, { once: true });
+                })");
+
+                if (!imageReady)
+                {
+                    _logger.LogWarning("CAPTCHA image not loaded after onload wait");
+                    return string.Empty;
+                }
+            }
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger.LogWarning(ex, "CAPTCHA image load check failed");
+        }
+
         byte[] screenshotBytes;
         try
         {
