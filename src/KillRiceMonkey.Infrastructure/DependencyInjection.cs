@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Infrastructure.Services;
 
@@ -10,6 +10,7 @@ public static class DependencyInjection
     {
         services.AddSingleton<PlaywrightRuntime>();
         services.AddSingleton<IImageAutomationService, ImageAutomationService>();
+        services.AddSingleton<INolAutomationService, NolAutomationService>();
         services.AddSingleton<ITicketingAutomationService, PlaywrightTicketingAutomationService>();
         return services;
     }
