@@ -13,7 +13,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private const string BoothFixedImageDirectory = "button-images/booth";
     private const string MelonFixedImageDirectory = "button-images/melon";
 
-    private readonly ITicketingAutomationService _ticketingAutomationService;
+    private readonly INolAutomationService _nolAutomationService;
+    private readonly IMelonAutomationService _melonAutomationService;
+    private readonly IImageAutomationService _imageAutomationService;
     private string? _selectedTemplate;
     private string _imageDirectory = "button-images";
     private DateTime? _desiredDate = DateTime.Today;
@@ -35,9 +37,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private ManualResetEventSlim? _pauseGate;
     private bool _isPaused;
 
-    public MainWindowViewModel(ITicketingAutomationService ticketingAutomationService)
+    public MainWindowViewModel(
+        INolAutomationService nolAutomationService,
+        IMelonAutomationService melonAutomationService,
+        IImageAutomationService imageAutomationService)
     {
-        _ticketingAutomationService = ticketingAutomationService;
+        _nolAutomationService = nolAutomationService;
+        _melonAutomationService = melonAutomationService;
+        _imageAutomationService = imageAutomationService;
         LaunchNolRemoteDebugCommand = new AsyncCommand(LaunchNolRemoteDebugAsync, () => !IsRunning && IsNolTemplate);
         PrepareNolAutomationCommand = new AsyncCommand(PrepareNolAutomationAsync, () => !IsRunning && IsNolTemplate);
         LaunchMelonRemoteDebugCommand = new AsyncCommand(LaunchMelonRemoteDebugAsync, () => !IsRunning && IsMelonTemplate);
@@ -264,14 +271,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             var readyCacheValid = (DateTimeOffset.UtcNow - _nolAutomationReadyAt).TotalMinutes < 10;
             if (!readyCacheValid)
             {
-                if (!await _ticketingAutomationService.IsNolRemoteDebugBrowserAvailableAsync(CancellationToken.None))
+                if (!await _nolAutomationService.IsRemoteDebugBrowserAvailableAsync(CancellationToken.None))
                 {
                     StatusMessage = "remote debug 필요";
                     LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 먼저 'NOL Remote Debug 열기' 버튼으로 브라우저를 실행하세요.";
                     return;
                 }
 
-                if (!await _ticketingAutomationService.IsNolAutomationPreparedAsync(CancellationToken.None))
+                if (!await _nolAutomationService.IsAutomationPreparedAsync(CancellationToken.None))
                 {
                     StatusMessage = "NOL 준비 필요";
                     LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 상품 페이지를 연 뒤 'NOL 준비' 버튼으로 연결을 미리 준비하세요.";
@@ -299,14 +306,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             var readyCacheValid = (DateTimeOffset.UtcNow - _melonAutomationReadyAt).TotalMinutes < 10;
             if (!readyCacheValid)
             {
-                if (!await _ticketingAutomationService.IsMelonRemoteDebugBrowserAvailableAsync(CancellationToken.None))
+                if (!await _melonAutomationService.IsRemoteDebugBrowserAvailableAsync(CancellationToken.None))
                 {
                     StatusMessage = "remote debug 필요";
                     LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 먼저 'Melon Remote Debug 열기' 버튼으로 브라우저를 실행하세요.";
                     return;
                 }
 
-                if (!await _ticketingAutomationService.IsMelonAutomationPreparedAsync(CancellationToken.None))
+                if (!await _melonAutomationService.IsAutomationPreparedAsync(CancellationToken.None))
                 {
                     StatusMessage = "Melon 준비 필요";
                     LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 상품 페이지를 연 뒤 'Melon 준비' 버튼으로 연결을 미리 준비하세요.";
@@ -366,7 +373,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     _runCts.Token.ThrowIfCancellationRequested();
                     attempt++;
 
-                    if (!await _ticketingAutomationService.IsNolPageReadyAsync(_runCts.Token))
+                    if (!await _nolAutomationService.IsPageReadyAsync(_runCts.Token))
                     {
                         StatusMessage = $"NOL 페이지 대기 중 ({attempt}회 폴링)";
                         await Task.Delay(200, _runCts.Token);
@@ -374,7 +381,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     StatusMessage = "NOL 자동화 실행 중";
-                    var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
+                    var result = await _nolAutomationService.RunAsync(request, progress, _runCts.Token);
 
                     if (result.IsSuccess)
                     {
@@ -397,7 +404,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     _runCts.Token.ThrowIfCancellationRequested();
                     attempt++;
 
-                    if (!await _ticketingAutomationService.IsMelonPageReadyAsync(_runCts.Token))
+                    if (!await _melonAutomationService.IsPageReadyAsync(_runCts.Token))
                     {
                         StatusMessage = $"Melon 페이지 대기 중 ({attempt}회 폴링)";
                         await Task.Delay(50, _runCts.Token);
@@ -405,7 +412,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                     }
 
                     StatusMessage = "Melon 자동화 실행 중";
-                    var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
+                    var result = await _melonAutomationService.RunAsync(request, progress, _runCts.Token);
 
                     if (result.IsSuccess)
                     {
@@ -423,7 +430,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             else
             {
                 StatusMessage = "active 상태: 다단계 이미지 클릭 실행 중";
-                var result = await _ticketingAutomationService.RunAsync(request, progress, _runCts.Token);
+                var result = await _imageAutomationService.RunAsync(request, progress, _runCts.Token);
                 AppendLog(result.Message);
                 StatusMessage = result.IsSuccess ? "성공 종료" : "예외 종료";
                 LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
@@ -470,7 +477,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         try
         {
-            var message = await _ticketingAutomationService.LaunchNolRemoteDebugBrowserAsync(CancellationToken.None);
+            var message = await _nolAutomationService.LaunchRemoteDebugBrowserAsync(CancellationToken.None);
             StatusMessage = "성공 종료";
             LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
         }
@@ -497,7 +504,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         try
         {
-            var message = await _ticketingAutomationService.PrepareNolAutomationAsync(CancellationToken.None);
+            var message = await _nolAutomationService.PrepareAutomationAsync(CancellationToken.None);
             _nolAutomationReadyAt = DateTimeOffset.UtcNow;
             StatusMessage = "성공 종료";
             LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
@@ -525,7 +532,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         try
         {
-            var message = await _ticketingAutomationService.LaunchMelonRemoteDebugBrowserAsync(CancellationToken.None);
+            var message = await _melonAutomationService.LaunchRemoteDebugBrowserAsync(CancellationToken.None);
             StatusMessage = "성공 종료";
             LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
         }
@@ -552,7 +559,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
         try
         {
-            var message = await _ticketingAutomationService.PrepareMelonAutomationAsync(CancellationToken.None);
+            var message = await _melonAutomationService.PrepareAutomationAsync(CancellationToken.None);
             _melonAutomationReadyAt = DateTimeOffset.UtcNow;
             StatusMessage = "성공 종료";
             LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
