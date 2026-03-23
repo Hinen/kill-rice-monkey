@@ -24,3 +24,6 @@ tools/inspect-*.ps1
 
 captcha-samples/
 publish-output/
+
+.claude
+.omc
