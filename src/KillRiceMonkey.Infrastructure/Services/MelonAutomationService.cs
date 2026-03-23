@@ -250,12 +250,13 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
             }
 
             const int maxSeatRetries = 10;
+            var excludedSeats = new HashSet<(double x, double y)>();
             for (var seatAttempt = 0; seatAttempt < maxSeatRetries; seatAttempt++)
             {
                 try
                 {
-                    _logger.LogInformation("[Melon] 좌석 선택 시도 {Attempt}/{Max}. popupUrl={Url}, frameCount={FrameCount}",
-                        seatAttempt + 1, maxSeatRetries, PlaywrightRuntime.SafePageUrl(captchaPage), captchaPage.Frames.Count);
+                    _logger.LogInformation("[Melon] 좌석 선택 시도 {Attempt}/{Max}. popupUrl={Url}, frameCount={FrameCount}, excludedSeats={ExcludedCount}",
+                        seatAttempt + 1, maxSeatRetries, PlaywrightRuntime.SafePageUrl(captchaPage), captchaPage.Frames.Count, excludedSeats.Count);
 
                     if (seatAttempt == 0 && request.PauseGate is { } gate)
                     {
@@ -267,7 +268,7 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
                     }
 
                     progress?.Report(new AutomationProgress("좌석 선택 중"));
-                    await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, progress, cancellationToken);
+                    await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, progress, excludedSeats, cancellationToken);
                     _logger.LogInformation("[Melon] 좌석 선택 및 완료 버튼 클릭 성공!");
                     progress?.Report(new AutomationProgress("좌석 선택 완료", "좌석 선택 및 완료 버튼 클릭"));
                     return new AutomationRunResult(true, $"Melon 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredTime} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
@@ -521,11 +522,11 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
             .Select(x => x.Page)
             .FirstOrDefault();
     }
-    private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<(double x, double y)> excludedSeats, CancellationToken cancellationToken)
     {
         var totalSw = Stopwatch.StartNew();
-        _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}",
-            PlaywrightRuntime.SafePageUrl(page), page.IsClosed, page.Frames.Count);
+        _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}, excludedSeats={ExcludedCount}",
+            PlaywrightRuntime.SafePageUrl(page), page.IsClosed, page.Frames.Count, excludedSeats.Count);
 
         var stepSw = Stopwatch.StartNew();
         var seatFrame = await FindMelonSeatFrameAsync(page, timeout, cancellationToken);
@@ -542,11 +543,21 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
         }
 
         stepSw.Restart();
-        var validFrame = await SelectMelonSeatInFrameAsync(page, seatFrame, timeout, cancellationToken);
+        var (validFrame, selectedX, selectedY) = await SelectMelonSeatInFrameAsync(page, seatFrame, timeout, excludedSeats, cancellationToken);
         _logger.LogInformation("[PERF] SelectMelonSeatInFrame: {Ms}ms", stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
-        await ClickMelonSeatCompleteAsync(page, validFrame, timeout, cancellationToken);
+        try
+        {
+            await ClickMelonSeatCompleteAsync(page, validFrame, timeout, cancellationToken);
+        }
+        catch (InvalidOperationException) when (selectedX is not null)
+        {
+            excludedSeats.Add((selectedX.Value, selectedY!.Value));
+            _logger.LogWarning("[SelectSeat] 완료 버튼 클릭 후 중복 감지 — 좌석({X}, {Y}) 제외 목록에 추가. excludedCount={Count}",
+                selectedX.Value, selectedY!.Value, excludedSeats.Count);
+            throw;
+        }
         _logger.LogInformation("[PERF] ClickMelonSeatComplete: {Ms}ms", stepSw.ElapsedMilliseconds);
 
         _logger.LogInformation("[PERF] 좌석 선택 전체 소요: {Ms}ms", totalSw.ElapsedMilliseconds);
@@ -664,7 +675,8 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
         }
     }
 
-    private async Task<IFrame> SelectMelonSeatInFrameAsync(IPage page, IFrame seatFrame, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task<(IFrame frame, double? selectedX, double? selectedY)> SelectMelonSeatInFrameAsync(
+        IPage page, IFrame seatFrame, TimeSpan timeout, HashSet<(double x, double y)> excludedSeats, CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
         var currentFrame = seatFrame;
@@ -675,8 +687,11 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
 
             try
             {
+                var excludedArray = excludedSeats.Select(s => new { x = s.x, y = s.y }).ToArray();
+
                 var scanClickResult = await currentFrame.EvaluateAsync<string>(@"(args) => {
                 const rects = document.querySelectorAll('#ez_canvas rect');
+                const excluded = args.excluded || [];
                 const seats = [];
                 let i = 0;
                 for (const r of rects) {
@@ -684,7 +699,12 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
                     const w = parseFloat(r.getAttribute('width'));
                     const h = parseFloat(r.getAttribute('height'));
                     if (w > 0 && w <= 15 && h > 0 && h <= 15 && fill !== 'none' && fill.toUpperCase() !== '#DDDDDD') {
-                        seats.push({ x: parseFloat(r.getAttribute('x')), y: parseFloat(r.getAttribute('y')), idx: i });
+                        const sx = parseFloat(r.getAttribute('x'));
+                        const sy = parseFloat(r.getAttribute('y'));
+                        const isExcluded = excluded.some(e => Math.abs(e.x - sx) < 0.5 && Math.abs(e.y - sy) < 0.5);
+                        if (!isExcluded) {
+                            seats.push({ x: sx, y: sy, idx: i });
+                        }
                     }
                     i++;
                 }
@@ -698,7 +718,7 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
                 evt.initMouseEvent('click', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
                 rect.dispatchEvent(evt);
                 return JSON.stringify({ s: 'clicked', c: seats.length, ti: ti, x: t.x, y: t.y });
-            }", new { offset = SeatSelectionOffset });
+            }", new { offset = SeatSelectionOffset, excluded = excludedArray });
 
                 using var scanDoc = JsonDocument.Parse(scanClickResult);
                 var status = scanDoc.RootElement.GetProperty("s").GetString();
@@ -706,7 +726,16 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
 
                 if (status == "empty")
                 {
-                    _logger.LogWarning("선택 가능한 좌석 없음. retry={Retry}", retry);
+                    if (excludedSeats.Count > 0)
+                    {
+                        _logger.LogWarning("제외 좌석 {ExcludedCount}개를 빼면 선택 가능한 좌석 없음 — 제외 목록 초기화 후 재시도. retry={Retry}",
+                            excludedSeats.Count, retry);
+                        excludedSeats.Clear();
+                    }
+                    else
+                    {
+                        _logger.LogWarning("선택 가능한 좌석 없음. retry={Retry}", retry);
+                    }
                     await Task.Delay(50, cancellationToken);
                     continue;
                 }
@@ -717,9 +746,11 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
                     continue;
                 }
 
-                _logger.LogInformation("좌석 스캔+클릭 완료: available={Count}, targetIdx={Idx}, x={X}, y={Y}",
-                    seatCount, scanDoc.RootElement.GetProperty("ti").GetInt32(),
-                    scanDoc.RootElement.GetProperty("x").GetDouble(), scanDoc.RootElement.GetProperty("y").GetDouble());
+                var clickedX = scanDoc.RootElement.GetProperty("x").GetDouble();
+                var clickedY = scanDoc.RootElement.GetProperty("y").GetDouble();
+
+                _logger.LogInformation("좌석 스캔+클릭 완료: available={Count}, targetIdx={Idx}, x={X}, y={Y}, excludedCount={ExcludedCount}",
+                    seatCount, scanDoc.RootElement.GetProperty("ti").GetInt32(), clickedX, clickedY, excludedSeats.Count);
 
                 var validation = await currentFrame.EvaluateAsync<string>(@"() => {
                 const ad = window.__melonAlertDetected === true;
@@ -733,15 +764,17 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
 
                 if (alertDetected)
                 {
-                    _logger.LogInformation("좌석 중복 선택 감지 — 다른 좌석으로 재시도. retry={Retry}", retry);
+                    excludedSeats.Add((clickedX, clickedY));
+                    _logger.LogInformation("좌석 중복 선택 감지 — 좌석({X}, {Y}) 제외 후 다른 좌석으로 재시도. retry={Retry}, excludedCount={ExcludedCount}",
+                        clickedX, clickedY, retry, excludedSeats.Count);
                     await DismissMelonSeatConflictAlertAsync(currentFrame);
                     continue;
                 }
 
                 if (selectedCount > 0)
                 {
-                    _logger.LogInformation("좌석 선택 성공. selectedCount={Count}", selectedCount);
-                    return currentFrame;
+                    _logger.LogInformation("좌석 선택 성공. selectedCount={Count}, x={X}, y={Y}", selectedCount, clickedX, clickedY);
+                    return (currentFrame, clickedX, clickedY);
                 }
 
                 _logger.LogWarning("좌석 선택 후 선택된 좌석 목록 비어있음. retry={Retry}", retry);
