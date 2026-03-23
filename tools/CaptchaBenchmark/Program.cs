@@ -14,7 +14,7 @@ if (captchaType is not ("new" or "old"))
 
 var projectDir = AppDomain.CurrentDomain.BaseDirectory;
 var repoRoot = Path.GetFullPath(Path.Combine(projectDir, "..", "..", "..", "..", ".."));
-var samplesDir = Path.Combine(repoRoot, "captcha-samples", captchaType);
+var samplesDir = Path.Combine(repoRoot, "captcha-samples", "nol", captchaType);
 var resultsCsvPath = Path.Combine(samplesDir, "benchmark_results.csv");
 var compareCsvPath = Path.Combine(samplesDir, "benchmark_results_compare.csv");
 var groundTruthCsvPath = Path.Combine(samplesDir, "ground_truth.csv");

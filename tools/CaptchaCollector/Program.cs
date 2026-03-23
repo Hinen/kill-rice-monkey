@@ -17,7 +17,9 @@ var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
 
 var projectDir = AppDomain.CurrentDomain.BaseDirectory;
 var repoRoot = Path.GetFullPath(Path.Combine(projectDir, "..", "..", "..", "..", ".."));
-var samplesDir = Path.Combine(repoRoot, "captcha-samples", captchaType);
+var samplesDir = isMelon
+    ? Path.Combine(repoRoot, "captcha-samples", "melon")
+    : Path.Combine(repoRoot, "captcha-samples", "nol", captchaType);
 Directory.CreateDirectory(samplesDir);
 
 var groundTruthPath = Path.Combine(samplesDir, "ground_truth.csv");
