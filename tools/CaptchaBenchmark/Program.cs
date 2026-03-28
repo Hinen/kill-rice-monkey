@@ -56,11 +56,11 @@ else if (!string.IsNullOrWhiteSpace(apiKey))
 }
 else
 {
-    Console.Error.WriteLine("No ground truth source: ground_truth.csv not found and ANTHROPIC_API_KEY not set");
-    return 1;
+    Console.WriteLine("No ground truth source: using ensemble consensus as pseudo-ground-truth");
 }
 
 var allFiles = Directory.GetFiles(samplesDir, "captcha_*.png").OrderBy(f => f).ToList();
+var useConsensusGt = groundTruth.Count == 0 && !useVisionApi;
 var files = groundTruth.Count > 0
     ? allFiles.Where(f => groundTruth.ContainsKey(Path.GetFileName(f))).ToList()
     : allFiles;
@@ -87,10 +87,14 @@ foreach (var (filePath, idx) in files.Select((f, i) => (f, i)))
         gt = await CallVisionApiAsync(httpClient!, apiKey!, filePath);
         await Task.Delay(500);
     }
-    else
+    else if (!useConsensusGt)
     {
         groundTruth.TryGetValue(filename, out var label);
         gt = label ?? string.Empty;
+    }
+    else
+    {
+        gt = string.Empty;
     }
 
     var kmeans = RunOcrWithMask(filePath, tessDataPath, PrepareKMeansCaptchaMask);
@@ -112,6 +116,53 @@ foreach (var (filePath, idx) in files.Select((f, i) => (f, i)))
 
 await File.WriteAllLinesAsync(compareCsvPath, csvLines);
 Console.WriteLine($"\nResults saved to: {compareCsvPath}");
+
+if (useConsensusGt)
+{
+    Console.WriteLine("\nGenerating ensemble consensus pseudo-ground-truth...");
+    var consensusCount = 0;
+    for (var ri = 0; ri < results.Count; ri++)
+    {
+        var r = results[ri];
+        var methodResults = new (string result, double weight)[]
+        {
+            (r.kmeans, 1.0), (r.hsvAuto, 1.0), (r.hsvOtsu, 1.0), (r.hsvSatVal, 1.0),
+            (r.ddddocr, 2.0), (r.ddddGray, 1.5), (r.ddddBin, 1.5), (r.ddddInv, 1.5), (r.ddddContrast, 1.5),
+        };
+        var valid = methodResults.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+        if (valid.Count < 3) continue;
+
+        var consensusChars = new char[6];
+        var highConfidence = true;
+        for (var pos = 0; pos < 6; pos++)
+        {
+            var votes = new Dictionary<char, double>();
+            foreach (var (text, weight) in valid)
+            {
+                var ch = text[pos];
+                votes[ch] = votes.GetValueOrDefault(ch) + weight;
+            }
+            var sorted = votes.OrderByDescending(v => v.Value).ToList();
+            var totalWeight = sorted.Sum(v => v.Value);
+            if (sorted[0].Value / totalWeight < 0.6) { highConfidence = false; break; }
+            consensusChars[pos] = sorted[0].Key;
+        }
+
+        if (highConfidence)
+        {
+            var gt2 = new string(consensusChars);
+            results[ri] = (r.filename, gt2, r.kmeans, r.hsvAuto, r.hsvOtsu, r.hsvSatVal, r.ddddocr, r.ddddGray, r.ddddBin, r.ddddInv, r.ddddContrast);
+            groundTruth[r.filename] = gt2;
+            consensusCount++;
+        }
+    }
+
+    Console.WriteLine($"Consensus labels generated: {consensusCount}/{results.Count} ({(double)consensusCount / results.Count * 100:F1}%)");
+
+    var gtCsvLines = groundTruth.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key},{kv.Value}");
+    await File.WriteAllLinesAsync(groundTruthCsvPath, gtCsvLines);
+    Console.WriteLine($"Saved consensus ground truth to: {groundTruthCsvPath}");
+}
 
 Console.WriteLine();
 Console.WriteLine("=== ACCURACY COMPARISON ===");
