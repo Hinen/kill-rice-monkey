@@ -343,8 +343,105 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
 
     internal string RunLocalCaptchaOcr(byte[] screenshotBytes)
     {
-        var raw = RunDdddOcrOnBytes(screenshotBytes);
-        return FilterCaptchaText(raw);
+        var original = FilterCaptchaText(RunDdddOcrOnBytes(screenshotBytes));
+        if (original.Length != 6) return original;
+
+        try
+        {
+            using var source = Mat.FromImageData(screenshotBytes, ImreadModes.Color);
+            if (source.Empty()) return original;
+
+            var variants = new (string label, Func<Mat, Mat> preprocess, double weight)[]
+            {
+                ("gray", DdddPreprocessGray, 1.5),
+                ("binary", DdddPreprocessBinary, 1.0),
+                ("invert", DdddPreprocessInvert, 1.5),
+                ("contrast", DdddPreprocessContrast, 1.0),
+            };
+
+            var candidates = new List<(string result, double weight)> { (original, 2.0) };
+
+            foreach (var (_, preprocess, weight) in variants)
+            {
+                try
+                {
+                    using var processed = preprocess(source);
+                    Cv2.ImEncode(".png", processed, out var pngBytes);
+                    var filtered = FilterCaptchaText(RunDdddOcrOnBytes(pngBytes));
+                    if (filtered.Length == 6 && filtered.All(char.IsAsciiLetterUpper))
+                        candidates.Add((filtered, weight));
+                }
+                catch { }
+            }
+
+            if (candidates.Count < 2) return original;
+
+            var result = new char[6];
+            for (var pos = 0; pos < 6; pos++)
+            {
+                var votes = new Dictionary<char, double>();
+                foreach (var (text, weight) in candidates)
+                {
+                    var ch = text[pos];
+                    votes[ch] = votes.GetValueOrDefault(ch) + weight;
+                }
+                result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+            }
+            return new string(result);
+        }
+        catch
+        {
+            return original;
+        }
+    }
+
+    private static Mat DdddPreprocessGray(Mat source)
+    {
+        using var gray = new Mat();
+        Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+        var result = new Mat();
+        Cv2.CvtColor(gray, result, ColorConversionCodes.GRAY2BGR);
+        return result;
+    }
+
+    private static Mat DdddPreprocessBinary(Mat source)
+    {
+        using var gray = new Mat();
+        Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+        using var binary = new Mat();
+        Cv2.Threshold(gray, binary, 0, 255, ThresholdTypes.Binary | ThresholdTypes.Otsu);
+        var result = new Mat();
+        Cv2.CvtColor(binary, result, ColorConversionCodes.GRAY2BGR);
+        return result;
+    }
+
+    private static Mat DdddPreprocessInvert(Mat source)
+    {
+        using var gray = new Mat();
+        Cv2.CvtColor(source, gray, ColorConversionCodes.BGR2GRAY);
+        using var inv = new Mat();
+        Cv2.BitwiseNot(gray, inv);
+        var result = new Mat();
+        Cv2.CvtColor(inv, result, ColorConversionCodes.GRAY2BGR);
+        return result;
+    }
+
+    private static Mat DdddPreprocessContrast(Mat source)
+    {
+        using var lab = new Mat();
+        Cv2.CvtColor(source, lab, ColorConversionCodes.BGR2Lab);
+        var channels = Cv2.Split(lab);
+        using var clahe = Cv2.CreateCLAHE(4.0, new OpenCvSharp.Size(8, 8));
+        var enhanced = new Mat();
+        clahe.Apply(channels[0], enhanced);
+        channels[0].Dispose();
+        channels[0] = enhanced;
+        using var merged = new Mat();
+        Cv2.Merge(channels, merged);
+        foreach (var ch in channels) ch.Dispose();
+        var result = new Mat();
+        Cv2.CvtColor(merged, result, ColorConversionCodes.Lab2BGR);
+        return result;
     }
 
     internal static string RunDdddOcrOnBytes(byte[] imageBytes)
