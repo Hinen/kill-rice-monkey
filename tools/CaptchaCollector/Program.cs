@@ -119,6 +119,8 @@ IFrame? captchaFrame = null;
 foreach (var pg in context.Pages)
 {
     if (pg.IsClosed) continue;
+    if (!IsPageMatchForCaptchaType(pg, captchaType, isMelon)) continue;
+
     var imgLoc = pg.Locator(ImageSelector);
     try
     {
@@ -254,8 +256,22 @@ while (collected < targetCount && !cts.IsCancellationRequested)
                 }
                 continue;
             }
-            Console.WriteLine("  CAPTCHA 이미지가 사라졌습니다. 재탐색 대기 중...");
-            await Task.Delay(2000, cts.Token);
+            Console.WriteLine("  CAPTCHA 이미지가 사라졌습니다. NOL 재탐색 중...");
+            var (nolPage, nolLocator, nolFrame) = await FindOrNavigateNolCaptchaAsync(context, captchaType, cts.Token);
+            if (nolPage is not null && nolLocator is not null)
+            {
+                captchaPage = nolPage;
+                imageLocator = nolLocator;
+                captchaFrame = nolFrame;
+                consecutiveDuplicates = 0;
+                lastImageHash = null;
+                Console.WriteLine("  CAPTCHA 재발견. 수집 계속...");
+            }
+            else
+            {
+                Console.Error.WriteLine("  CAPTCHA 재탐색 실패. 5초 후 재시도...");
+                await Task.Delay(5000, cts.Token);
+            }
             continue;
         }
 
@@ -574,4 +590,103 @@ static async Task<string> CallVisionApiAsync(HttpClient httpClient, string apiKe
     }
     catch { }
     return string.Empty;
+}
+
+static bool IsPageMatchForCaptchaType(IPage page, string captchaType, bool isMelon)
+{
+    if (isMelon) return true;
+    var url = page.Url;
+    return captchaType switch
+    {
+        "new" => url.Contains("onestop", StringComparison.OrdinalIgnoreCase)
+              || url.Contains("tickets.interpark.com", StringComparison.OrdinalIgnoreCase),
+        "old" => url.Contains("poticket.interpark.com", StringComparison.OrdinalIgnoreCase)
+              || url.Contains("Book", StringComparison.OrdinalIgnoreCase),
+        _ => true,
+    };
+}
+
+static async Task<(IPage? page, ILocator? locator, IFrame? frame)> FindOrNavigateNolCaptchaAsync(
+    IBrowserContext context, string captchaType, CancellationToken ct)
+{
+    foreach (var pg in context.Pages.Where(p => !p.IsClosed && IsPageMatchForCaptchaType(p, captchaType, false)))
+    {
+        var imgLoc = pg.Locator(ImageSelector);
+        try { if (await imgLoc.CountAsync() > 0) return (pg, imgLoc, null); } catch { }
+
+        foreach (var frame in pg.Frames)
+        {
+            if (frame == pg.MainFrame) continue;
+            var frameLoc = frame.Locator(ImageSelector);
+            try { if (await frameLoc.CountAsync() > 0) return (pg, frameLoc, frame); } catch { }
+        }
+    }
+
+    var productPage = context.Pages.FirstOrDefault(p =>
+        !p.IsClosed && p.Url.Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase));
+
+    if (productPage is null)
+    {
+        Console.Error.WriteLine("  CAPTCHA 및 상품 페이지를 찾을 수 없습니다.");
+        return (null, null, null);
+    }
+
+    Console.WriteLine($"  상품 페이지에서 예매 재시도: {SafeUrl(productPage)}");
+
+    try { await productPage.EvaluateAsync("() => document.querySelectorAll('.popup.is-visible .popupCloseBtn').forEach(b => b.click())"); }
+    catch { }
+    await Task.Delay(300, ct);
+
+    var beforePages = context.Pages.ToHashSet();
+    try
+    {
+        var btn = productPage.Locator("#productSide a.sideBtn.is-primary").First;
+        await btn.ScrollIntoViewIfNeededAsync();
+        await btn.ClickAsync(new LocatorClickOptions { Timeout = 5000, Force = true });
+        Console.WriteLine("  예매 버튼 클릭");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  예매 버튼 클릭 실패: {ex.Message}");
+        return (null, null, null);
+    }
+
+    for (var i = 0; i < 240; i++)
+    {
+        ct.ThrowIfCancellationRequested();
+        await Task.Delay(500, ct);
+
+        foreach (var pg in context.Pages.Where(p => !p.IsClosed))
+        {
+            var imgLoc = pg.Locator(ImageSelector);
+            try
+            {
+                if (await imgLoc.CountAsync() > 0)
+                {
+                    Console.WriteLine($"  CAPTCHA 발견: {SafeUrl(pg)}");
+                    return (pg, imgLoc, null);
+                }
+            }
+            catch { }
+
+            foreach (var frame in pg.Frames.Where(f => f != pg.MainFrame))
+            {
+                var frameLoc = frame.Locator(ImageSelector);
+                try
+                {
+                    if (await frameLoc.CountAsync() > 0)
+                    {
+                        Console.WriteLine($"  CAPTCHA 발견 (frame): {SafeUrl(pg)}");
+                        return (pg, frameLoc, frame);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        if (i % 20 == 0 && i > 0) Console.WriteLine($"  대기 중... ({i / 2}초)");
+    }
+
+    Console.Error.WriteLine("  CAPTCHA 페이지 진입 실패 (120초 초과).");
+    return (null, null, null);
 }
