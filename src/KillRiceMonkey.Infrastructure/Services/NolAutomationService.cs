@@ -1077,7 +1077,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     private async Task SolveNolCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         const int maxAttempts = 5;
-        const int melonCaptchaLength = 6;
+        const int nolCaptchaLength = 6;
 
         _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", PlaywrightRuntime.SafePageUrl(page));
         var (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
@@ -1100,174 +1100,212 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             return;
         }
 
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        var dialogMessage = string.Empty;
+        void OnDialog(object? _, IDialog dialog)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (page.IsClosed) return;
+            dialogMessage = dialog.Message;
+            _logger.LogInformation("[CAPTCHA] dialog 감지: type={Type}, message={Message}", dialog.Type, dialog.Message);
+            dialog.AcceptAsync().ContinueWith(_ => { }, TaskScheduler.Default);
+        }
 
-            var attemptSw = Stopwatch.StartNew();
-
-            string text;
-            try
+        page.Dialog += OnDialog;
+        try
+        {
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                text = await _runtime.RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
-            }
-            catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
-            {
-                _logger.LogWarning("[CAPTCHA] OCR 실패 (attempt={Attempt}): {Message}", attempt, ocrEx.Message);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (page.IsClosed) return;
 
-                var inputGone = false;
-                try { inputGone = await inputLocator.CountAsync() == 0; } catch { }
-                if (inputGone) { _logger.LogInformation("[CAPTCHA] input 사라짐 — 좌석 진행."); return; }
+                dialogMessage = string.Empty;
+                var attemptSw = Stopwatch.StartNew();
 
-                bool captchaHidden = false;
+                string text;
                 try
                 {
-                    captchaHidden = await page.EvaluateAsync<bool>(@"() => {
-                        const el = document.querySelector('.captcha_area, .wrap_captcha, #divRecaptcha, [class*=""captcha""]');
-                        if (!el) return true;
-                        const s = window.getComputedStyle(el);
-                        return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
-                    }");
+                    text = await _runtime.RecognizeCaptchaTextAsync(inputLocator, page, captchaFrame, cancellationToken);
                 }
-                catch { }
-
-                if (captchaHidden)
+                catch (Exception ocrEx) when (ocrEx is PlaywrightException or TimeoutException)
                 {
-                    _logger.LogInformation("[CAPTCHA] CAPTCHA 영역 hidden 감지 — 통과로 진행. attempt={Attempt}", attempt);
+                    _logger.LogWarning("[CAPTCHA] OCR 실패 (attempt={Attempt}): {Message}", attempt, ocrEx.Message);
+                    if (page.IsClosed) return;
+
+                    if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
+                    {
+                        _logger.LogInformation("[CAPTCHA] CAPTCHA 영역 사라짐 — 통과로 진행. attempt={Attempt}", attempt);
+                        return;
+                    }
+
+                    if (attempt < maxAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(text))
+                {
+                    if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
+                    {
+                        _logger.LogInformation("[CAPTCHA] OCR 빈 결과 + CAPTCHA 사라짐 — 통과로 진행. attempt={Attempt}", attempt);
+                        return;
+                    }
+                    _logger.LogInformation("[CAPTCHA] OCR 빈 결과 (attempt={Attempt}, {Ms}ms) — 새로고침 후 재시도.", attempt, attemptSw.ElapsedMilliseconds);
+                    if (attempt < maxAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
+                }
+
+                _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
+
+                if (text.Length != nolCaptchaLength)
+                {
+                    _logger.LogInformation("[CAPTCHA] 길이 불일치 ({Len}≠6), 새로고침 후 재시도. attempt={Attempt}", text.Length, attempt);
+                    if (attempt < maxAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
+                }
+
+                try
+                {
+                    await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 500 });
+                }
+                catch (TimeoutException)
+                {
+                    try
+                    {
+                        await inputLocator.First.EvaluateAsync(@"(el, val) => {
+                            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                            if (setter) { setter.call(el, val); } else { el.value = val; }
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            if (typeof jQuery !== 'undefined') { jQuery(el).val(val).trigger('input').trigger('change'); }
+                        }", text);
+                    }
+                    catch (PlaywrightException ex)
+                    {
+                        _logger.LogWarning(ex, "CAPTCHA 입력 실패");
+                        continue;
+                    }
+                }
+
+                const string submitSelector = "button:text-is('입력완료'), a:has-text('입력완료'), a[onclick*='fnCheck']";
+                await ClickNolCaptchaSubmitAsync(page, captchaFrame, inputLocator, submitSelector);
+                _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}", attempt);
+
+                await Task.Delay(300, cancellationToken);
+
+                if (!string.IsNullOrEmpty(dialogMessage))
+                {
+                    _logger.LogInformation("[CAPTCHA] dialog 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, msg={Msg}", attempt, dialogMessage);
+                    if (attempt < maxAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
+                }
+
+                if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
+                {
+                    _logger.LogInformation("[CAPTCHA] CAPTCHA 통과 확인! (input/모달 사라짐). attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
                     return;
                 }
 
-                if (attempt < maxAttempts)
-                    await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                continue;
-            }
-
-            if (string.IsNullOrEmpty(text))
-            {
-                _logger.LogInformation("[CAPTCHA] OCR 빈 결과 (attempt={Attempt}, {Ms}ms) — 이미지 없음, 좌석 진행.", attempt, attemptSw.ElapsedMilliseconds);
-                return;
-            }
-
-            _logger.LogInformation("CAPTCHA attempt {Attempt}/{Max}: text={Text} ocrMs={OcrMs}", attempt, maxAttempts, text, attemptSw.ElapsedMilliseconds);
-
-            if (text.Length != melonCaptchaLength)
-            {
-                if (attempt < maxAttempts)
-                    await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                continue;
-            }
-
-            try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
-
-            try
-            {
-                await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 500 });
-            }
-            catch (TimeoutException)
-            {
+                var inputCleared = false;
                 try
                 {
-                    await inputLocator.First.EvaluateAsync(@"(el, val) => {
-                        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                        if (setter) { setter.call(el, val); } else { el.value = val; }
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                        if (typeof jQuery !== 'undefined') { jQuery(el).val(val).trigger('input').trigger('change'); }
-                    }", text);
+                    var currentValue = await inputLocator.First.EvaluateAsync<string>("el => el.value");
+                    inputCleared = string.IsNullOrEmpty(currentValue);
                 }
-                catch (PlaywrightException ex)
+                catch { }
+
+                if (inputCleared)
                 {
-                    _logger.LogWarning(ex, "CAPTCHA 입력 실패");
+                    _logger.LogInformation("[CAPTCHA] input 값 초기화 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
+                    if (attempt < maxAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
                     continue;
                 }
+
+                _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료 (명시적 실패 신호 없음). 좌석 진행. attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
+                return;
             }
-
-            const string submitSelector = "button:text-is('입력완료'), a:has-text('입력완료'), a[onclick*='fnCheck']";
-            ILocator? submitLocator = null;
-            var submitCount = 0;
-
-            if (captchaFrame is not null)
-            {
-                var frameSubmit = captchaFrame.Locator(submitSelector);
-                try { submitCount = await frameSubmit.CountAsync(); } catch (PlaywrightException) { }
-                if (submitCount > 0) submitLocator = frameSubmit;
-            }
-
-            if (submitLocator is null)
-            {
-                var pageSubmit = page.Locator(submitSelector);
-                try
-                {
-                    var pageCount = await pageSubmit.CountAsync();
-                    if (pageCount > 0)
-                    {
-                        submitLocator = pageSubmit;
-                        submitCount = pageCount;
-                    }
-                }
-                catch (PlaywrightException) { }
-            }
-
-            if (submitLocator is not null && submitCount > 0)
-            {
-                try
-                {
-                    await submitLocator.First.EvaluateAsync(@"el => {
-                        if (el.disabled) el.disabled = false;
-                        el.click();
-                    }");
-                }
-                catch (PlaywrightException)
-                {
-                    try { await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true }); }
-                    catch (PlaywrightException)
-                    {
-                        try
-                        {
-                            await inputLocator.First.EvaluateAsync(@"el => {
-                                if (typeof fnCheck === 'function') { fnCheck(); }
-                                else if (el.form) { el.form.submit(); }
-                                else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
-                            }");
-                        }
-                        catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
-                    }
-                }
-            }
-            else
-            {
-                try
-                {
-                    await inputLocator.First.EvaluateAsync(@"el => {
-                        if (typeof fnCheck === 'function') { fnCheck(); }
-                        else if (el.form) { el.form.submit(); }
-                        else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
-                    }");
-                }
-                catch (PlaywrightException) { try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { } }
-            }
-
-            _logger.LogInformation("[CAPTCHA] submit 완료. alert/input 확인 시작. attempt={Attempt}", attempt);
-
-            var alertDetected = false;
-            try { alertDetected = await page.EvaluateAsync<bool>("() => window.__melonAlertDetected === true"); } catch { }
-
-            if (alertDetected)
-            {
-                _logger.LogInformation("[CAPTCHA] alert 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
-                try { await page.EvaluateAsync("() => { window.__melonAlertDetected = false; }"); } catch { }
-                if (attempt < maxAttempts)
-                    await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                continue;
-            }
-
-            _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료 (alert 없음). 좌석 진행. attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
-            return;
+        }
+        finally
+        {
+            page.Dialog -= OnDialog;
         }
 
         _logger.LogWarning("[CAPTCHA] CAPTCHA 자동 인식 {Max}회 모두 실패 — 좌석 선택 진행 시도.", maxAttempts);
+    }
+
+    private static async Task ClickNolCaptchaSubmitAsync(IPage page, IFrame? captchaFrame, ILocator inputLocator, string submitSelector)
+    {
+        ILocator? submitLocator = null;
+
+        if (captchaFrame is not null)
+        {
+            var frameSubmit = captchaFrame.Locator(submitSelector);
+            try { if (await frameSubmit.CountAsync() > 0) submitLocator = frameSubmit; } catch { }
+        }
+
+        if (submitLocator is null)
+        {
+            var pageSubmit = page.Locator(submitSelector);
+            try { if (await pageSubmit.CountAsync() > 0) submitLocator = pageSubmit; } catch { }
+        }
+
+        if (submitLocator is not null)
+        {
+            try
+            {
+                await submitLocator.First.EvaluateAsync("el => { if (el.disabled) el.disabled = false; el.click(); }");
+                return;
+            }
+            catch (PlaywrightException)
+            {
+                try { await submitLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true }); return; }
+                catch (PlaywrightException) { }
+            }
+        }
+
+        try
+        {
+            await inputLocator.First.EvaluateAsync(@"el => {
+                if (typeof fnCheck === 'function') { fnCheck(); }
+                else if (el.form) { el.form.submit(); }
+                else { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true })); }
+            }");
+        }
+        catch (PlaywrightException)
+        {
+            try { await inputLocator.First.PressAsync("Enter"); } catch (PlaywrightException) { }
+        }
+    }
+
+    private static async Task<bool> IsCaptchaGoneAsync(ILocator inputLocator, IPage page, IFrame? captchaFrame)
+    {
+        try
+        {
+            if (await inputLocator.CountAsync() == 0) return true;
+        }
+        catch { return true; }
+
+        try
+        {
+            var hidden = captchaFrame is not null
+                ? await captchaFrame.EvaluateAsync<bool>(@"() => {
+                    const el = document.querySelector('#divCaptchaWrap, #divCaptcha_R, .captcha_area, .wrap_captcha');
+                    if (!el) return false;
+                    const s = window.getComputedStyle(el);
+                    return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+                  }")
+                : await page.EvaluateAsync<bool>(@"() => {
+                    const modal = document.querySelector('[class*=""ModalCaptchaText""], [class*=""captchaModal""], .captcha_area');
+                    if (!modal) return true;
+                    const s = window.getComputedStyle(modal);
+                    return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+                  }");
+            if (hidden) return true;
+        }
+        catch { }
+
+        return false;
     }
 
     private async Task TryRefreshNolCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
