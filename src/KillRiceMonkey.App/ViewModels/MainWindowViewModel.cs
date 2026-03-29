@@ -619,7 +619,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     private void UpdatePauseState(string stage)
     {
-        IsPaused = string.Equals(stage, "좌석 선택 대기 — 일시정지", StringComparison.Ordinal);
+        IsPaused = stage.Contains("일시정지", StringComparison.Ordinal);
     }
 
     private void ResetPauseGate()
