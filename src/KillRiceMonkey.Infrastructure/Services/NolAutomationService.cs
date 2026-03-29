@@ -1080,19 +1080,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         const int maxAttempts = 5;
         const int nolCaptchaLength = 6;
 
+        var captchaSearchSw = Stopwatch.StartNew();
         _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 {Timeout}). url={Url}", timeout, PlaywrightRuntime.SafePageUrl(page));
-        var (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(page, timeout, cancellationToken);
-        if (inputLocator is null)
+        var (inputLocator, captchaFrame, foundPage) = await FindNolCaptchaInputAsync(page, timeout, cancellationToken);
+        if (foundPage is not null && foundPage != page)
         {
-            foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
-            {
-                (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(contextPage, TimeSpan.FromSeconds(2), cancellationToken);
-                if (inputLocator is not null)
-                {
-                    page = contextPage;
-                    break;
-                }
-            }
+            _logger.LogInformation("[CAPTCHA] 다른 컨텍스트 페이지에서 CAPTCHA 발견. url={Url}, searchMs={Ms}", PlaywrightRuntime.SafePageUrl(foundPage), captchaSearchSw.ElapsedMilliseconds);
+            page = foundPage;
         }
 
         if (inputLocator is null)
@@ -1100,6 +1094,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             _logger.LogInformation("CAPTCHA 입력창 없음 — CAPTCHA 없는 공연으로 판단, 좌석 선택으로 진행.");
             return;
         }
+
+        _logger.LogInformation("[CAPTCHA] CAPTCHA 입력창 발견 완료. searchMs={Ms}", captchaSearchSw.ElapsedMilliseconds);
 
         var dialogMessage = string.Empty;
         void OnDialog(object? _, IDialog dialog)
@@ -1191,7 +1187,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 await ClickNolCaptchaSubmitAsync(page, captchaFrame, inputLocator, submitSelector);
                 _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}", attempt);
 
-                await Task.Delay(300, cancellationToken);
+                await Task.Delay(100, cancellationToken);
 
                 if (!string.IsNullOrEmpty(dialogMessage))
                 {
@@ -1377,7 +1373,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private static async Task<(ILocator? inputLocator, IFrame? frame)> FindNolCaptchaInputAsync(
+    private static async Task<(ILocator? inputLocator, IFrame? frame, IPage? foundPage)> FindNolCaptchaInputAsync(
         IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
         const string inputSelector = "#txtCaptcha, [class*='captchaInput'] input, [class*='captchaInput'], input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
@@ -1388,30 +1384,50 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var pagesToSearch = new List<IPage> { page };
             try
             {
-                var mainInput = page.Locator(inputSelector);
-                if (await mainInput.CountAsync() > 0)
-                    return (mainInput, null);
+                foreach (var contextPage in page.Context.Pages)
+                {
+                    if (contextPage != page && !contextPage.IsClosed)
+                        pagesToSearch.Add(contextPage);
+                }
             }
-            catch (PlaywrightException) { }
+            catch { }
 
-            foreach (var frame in page.Frames)
+            foreach (var searchPage in pagesToSearch)
             {
-                if (frame == page.MainFrame) continue;
+                if (searchPage.IsClosed) continue;
+
                 try
                 {
-                    var frameInput = frame.Locator(inputSelector);
-                    if (await frameInput.CountAsync() > 0)
-                        return (frameInput, frame);
+                    var mainInput = searchPage.Locator(inputSelector);
+                    if (await mainInput.CountAsync() > 0)
+                        return (mainInput, null, searchPage);
                 }
                 catch (PlaywrightException) { }
+
+                try
+                {
+                    foreach (var frame in searchPage.Frames)
+                    {
+                        if (frame == searchPage.MainFrame) continue;
+                        try
+                        {
+                            var frameInput = frame.Locator(inputSelector);
+                            if (await frameInput.CountAsync() > 0)
+                                return (frameInput, frame, searchPage);
+                        }
+                        catch (PlaywrightException) { }
+                    }
+                }
+                catch { }
             }
 
             await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
 
-        return (null, null);
+        return (null, null, null);
     }
 
     private sealed class NolRoundItem
@@ -1455,7 +1471,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 return await PrepareNolBookingResultPageAsync(page, deadline);
             }
 
-            if (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
+            if (!page.IsClosed &&
+                !string.Equals(StripUrlFragment(page.Url), StripUrlFragment(beforeUrl), StringComparison.OrdinalIgnoreCase))
             {
                 pageTransitionDetected = true;
             }
@@ -1469,7 +1486,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
 
-        if (pageTransitionDetected || (!page.IsClosed && !string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase)))
+        if (pageTransitionDetected || (!page.IsClosed && !string.Equals(StripUrlFragment(page.Url), StripUrlFragment(beforeUrl), StringComparison.OrdinalIgnoreCase)))
         {
             var queueSw = Stopwatch.StartNew();
             var lastQueueReportBucket = 0L;
@@ -1522,7 +1539,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private static async Task<bool> HasNolBookingResultAppearedAsync(IPage page, string beforeUrl, string beforeTitle)
     {
-        if (!string.Equals(page.Url, beforeUrl, StringComparison.OrdinalIgnoreCase))
+        var currentUrl = page.Url;
+        if (!string.Equals(currentUrl, beforeUrl, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(StripUrlFragment(currentUrl), StripUrlFragment(beforeUrl), StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
@@ -1532,6 +1551,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                !string.Equals(currentTitle, beforeTitle, StringComparison.Ordinal) &&
                await page.Locator("#productSide").CountAsync() == 0;
     }
+
+    private static string StripUrlFragment(string url)
+    {
+        var hashIndex = url.IndexOf('#');
+        return hashIndex >= 0 ? url[..hashIndex] : url;
+    }
+
     private static bool IsNolDisabledClass(string className)
     {
         return className.Contains("disabled", StringComparison.OrdinalIgnoreCase) ||
