@@ -142,6 +142,7 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
         await page.BringToFrontAsync();
         await EnsureMelonPopupClosedAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
         _melonPopupClosedDuringPrepare = true;
+        PlaywrightRuntime.EnsureDdddOcrWarmedUp();
         return $"Melon 준비 완료: {PlaywrightRuntime.SafePageUrl(page)}";
     }
 

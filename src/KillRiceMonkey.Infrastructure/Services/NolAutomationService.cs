@@ -169,6 +169,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         await page.BringToFrontAsync();
         await EnsureNolPopupClosedAsync(page, TimeSpan.FromSeconds(2), cancellationToken);
         _popupClosedDuringPrepare = true;
+        PlaywrightRuntime.EnsureDdddOcrWarmedUp();
         var snapshot = await DescribeNolPageStateAsync(page);
         _logger.LogInformation("Prepared NOL automation state. {State}", snapshot);
         return $"NOL 준비 완료: {PlaywrightRuntime.SafePageUrl(page)}";

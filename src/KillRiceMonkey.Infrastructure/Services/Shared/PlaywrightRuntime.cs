@@ -343,55 +343,15 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
 
     internal string RunLocalCaptchaOcr(byte[] screenshotBytes)
     {
-        var original = FilterCaptchaText(RunDdddOcrOnBytes(screenshotBytes));
-        if (original.Length != 6) return original;
+        return FilterCaptchaText(RunDdddOcrOnBytes(screenshotBytes));
+    }
 
-        try
+    internal static void EnsureDdddOcrWarmedUp()
+    {
+        if (_ddddOcrInstance is not null) return;
+        lock (_ddddOcrLock)
         {
-            using var source = Mat.FromImageData(screenshotBytes, ImreadModes.Color);
-            if (source.Empty()) return original;
-
-            var variants = new (string label, Func<Mat, Mat> preprocess, double weight)[]
-            {
-                ("gray", DdddPreprocessGray, 1.5),
-                ("binary", DdddPreprocessBinary, 1.0),
-                ("invert", DdddPreprocessInvert, 1.5),
-                ("contrast", DdddPreprocessContrast, 1.0),
-            };
-
-            var candidates = new List<(string result, double weight)> { (original, 2.0) };
-
-            foreach (var (_, preprocess, weight) in variants)
-            {
-                try
-                {
-                    using var processed = preprocess(source);
-                    Cv2.ImEncode(".png", processed, out var pngBytes);
-                    var filtered = FilterCaptchaText(RunDdddOcrOnBytes(pngBytes));
-                    if (filtered.Length == 6 && filtered.All(char.IsAsciiLetterUpper))
-                        candidates.Add((filtered, weight));
-                }
-                catch { }
-            }
-
-            if (candidates.Count < 2) return original;
-
-            var result = new char[6];
-            for (var pos = 0; pos < 6; pos++)
-            {
-                var votes = new Dictionary<char, double>();
-                foreach (var (text, weight) in candidates)
-                {
-                    var ch = text[pos];
-                    votes[ch] = votes.GetValueOrDefault(ch) + weight;
-                }
-                result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
-            }
-            return new string(result);
-        }
-        catch
-        {
-            return original;
+            _ddddOcrInstance ??= new DDDDOCR(DdddOcrMode.ClassifyBeta);
         }
     }
 
