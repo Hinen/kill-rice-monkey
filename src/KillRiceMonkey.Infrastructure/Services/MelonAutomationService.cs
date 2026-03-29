@@ -268,7 +268,7 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
                     }
 
                     progress?.Report(new AutomationProgress("좌석 선택 중"));
-                    await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, progress, excludedSeats, cancellationToken);
+                    await SelectMelonSeatAndCompleteAsync(captchaPage, timeout, progress, excludedSeats, request.PauseGate, cancellationToken);
                     _logger.LogInformation("[Melon] 좌석 선택 및 완료 버튼 클릭 성공!");
                     progress?.Report(new AutomationProgress("좌석 선택 완료", "좌석 선택 및 완료 버튼 클릭"));
                     return new AutomationRunResult(true, $"Melon 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredTime} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
@@ -522,7 +522,7 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
             .Select(x => x.Page)
             .FirstOrDefault();
     }
-    private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<(double x, double y)> excludedSeats, CancellationToken cancellationToken)
+    private async Task SelectMelonSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<(double x, double y)> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
     {
         var totalSw = Stopwatch.StartNew();
         _logger.LogInformation("[SelectSeat] 멜론 좌석 선택 시작. url={Url}, isClosed={IsClosed}, frameCount={FrameCount}, excludedSeats={ExcludedCount}",
@@ -543,13 +543,13 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
         }
 
         stepSw.Restart();
-        var (validFrame, selectedX, selectedY) = await SelectMelonSeatInFrameAsync(page, seatFrame, timeout, excludedSeats, cancellationToken);
+        var (validFrame, selectedX, selectedY) = await SelectMelonSeatInFrameAsync(page, seatFrame, timeout, excludedSeats, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[PERF] SelectMelonSeatInFrame: {Ms}ms", stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
         try
         {
-            await ClickMelonSeatCompleteAsync(page, validFrame, timeout, cancellationToken);
+            await ClickMelonSeatCompleteAsync(page, validFrame, timeout, pauseGate, progress, cancellationToken);
         }
         catch (InvalidOperationException) when (selectedX is not null)
         {
@@ -676,7 +676,8 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
     }
 
     private async Task<(IFrame frame, double? selectedX, double? selectedY)> SelectMelonSeatInFrameAsync(
-        IPage page, IFrame seatFrame, TimeSpan timeout, HashSet<(double x, double y)> excludedSeats, CancellationToken cancellationToken)
+        IPage page, IFrame seatFrame, TimeSpan timeout, HashSet<(double x, double y)> excludedSeats,
+        ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
         var currentFrame = seatFrame;
@@ -768,6 +769,17 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
                     _logger.LogInformation("좌석 중복 선택 감지 — 좌석({X}, {Y}) 제외 후 다른 좌석으로 재시도. retry={Retry}, excludedCount={ExcludedCount}",
                         clickedX, clickedY, retry, excludedSeats.Count);
                     await DismissMelonSeatConflictAlertAsync(currentFrame);
+
+                    if (pauseGate is not null)
+                    {
+                        pauseGate.Reset();
+                        _logger.LogInformation("[Melon] 중복 좌석 감지 후 일시정지 — 사용자 재개 대기 중. excluded=({X},{Y})", clickedX, clickedY);
+                        progress?.Report(new AutomationProgress("중복 감지 — 일시정지", $"중복 좌석 감지됨 ({clickedX:F0},{clickedY:F0}). 재개 버튼을 눌러주세요."));
+                        await Task.Run(() => pauseGate.Wait(cancellationToken), cancellationToken);
+                        _logger.LogInformation("[Melon] 중복 감지 일시정지 해제 — 다른 좌석 선택 진행.");
+                        progress?.Report(new AutomationProgress("좌석 재선택 중", "일시정지 해제 — 다른 좌석 선택 진행"));
+                    }
+
                     continue;
                 }
 
@@ -816,7 +828,8 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
         catch (PlaywrightException) { }
     }
 
-    private async Task ClickMelonSeatCompleteAsync(IPage page, IFrame seatFrame, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task ClickMelonSeatCompleteAsync(IPage page, IFrame seatFrame, TimeSpan timeout,
+        ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         var currentFrame = seatFrame;
         const int maxFrameRetries = 3;
@@ -847,6 +860,17 @@ public sealed class MelonAutomationService : IMelonAutomationService, IAsyncDisp
                 {
                     _logger.LogWarning("좌석 선택 완료 클릭 후 중복 좌석 감지 — 좌석 재선택 필요. attempt={Attempt}", attempt);
                     await DismissMelonSeatConflictAlertAsync(currentFrame);
+
+                    if (pauseGate is not null)
+                    {
+                        pauseGate.Reset();
+                        _logger.LogInformation("[Melon] 완료 후 중복 감지 — 일시정지 — 사용자 재개 대기 중.");
+                        progress?.Report(new AutomationProgress("완료 후 중복 감지 — 일시정지", "좌석 선택 완료 후 중복 감지됨. 재개 버튼을 눌러주세요."));
+                        await Task.Run(() => pauseGate.Wait(cancellationToken), cancellationToken);
+                        _logger.LogInformation("[Melon] 중복 감지 일시정지 해제 — 좌석 재선택 진행.");
+                        progress?.Report(new AutomationProgress("좌석 재선택 중", "일시정지 해제 — 좌석 재선택 진행"));
+                    }
+
                     throw new InvalidOperationException("좌석 선택 완료 시 중복 좌석 감지됨 — 재시도 필요.");
                 }
 
