@@ -1079,13 +1079,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         const int maxAttempts = 5;
         const int nolCaptchaLength = 6;
 
-        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 500ms). url={Url}", PlaywrightRuntime.SafePageUrl(page));
-        var (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(page, TimeSpan.FromMilliseconds(500), cancellationToken);
+        _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 {Timeout}). url={Url}", timeout, PlaywrightRuntime.SafePageUrl(page));
+        var (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(page, timeout, cancellationToken);
         if (inputLocator is null)
         {
             foreach (var contextPage in page.Context.Pages.Where(p => p != page && !p.IsClosed))
             {
-                (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(contextPage, TimeSpan.FromMilliseconds(300), cancellationToken);
+                (inputLocator, captchaFrame) = await FindNolCaptchaInputAsync(contextPage, TimeSpan.FromSeconds(2), cancellationToken);
                 if (inputLocator is not null)
                 {
                     page = contextPage;
