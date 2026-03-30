@@ -1604,6 +1604,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         var (seatPage, isOnestop) = await FindNolSeatPageAsync(captchaPage, timeout, cancellationToken);
         _logger.LogInformation("[SeatSelect] 좌석 선택 페이지 감지. isOnestop={IsOnestop}, url={Url}", isOnestop, PlaywrightRuntime.SafePageUrl(seatPage));
 
+        await seatPage.BringToFrontAsync();
+
         const int maxSeatRetries = 10;
         var excludedSeats = new HashSet<string>();
 
@@ -1713,16 +1715,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 const circles = document.querySelectorAll('svg circle');
                 let count = 0;
                 for (const c of circles) {
-                    const fill = (c.getAttribute('fill') || '').toLowerCase();
-                    const r = parseFloat(c.getAttribute('r') || '0');
-                    if (r >= 2 && fill !== '#dddddd' && fill !== '#d5d5d5' && fill !== '#cccccc'
-                        && fill !== 'gray' && fill !== 'grey' && fill !== 'none'
-                        && fill !== 'white' && fill !== '#ffffff' && fill !== 'transparent')
-                        count++;
+                    const cls = c.getAttribute('class') || '';
+                    if (cls.includes('disabled')) continue;
+                    count++;
                 }
                 return count;
             }");
-            return available < 5;
+            return available < 3;
         }
         catch (PlaywrightException) { return false; }
     }
@@ -1731,7 +1730,6 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     {
         _logger.LogInformation("[OnestopSeat] 구역 선택 대기 시작.");
         progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역을 선택해주세요."));
-
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1741,16 +1739,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     const circles = document.querySelectorAll('svg circle');
                     let count = 0;
                     for (const c of circles) {
-                        const fill = (c.getAttribute('fill') || '').toLowerCase();
-                        const r = parseFloat(c.getAttribute('r') || '0');
-                        if (r >= 2 && fill !== '#dddddd' && fill !== '#d5d5d5' && fill !== '#cccccc'
-                            && fill !== 'gray' && fill !== 'grey' && fill !== 'none'
-                            && fill !== 'white' && fill !== '#ffffff' && fill !== 'transparent')
-                            count++;
+                        const cls = c.getAttribute('class') || '';
+                        if (cls.includes('disabled')) continue;
+                        count++;
                     }
                     return count;
                 }");
-                if (available >= 5)
+                if (available >= 3)
                 {
                     _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지.", available);
                     return;
@@ -1773,18 +1768,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var scanResult = await page.EvaluateAsync<string>(@"(args) => {
                     const circles = document.querySelectorAll('svg circle');
                     const excluded = args.excluded || [];
-                    const disabledColors = ['#dddddd','#d5d5d5','#cccccc','#eeeeee','#e0e0e0','gray','grey','none','white','#ffffff','transparent',''];
                     const seats = [];
                     let i = 0;
                     for (const c of circles) {
-                        const fill = (c.getAttribute('fill') || '').toLowerCase();
-                        const r = parseFloat(c.getAttribute('r') || '0');
+                        const cls = c.getAttribute('class') || '';
+                        if (cls.includes('disabled') || cls.includes('selected') || cls.includes('active')) { i++; continue; }
                         const cx = parseFloat(c.getAttribute('cx') || '0');
                         const cy = parseFloat(c.getAttribute('cy') || '0');
-                        if (r < 2) { i++; continue; }
-                        if (disabledColors.includes(fill)) { i++; continue; }
-                        const cls = c.getAttribute('class') || '';
-                        if (cls.includes('selected') || cls.includes('active') || cls.includes('disabled')) { i++; continue; }
                         const seatId = cx.toFixed(1) + ',' + cy.toFixed(1);
                         if (excluded.includes(seatId)) { i++; continue; }
                         seats.push({ cx: cx, cy: cy, idx: i, id: seatId });
@@ -1881,37 +1871,25 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     {
         var stepSw = Stopwatch.StartNew();
 
-        var seatFrame = await FindNolLegacySeatFrameAsync(page, timeout, cancellationToken);
-        _logger.LogInformation("[LegacySeat] 좌석 프레임 발견. frameUrl={Url}, findMs={Ms}", seatFrame.Url, stepSw.ElapsedMilliseconds);
+        var seatFrame = await FindNolLegacyFrameAsync(page, "ifrmSeat", timeout, cancellationToken);
+        _logger.LogInformation("[LegacySeat] ifrmSeat 프레임 발견. frameUrl={Url}, findMs={Ms}", seatFrame.Url, stepSw.ElapsedMilliseconds);
 
-        IFrame? detailFrame = null;
-        try
-        {
-            foreach (var frame in page.Frames)
-            {
-                if (frame == seatFrame || frame == page.MainFrame) continue;
-                if (frame.Name == "ifrmSeatDetail" ||
-                    frame.Url.Contains("BookSeat.asp", StringComparison.OrdinalIgnoreCase))
-                {
-                    detailFrame = frame;
-                    break;
-                }
-            }
-        }
-        catch (PlaywrightException) { }
+        stepSw.Restart();
+        var detailFrame = await FindNolLegacyFrameAsync(page, "ifrmSeatDetail", TimeSpan.FromSeconds(3), cancellationToken, throwOnTimeout: false);
+        _logger.LogInformation("[LegacySeat] ifrmSeatDetail 프레임={Found}. findMs={Ms}", detailFrame is not null, stepSw.ElapsedMilliseconds);
 
         var workFrame = detailFrame ?? seatFrame;
 
         stepSw.Restart();
-        var zoneRequired = await IsNolLegacyZoneSelectionRequiredAsync(workFrame);
-        _logger.LogInformation("[LegacySeat] 구역 선택 필요={Required}. checkMs={Ms}", zoneRequired, stepSw.ElapsedMilliseconds);
+        var hasSelectSeat = await HasNolLegacySelectSeatSpansAsync(workFrame);
+        _logger.LogInformation("[LegacySeat] SelectSeat span 존재={Exists}. checkMs={Ms}", hasSelectSeat, stepSw.ElapsedMilliseconds);
 
-        if (zoneRequired)
+        if (!hasSelectSeat)
         {
             stepSw.Restart();
             progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역 선택 대기 — 사용자 클릭 필요"));
-            await WaitForNolLegacyZoneSelectionAsync(workFrame, progress, cancellationToken);
-            _logger.LogInformation("[LegacySeat] 구역 선택 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
+            await WaitForNolLegacySelectSeatSpansAsync(workFrame, progress, cancellationToken);
+            _logger.LogInformation("[LegacySeat] 구역 선택 후 좌석 로드 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
         }
 
         stepSw.Restart();
@@ -1920,11 +1898,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         _logger.LogInformation("[LegacySeat] 좌석 선택 완료. selectMs={Ms}", stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
-        await ClickNolLegacySeatCompleteAsync(seatFrame, page, timeout, cancellationToken);
+        await ClickNolLegacySeatCompleteAsync(seatFrame, cancellationToken);
         _logger.LogInformation("[LegacySeat] 선택 완료 처리. completeMs={Ms}", stepSw.ElapsedMilliseconds);
     }
 
-    private static async Task<IFrame> FindNolLegacySeatFrameAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private static async Task<IFrame?> FindNolLegacyFrameAsync(IPage page, string frameName, TimeSpan timeout, CancellationToken cancellationToken, bool throwOnTimeout = true)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
@@ -1933,55 +1911,43 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             foreach (var frame in page.Frames)
             {
                 if (frame == page.MainFrame) continue;
-                try
-                {
-                    if (frame.Name == "ifrmSeat" ||
-                        frame.Url.Contains("BookSeat", StringComparison.OrdinalIgnoreCase) ||
-                        frame.Url.Contains("BookMain", StringComparison.OrdinalIgnoreCase))
-                        return frame;
-
-                    var seatMap = frame.Locator("map[name='MapMapMap'], #TmgsTable, #imgSeatMap");
-                    if (await seatMap.CountAsync() > 0)
-                        return frame;
-                }
-                catch (PlaywrightException) { }
+                if (string.Equals(frame.Name, frameName, StringComparison.OrdinalIgnoreCase))
+                    return frame;
             }
             await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
         }
-        throw new TimeoutException("NOL 레거시 좌석 프레임(ifrmSeat)을 찾지 못했습니다.");
+        if (throwOnTimeout)
+            throw new TimeoutException($"NOL 레거시 프레임({frameName})을 찾지 못했습니다.");
+        return null;
     }
 
-    private static async Task<bool> IsNolLegacyZoneSelectionRequiredAsync(IFrame frame)
+    private static async Task<bool> HasNolLegacySelectSeatSpansAsync(IFrame frame)
     {
         try
         {
-            var areaCount = await frame.Locator("map area, [onclick*='GetBlockSeatList']").CountAsync();
-            return areaCount > 3;
+            var count = await frame.EvaluateAsync<int>(@"() => {
+                return document.querySelectorAll('span[onclick*=""SelectSeat""]').length;
+            }");
+            return count > 0;
         }
         catch (PlaywrightException) { return false; }
     }
 
-    private async Task WaitForNolLegacyZoneSelectionAsync(IFrame frame, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task WaitForNolLegacySelectSeatSpansAsync(IFrame frame, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("[LegacySeat] 구역 선택 대기 시작.");
+        _logger.LogInformation("[LegacySeat] 구역 선택 대기 시작 — SelectSeat span 출현 대기.");
         progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역을 선택해주세요."));
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var seatElements = await frame.EvaluateAsync<int>(@"() => {
-                    const links = document.querySelectorAll('a[onclick*=""SeatClick""], a[onclick*=""fnSeat""], td.seat, .seat_td, [class*=""seat"" i]');
-                    if (links.length > 0) return links.length;
-                    const areas = document.querySelectorAll('map area');
-                    if (areas.length > 50) return areas.length;
-                    const svgSeats = document.querySelectorAll('svg rect, svg circle');
-                    if (svgSeats.length > 10) return svgSeats.length;
-                    return 0;
+                var count = await frame.EvaluateAsync<int>(@"() => {
+                    return document.querySelectorAll('span[onclick*=""SelectSeat""]').length;
                 }");
-                if (seatElements > 0)
+                if (count > 0)
                 {
-                    _logger.LogInformation("[LegacySeat] 구역 선택 후 좌석 {Count}개 감지.", seatElements);
+                    _logger.LogInformation("[LegacySeat] SelectSeat span {Count}개 감지.", count);
                     return;
                 }
             }
@@ -2001,59 +1967,29 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var excludedArray = excludedSeats.ToArray();
                 var scanResult = await workFrame.EvaluateAsync<string>(@"(args) => {
                     const excluded = args.excluded || [];
-                    const links = document.querySelectorAll('a[onclick*=""SeatClick""], a[onclick*=""fnSeat""], a[onclick*=""seat"" i], td[onclick*=""seat"" i]');
-                    if (links.length > 0) {
-                        for (const link of links) {
-                            const text = (link.innerText || '').trim();
-                            const onclick = link.getAttribute('onclick') || '';
-                            const id = text || onclick.substring(0, 40);
-                            if (excluded.includes(id)) continue;
-                            const style = window.getComputedStyle(link);
-                            if (style.display === 'none' || style.visibility === 'hidden') continue;
-                            link.click();
-                            return JSON.stringify({ s: 'clicked', c: links.length, id: id, t: 'link' });
-                        }
-                        return JSON.stringify({ s: 'empty', c: links.length, t: 'link' });
+                    const spans = document.querySelectorAll('span[onclick*=""SelectSeat""]');
+                    if (spans.length === 0) return JSON.stringify({ s: 'no_seats', c: 0 });
+                    for (const span of spans) {
+                        const onclick = span.getAttribute('onclick') || '';
+                        const match = onclick.match(/SelectSeat\(this,'([^']*)','([^']*)','([^']*)','([^']*)'/);
+                        const seatId = match ? match[3] + '_' + match[4] : onclick.substring(0, 50);
+                        if (excluded.includes(seatId)) continue;
+                        const style = window.getComputedStyle(span);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        span.click();
+                        return JSON.stringify({ s: 'clicked', c: spans.length, id: seatId });
                     }
-                    const areas = document.querySelectorAll('map area');
-                    if (areas.length > 0) {
-                        for (const area of areas) {
-                            const onclick = area.getAttribute('onclick') || '';
-                            const title = area.getAttribute('title') || '';
-                            if (!onclick && area.getAttribute('href') === '#') continue;
-                            const id = title || onclick.substring(0, 40);
-                            if (excluded.includes(id)) continue;
-                            area.click();
-                            return JSON.stringify({ s: 'clicked', c: areas.length, id: id, t: 'area' });
-                        }
-                        return JSON.stringify({ s: 'empty', c: areas.length, t: 'area' });
-                    }
-                    const svgSeats = document.querySelectorAll('svg rect, svg circle');
-                    if (svgSeats.length > 0) {
-                        for (const s of svgSeats) {
-                            const fill = (s.getAttribute('fill') || '').toLowerCase();
-                            if (fill === 'none' || fill === '#dddddd' || fill === 'gray' || fill === 'white') continue;
-                            const cx = s.getAttribute('cx') || s.getAttribute('x') || '0';
-                            const cy = s.getAttribute('cy') || s.getAttribute('y') || '0';
-                            const id = cx + ',' + cy;
-                            if (excluded.includes(id)) continue;
-                            s.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            return JSON.stringify({ s: 'clicked', c: svgSeats.length, id: id, t: 'svg' });
-                        }
-                        return JSON.stringify({ s: 'empty', c: svgSeats.length, t: 'svg' });
-                    }
-                    return JSON.stringify({ s: 'no_seats', c: 0, t: 'none' });
+                    return JSON.stringify({ s: 'empty', c: spans.length });
                 }", new { excluded = excludedArray });
 
                 using var doc = JsonDocument.Parse(scanResult);
                 var status = doc.RootElement.GetProperty("s").GetString();
                 var count = doc.RootElement.GetProperty("c").GetInt32();
-                var type = doc.RootElement.GetProperty("t").GetString();
 
                 if (status == "empty" || status == "no_seats")
                 {
                     if (excludedSeats.Count > 0) { excludedSeats.Clear(); }
-                    _logger.LogWarning("[LegacySeat] 선택 가능 좌석 없음. type={Type}, retry={Retry}", type, retry);
+                    _logger.LogWarning("[LegacySeat] 선택 가능 좌석 없음. count={Count}, retry={Retry}", count, retry);
                     await Task.Delay(100, cancellationToken);
                     continue;
                 }
@@ -2061,7 +1997,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (status == "clicked")
                 {
                     var seatId = doc.RootElement.GetProperty("id").GetString()!;
-                    _logger.LogInformation("[LegacySeat] 좌석 클릭 완료. type={Type}, count={Count}, seatId={SeatId}", type, count, seatId);
+                    _logger.LogInformation("[LegacySeat] 좌석 클릭 완료. count={Count}, seatId={SeatId}", count, seatId);
                     await Task.Delay(200, cancellationToken);
                     return;
                 }
@@ -2075,38 +2011,18 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         throw new InvalidOperationException($"레거시 좌석 선택 실패 ({maxRetries}회 시도).");
     }
 
-    private async Task ClickNolLegacySeatCompleteAsync(IFrame seatFrame, IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task ClickNolLegacySeatCompleteAsync(IFrame seatFrame, CancellationToken cancellationToken)
     {
+        await Task.Delay(100, cancellationToken);
         try
         {
-            var jsSubmit = await seatFrame.EvaluateAsync<bool>(@"() => {
+            var result = await seatFrame.EvaluateAsync<bool>(@"() => {
                 if (typeof fnSeatUpdate === 'function') { fnSeatUpdate(); return true; }
-                if (typeof fnSeatPrice === 'function') { fnSeatPrice(); return true; }
-                if (typeof fnNext === 'function') { fnNext(); return true; }
                 return false;
             }");
-            if (jsSubmit) { _logger.LogInformation("[LegacySeat] JS 함수로 좌석 확정 완료."); return; }
-        }
-        catch (PlaywrightException) { }
-
-        const string submitSelector = "a:has-text('좌석 선택 완료'), button:has-text('좌석 선택'), a:has-text('선택완료'), a:has-text('선택 완료'), #btnSeatSelect, [onclick*='fnBook'], [onclick*='fnNext']";
-        try
-        {
-            var frameSubmit = seatFrame.Locator(submitSelector);
-            if (await frameSubmit.CountAsync() > 0)
+            if (result)
             {
-                try { await frameSubmit.First.EvaluateAsync("el => el.click()"); }
-                catch (PlaywrightException) { await frameSubmit.First.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1000 }); }
-                _logger.LogInformation("[LegacySeat] 좌석 선택 완료 버튼 클릭 (frame).");
-                return;
-            }
-
-            var pageSubmit = page.Locator(submitSelector);
-            if (await pageSubmit.CountAsync() > 0)
-            {
-                try { await pageSubmit.First.EvaluateAsync("el => el.click()"); }
-                catch (PlaywrightException) { await pageSubmit.First.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1000 }); }
-                _logger.LogInformation("[LegacySeat] 좌석 선택 완료 버튼 클릭 (page).");
+                _logger.LogInformation("[LegacySeat] fnSeatUpdate() 호출 완료.");
                 return;
             }
         }
@@ -2114,12 +2030,16 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
         try
         {
-            var formSubmit = await seatFrame.EvaluateAsync<bool>(@"() => {
-                const form = document.querySelector('#formBook, form[name=""formBook""]');
-                if (form) { form.submit(); return true; }
+            var clicked = await seatFrame.EvaluateAsync<bool>(@"() => {
+                const links = document.querySelectorAll('a[onclick*=""fnSeatUpdate""], a[onclick*=""fnBook""]');
+                for (const l of links) { l.click(); return true; }
                 return false;
             }");
-            if (formSubmit) { _logger.LogInformation("[LegacySeat] formBook 제출 완료."); return; }
+            if (clicked)
+            {
+                _logger.LogInformation("[LegacySeat] 좌석선택완료 링크 클릭.");
+                return;
+            }
         }
         catch (PlaywrightException) { }
 
