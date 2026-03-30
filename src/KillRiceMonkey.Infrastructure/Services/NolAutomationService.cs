@@ -1187,40 +1187,53 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 await ClickNolCaptchaSubmitAsync(page, captchaFrame, inputLocator, submitSelector);
                 _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}", attempt);
 
-                await Task.Delay(100, cancellationToken);
+                var captchaPassed = false;
+                var resultDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(1500);
 
-                if (!string.IsNullOrEmpty(dialogMessage))
+                while (!captchaPassed && DateTimeOffset.UtcNow < resultDeadline)
                 {
-                    _logger.LogInformation("[CAPTCHA] dialog 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, msg={Msg}", attempt, dialogMessage);
-                    if (attempt < maxAttempts)
-                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                    continue;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await Task.Delay(50, cancellationToken);
+
+                    if (!string.IsNullOrEmpty(dialogMessage))
+                    {
+                        _logger.LogInformation("[CAPTCHA] dialog 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, msg={Msg}", attempt, dialogMessage);
+                        break;
+                    }
+
+                    if (await HasCaptchaInlineErrorAsync(page, captchaFrame))
+                    {
+                        _logger.LogInformation("[CAPTCHA] 인라인 에러 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
+                        break;
+                    }
+
+                    if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
+                    {
+                        _logger.LogInformation("[CAPTCHA] CAPTCHA 통과 확인! (input/모달 사라짐). attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
+                        captchaPassed = true;
+                        break;
+                    }
+
+                    try
+                    {
+                        var currentValue = await inputLocator.First.EvaluateAsync<string>("el => el.value");
+                        if (string.IsNullOrEmpty(currentValue))
+                        {
+                            _logger.LogInformation("[CAPTCHA] input 값 초기화 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
+                            break;
+                        }
+                    }
+                    catch { }
                 }
 
-                if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
-                {
-                    _logger.LogInformation("[CAPTCHA] CAPTCHA 통과 확인! (input/모달 사라짐). attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
+                if (captchaPassed)
                     return;
-                }
 
-                var inputCleared = false;
-                try
-                {
-                    var currentValue = await inputLocator.First.EvaluateAsync<string>("el => el.value");
-                    inputCleared = string.IsNullOrEmpty(currentValue);
-                }
-                catch { }
+                if (DateTimeOffset.UtcNow >= resultDeadline)
+                    _logger.LogWarning("[CAPTCHA] CAPTCHA 결과 판단 타임아웃 (1.5초) — 실패로 간주. attempt={Attempt}", attempt);
 
-                if (inputCleared)
-                {
-                    _logger.LogInformation("[CAPTCHA] input 값 초기화 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
-                    if (attempt < maxAttempts)
-                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                    continue;
-                }
-
-                _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료 (명시적 실패 신호 없음). 좌석 진행. attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
-                return;
+                if (attempt < maxAttempts)
+                    await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
             }
         }
         finally
@@ -1303,6 +1316,27 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         catch { }
 
         return false;
+    }
+
+    private static async Task<bool> HasCaptchaInlineErrorAsync(IPage page, IFrame? captchaFrame)
+    {
+        const string script = @"() => {
+            const containers = document.querySelectorAll('[class*=""ModalCaptchaText""], [class*=""captchaModal""], [class*=""Captcha""], #divCaptchaWrap, #divCaptcha_R, .captcha_area, .wrap_captcha');
+            for (const c of containers) {
+                const t = c.innerText || '';
+                if (t.includes('다시 확인') || t.includes('일치하지') || t.includes('올바른 문자') || t.includes('정확하게 입력'))
+                    return true;
+            }
+            return false;
+        }";
+
+        try
+        {
+            return captchaFrame is not null
+                ? await captchaFrame.EvaluateAsync<bool>(script)
+                : await page.EvaluateAsync<bool>(script);
+        }
+        catch { return false; }
     }
 
     private async Task TryRefreshNolCaptchaImageAsync(IPage page, IFrame? captchaFrame, CancellationToken cancellationToken)
