@@ -2014,15 +2014,16 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     private async Task ClickNolLegacySeatCompleteAsync(IFrame seatFrame, CancellationToken cancellationToken)
     {
         await Task.Delay(100, cancellationToken);
+
         try
         {
             var result = await seatFrame.EvaluateAsync<bool>(@"() => {
-                if (typeof fnSeatUpdate === 'function') { fnSeatUpdate(); return true; }
+                if (typeof fnSelect === 'function') { fnSelect(); return true; }
                 return false;
             }");
             if (result)
             {
-                _logger.LogInformation("[LegacySeat] fnSeatUpdate() 호출 완료.");
+                _logger.LogInformation("[LegacySeat] fnSelect() 호출 완료 (좌석선택완료).");
                 return;
             }
         }
@@ -2031,13 +2032,15 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         try
         {
             var clicked = await seatFrame.EvaluateAsync<bool>(@"() => {
-                const links = document.querySelectorAll('a[onclick*=""fnSeatUpdate""], a[onclick*=""fnBook""]');
-                for (const l of links) { l.click(); return true; }
+                var img = document.querySelector('#NextStepImage');
+                if (img && img.parentElement) { img.parentElement.click(); return true; }
+                var links = document.querySelectorAll('a[href*=""fnSelect""]');
+                for (var l of links) { l.click(); return true; }
                 return false;
             }");
             if (clicked)
             {
-                _logger.LogInformation("[LegacySeat] 좌석선택완료 링크 클릭.");
+                _logger.LogInformation("[LegacySeat] NextStepImage 클릭 완료 (좌석선택완료).");
                 return;
             }
         }
