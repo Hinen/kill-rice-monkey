@@ -1573,17 +1573,24 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private static async Task<bool> HasNolBookingResultAppearedAsync(IPage page, string beforeUrl, string beforeTitle)
     {
-        var currentUrl = page.Url;
-        if (!string.Equals(currentUrl, beforeUrl, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(StripUrlFragment(currentUrl), StripUrlFragment(beforeUrl), StringComparison.OrdinalIgnoreCase))
+        try
+        {
+            var currentUrl = page.Url;
+            if (!string.Equals(currentUrl, beforeUrl, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(StripUrlFragment(currentUrl), StripUrlFragment(beforeUrl), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var currentTitle = await PlaywrightRuntime.GetPageTitleOrEmptyAsync(page);
+            return !string.IsNullOrWhiteSpace(currentTitle) &&
+                   !string.Equals(currentTitle, beforeTitle, StringComparison.Ordinal) &&
+                   await page.Locator("#productSide").CountAsync() == 0;
+        }
+        catch (PlaywrightException ex) when (PlaywrightRuntime.IsClosedTargetError(ex))
         {
             return true;
         }
-
-        var currentTitle = await PlaywrightRuntime.GetPageTitleOrEmptyAsync(page);
-        return !string.IsNullOrWhiteSpace(currentTitle) &&
-               !string.Equals(currentTitle, beforeTitle, StringComparison.Ordinal) &&
-               await page.Locator("#productSide").CountAsync() == 0;
     }
 
     private static string StripUrlFragment(string url)

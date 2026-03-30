@@ -94,7 +94,8 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
     internal static bool IsClosedTargetError(PlaywrightException ex)
         => ex.Message.Contains("Target page, context or browser has been closed", StringComparison.OrdinalIgnoreCase)
         || ex.Message.Contains("Browser has been closed", StringComparison.OrdinalIgnoreCase)
-        || ex.Message.Contains("Target closed", StringComparison.OrdinalIgnoreCase);
+        || ex.Message.Contains("Target closed", StringComparison.OrdinalIgnoreCase)
+        || ex.Message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase);
 
     internal static string NormalizeText(string? value)
         => string.IsNullOrWhiteSpace(value) ? string.Empty : Regex.Replace(value, "\\s+", " ").Trim();
