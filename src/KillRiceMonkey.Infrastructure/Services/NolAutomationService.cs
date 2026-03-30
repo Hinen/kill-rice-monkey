@@ -4,6 +4,7 @@ using OpenCvSharp;
 using Polly;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
@@ -221,7 +222,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             _logger.LogInformation("NOL screen automation started. runId={RunId}, date={Date}, round={Round}", runId, desiredDate, desiredRound);
 
             SetStage("attach-existing-browser");
-            var cdpResult = await TryRunNolAutomationViaConnectedBrowserAsync(desiredDate, desiredRound, timeout, progress, cancellationToken);
+            var cdpResult = await TryRunNolAutomationViaConnectedBrowserAsync(request, desiredDate, desiredRound, timeout, progress, cancellationToken);
             if (cdpResult is not null)
             {
                 return cdpResult;
@@ -255,7 +256,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private async Task<AutomationRunResult?> TryRunNolAutomationViaConnectedBrowserAsync(DateOnly desiredDate, string desiredRound, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<AutomationRunResult?> TryRunNolAutomationViaConnectedBrowserAsync(TicketingJobRequest request, DateOnly desiredDate, string desiredRound, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         IPage? page = null;
         try
@@ -286,7 +287,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             progress?.Report(new AutomationProgress("캡차 입력 중"));
             await SolveNolCaptchaAsync(captchaPage, timeout, cancellationToken);
             progress?.Report(new AutomationProgress("캡차 입력 완료", "캡차 처리 완료"));
-            return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택, CAPTCHA 입력 완료.", DateTimeOffset.Now);
+
+            progress?.Report(new AutomationProgress("좌석 선택 중"));
+            await SelectNolSeatAndCompleteAsync(captchaPage, timeout, progress, request.PauseGate, cancellationToken);
+            progress?.Report(new AutomationProgress("좌석 선택 완료", "좌석 선택 및 완료 버튼 클릭"));
+            return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
         }
         catch (Exception ex)
         {
@@ -1591,6 +1596,534 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         {
             return true;
         }
+    }
+
+    private async Task SelectNolSeatAndCompleteAsync(IPage captchaPage, TimeSpan timeout, IProgress<AutomationProgress>? progress, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
+    {
+        var totalSw = Stopwatch.StartNew();
+        var (seatPage, isOnestop) = await FindNolSeatPageAsync(captchaPage, timeout, cancellationToken);
+        _logger.LogInformation("[SeatSelect] 좌석 선택 페이지 감지. isOnestop={IsOnestop}, url={Url}", isOnestop, PlaywrightRuntime.SafePageUrl(seatPage));
+
+        const int maxSeatRetries = 10;
+        var excludedSeats = new HashSet<string>();
+
+        for (var attempt = 0; attempt < maxSeatRetries; attempt++)
+        {
+            try
+            {
+                if (isOnestop)
+                    await SelectNolOnestopSeatAndCompleteAsync(seatPage, timeout, progress, excludedSeats, pauseGate, cancellationToken);
+                else
+                    await SelectNolLegacySeatAndCompleteAsync(seatPage, timeout, progress, excludedSeats, pauseGate, cancellationToken);
+
+                _logger.LogInformation("[SeatSelect] 좌석 선택 완료. totalMs={Ms}", totalSw.ElapsedMilliseconds);
+                return;
+            }
+            catch (Exception ex) when (attempt < maxSeatRetries - 1)
+            {
+                _logger.LogWarning(ex, "[SeatSelect] 좌석 선택 실패 (attempt={Attempt}/{Max}). 재시도.", attempt + 1, maxSeatRetries);
+                if (seatPage.IsClosed)
+                {
+                    _logger.LogWarning("[SeatSelect] 좌석 페이지가 닫혀 있어 재시도 불가.");
+                    break;
+                }
+                await Task.Delay(100, cancellationToken);
+            }
+        }
+
+        throw new InvalidOperationException($"좌석 선택 {maxSeatRetries}회 시도 모두 실패.");
+    }
+
+    private static async Task<(IPage seatPage, bool isOnestop)> FindNolSeatPageAsync(IPage contextPage, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            foreach (var p in contextPage.Context.Pages.Where(x => !x.IsClosed))
+            {
+                var url = PlaywrightRuntime.SafePageUrl(p);
+                if (url.Contains("/onestop/seat", StringComparison.OrdinalIgnoreCase) ||
+                    url.Contains("/onestop/", StringComparison.OrdinalIgnoreCase))
+                    return (p, true);
+                if (url.Contains("poticket.interpark.com", StringComparison.OrdinalIgnoreCase))
+                    return (p, false);
+            }
+
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
+        }
+
+        return (contextPage, !contextPage.Frames.Any(f => f != contextPage.MainFrame &&
+            f.Url.Contains("poticket", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private async Task SelectNolOnestopSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
+    {
+        var stepSw = Stopwatch.StartNew();
+
+        await WaitForNolOnestopSeatMapAsync(page, timeout, cancellationToken);
+        _logger.LogInformation("[OnestopSeat] 좌석맵 로드 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
+
+        stepSw.Restart();
+        var zoneRequired = await IsNolOnestopZoneSelectionRequiredAsync(page);
+        _logger.LogInformation("[OnestopSeat] 구역 선택 필요={Required}. checkMs={Ms}", zoneRequired, stepSw.ElapsedMilliseconds);
+
+        if (zoneRequired)
+        {
+            stepSw.Restart();
+            progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역 선택 대기 — 사용자 클릭 필요"));
+            await WaitForNolOnestopZoneSelectionAsync(page, progress, cancellationToken);
+            _logger.LogInformation("[OnestopSeat] 구역 선택 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
+        }
+
+        stepSw.Restart();
+        progress?.Report(new AutomationProgress("좌석 선택 중"));
+        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, cancellationToken);
+        _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료. seatId={SeatId}, selectMs={Ms}", selectedSeatId, stepSw.ElapsedMilliseconds);
+
+        stepSw.Restart();
+        await ClickNolOnestopSeatCompleteAsync(page, timeout, cancellationToken);
+        _logger.LogInformation("[OnestopSeat] 선택 완료 버튼 클릭. completeMs={Ms}", stepSw.ElapsedMilliseconds);
+    }
+
+    private static async Task WaitForNolOnestopSeatMapAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        await PlaywrightRuntime.WaitForConditionAsync(
+            async () =>
+            {
+                try
+                {
+                    var circleCount = await page.Locator("svg circle").CountAsync();
+                    return circleCount > 10;
+                }
+                catch (PlaywrightException) { return false; }
+            },
+            timeout,
+            cancellationToken,
+            "NOL 원스탑 좌석맵(svg circle)을 찾지 못했습니다.");
+    }
+
+    private static async Task<bool> IsNolOnestopZoneSelectionRequiredAsync(IPage page)
+    {
+        try
+        {
+            var available = await page.EvaluateAsync<int>(@"() => {
+                const circles = document.querySelectorAll('svg circle');
+                let count = 0;
+                for (const c of circles) {
+                    const fill = (c.getAttribute('fill') || '').toLowerCase();
+                    const r = parseFloat(c.getAttribute('r') || '0');
+                    if (r >= 2 && fill !== '#dddddd' && fill !== '#d5d5d5' && fill !== '#cccccc'
+                        && fill !== 'gray' && fill !== 'grey' && fill !== 'none'
+                        && fill !== 'white' && fill !== '#ffffff' && fill !== 'transparent')
+                        count++;
+                }
+                return count;
+            }");
+            return available < 5;
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    private async Task WaitForNolOnestopZoneSelectionAsync(IPage page, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("[OnestopSeat] 구역 선택 대기 시작.");
+        progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역을 선택해주세요."));
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var available = await page.EvaluateAsync<int>(@"() => {
+                    const circles = document.querySelectorAll('svg circle');
+                    let count = 0;
+                    for (const c of circles) {
+                        const fill = (c.getAttribute('fill') || '').toLowerCase();
+                        const r = parseFloat(c.getAttribute('r') || '0');
+                        if (r >= 2 && fill !== '#dddddd' && fill !== '#d5d5d5' && fill !== '#cccccc'
+                            && fill !== 'gray' && fill !== 'grey' && fill !== 'none'
+                            && fill !== 'white' && fill !== '#ffffff' && fill !== 'transparent')
+                            count++;
+                    }
+                    return count;
+                }");
+                if (available >= 5)
+                {
+                    _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지.", available);
+                    return;
+                }
+            }
+            catch (PlaywrightException) { }
+            await Task.Delay(50, cancellationToken);
+        }
+    }
+
+    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, CancellationToken cancellationToken)
+    {
+        const int maxRetries = 10;
+        for (var retry = 0; retry < maxRetries; retry++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var excludedArray = excludedSeats.ToArray();
+                var scanResult = await page.EvaluateAsync<string>(@"(args) => {
+                    const circles = document.querySelectorAll('svg circle');
+                    const excluded = args.excluded || [];
+                    const disabledColors = ['#dddddd','#d5d5d5','#cccccc','#eeeeee','#e0e0e0','gray','grey','none','white','#ffffff','transparent',''];
+                    const seats = [];
+                    let i = 0;
+                    for (const c of circles) {
+                        const fill = (c.getAttribute('fill') || '').toLowerCase();
+                        const r = parseFloat(c.getAttribute('r') || '0');
+                        const cx = parseFloat(c.getAttribute('cx') || '0');
+                        const cy = parseFloat(c.getAttribute('cy') || '0');
+                        if (r < 2) { i++; continue; }
+                        if (disabledColors.includes(fill)) { i++; continue; }
+                        const cls = c.getAttribute('class') || '';
+                        if (cls.includes('selected') || cls.includes('active') || cls.includes('disabled')) { i++; continue; }
+                        const seatId = cx.toFixed(1) + ',' + cy.toFixed(1);
+                        if (excluded.includes(seatId)) { i++; continue; }
+                        seats.push({ cx: cx, cy: cy, idx: i, id: seatId });
+                        i++;
+                    }
+                    if (seats.length === 0) return JSON.stringify({ s: 'empty', c: 0 });
+                    seats.sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+                    const t = seats[0];
+                    const circle = circles[t.idx];
+                    if (!circle) return JSON.stringify({ s: 'not_found', c: seats.length });
+                    circle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    return JSON.stringify({ s: 'clicked', c: seats.length, id: t.id, cx: t.cx, cy: t.cy });
+                }", new { excluded = excludedArray });
+
+                using var doc = JsonDocument.Parse(scanResult);
+                var status = doc.RootElement.GetProperty("s").GetString();
+                var count = doc.RootElement.GetProperty("c").GetInt32();
+
+                if (status == "empty")
+                {
+                    if (excludedSeats.Count > 0)
+                    {
+                        _logger.LogWarning("[OnestopSeat] 제외 좌석 빼면 선택 가능 좌석 없음 — 초기화. retry={Retry}", retry);
+                        excludedSeats.Clear();
+                    }
+                    else
+                        _logger.LogWarning("[OnestopSeat] 선택 가능 좌석 없음. retry={Retry}", retry);
+                    await Task.Delay(50, cancellationToken);
+                    continue;
+                }
+
+                if (status != "clicked")
+                {
+                    _logger.LogWarning("[OnestopSeat] 좌석 클릭 실패: status={Status}, count={Count}", status, count);
+                    continue;
+                }
+
+                var seatId = doc.RootElement.GetProperty("id").GetString()!;
+                _logger.LogInformation("[OnestopSeat] 좌석 스캔+클릭 완료. available={Count}, seatId={SeatId}", count, seatId);
+                await Task.Delay(100, cancellationToken);
+
+                var selectionConfirmed = await PlaywrightRuntime.TryWaitForConditionAsync(
+                    async () =>
+                    {
+                        try
+                        {
+                            var text = await page.Locator("[class*='InfoSelected'], [class*='infoSelected']").First.InnerTextAsync();
+                            return !text.Contains("선택한 좌석이 없습니다", StringComparison.OrdinalIgnoreCase);
+                        }
+                        catch { return false; }
+                    },
+                    TimeSpan.FromMilliseconds(500), cancellationToken);
+
+                if (!selectionConfirmed)
+                {
+                    _logger.LogWarning("[OnestopSeat] 좌석 선택 미반영. seatId={SeatId}, retry={Retry}", seatId, retry);
+                    excludedSeats.Add(seatId);
+                    continue;
+                }
+
+                return seatId;
+            }
+            catch (PlaywrightException ex)
+            {
+                _logger.LogWarning("[OnestopSeat] 좌석 선택 중 예외. retry={Retry}, error={Error}", retry, ex.Message);
+                await Task.Delay(50, cancellationToken);
+            }
+        }
+        throw new InvalidOperationException($"원스탑 좌석 선택 실패 ({maxRetries}회 시도).");
+    }
+
+    private async Task ClickNolOnestopSeatCompleteAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var completeBtn = page.Locator("button:has-text('선택 완료'), [class*='EntButton'] button:has-text('완료')").First;
+
+        await PlaywrightRuntime.WaitForConditionAsync(
+            async () =>
+            {
+                try
+                {
+                    if (await completeBtn.CountAsync() == 0) return false;
+                    return !await completeBtn.IsDisabledAsync();
+                }
+                catch (PlaywrightException) { return false; }
+            },
+            timeout, cancellationToken, "NOL '선택 완료' 버튼이 활성화되지 않았습니다.");
+
+        try { await completeBtn.EvaluateAsync("el => el.click()"); }
+        catch (PlaywrightException) { await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1000 }); }
+        _logger.LogInformation("[OnestopSeat] '선택 완료' 버튼 클릭 완료.");
+    }
+
+    private async Task SelectNolLegacySeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
+    {
+        var stepSw = Stopwatch.StartNew();
+
+        var seatFrame = await FindNolLegacySeatFrameAsync(page, timeout, cancellationToken);
+        _logger.LogInformation("[LegacySeat] 좌석 프레임 발견. frameUrl={Url}, findMs={Ms}", seatFrame.Url, stepSw.ElapsedMilliseconds);
+
+        IFrame? detailFrame = null;
+        try
+        {
+            foreach (var frame in page.Frames)
+            {
+                if (frame == seatFrame || frame == page.MainFrame) continue;
+                if (frame.Name == "ifrmSeatDetail" ||
+                    frame.Url.Contains("BookSeat.asp", StringComparison.OrdinalIgnoreCase))
+                {
+                    detailFrame = frame;
+                    break;
+                }
+            }
+        }
+        catch (PlaywrightException) { }
+
+        var workFrame = detailFrame ?? seatFrame;
+
+        stepSw.Restart();
+        var zoneRequired = await IsNolLegacyZoneSelectionRequiredAsync(workFrame);
+        _logger.LogInformation("[LegacySeat] 구역 선택 필요={Required}. checkMs={Ms}", zoneRequired, stepSw.ElapsedMilliseconds);
+
+        if (zoneRequired)
+        {
+            stepSw.Restart();
+            progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역 선택 대기 — 사용자 클릭 필요"));
+            await WaitForNolLegacyZoneSelectionAsync(workFrame, progress, cancellationToken);
+            _logger.LogInformation("[LegacySeat] 구역 선택 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
+        }
+
+        stepSw.Restart();
+        progress?.Report(new AutomationProgress("좌석 선택 중"));
+        await SelectNolLegacySeatAsync(workFrame, excludedSeats, cancellationToken);
+        _logger.LogInformation("[LegacySeat] 좌석 선택 완료. selectMs={Ms}", stepSw.ElapsedMilliseconds);
+
+        stepSw.Restart();
+        await ClickNolLegacySeatCompleteAsync(seatFrame, page, timeout, cancellationToken);
+        _logger.LogInformation("[LegacySeat] 선택 완료 처리. completeMs={Ms}", stepSw.ElapsedMilliseconds);
+    }
+
+    private static async Task<IFrame> FindNolLegacySeatFrameAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var frame in page.Frames)
+            {
+                if (frame == page.MainFrame) continue;
+                try
+                {
+                    if (frame.Name == "ifrmSeat" ||
+                        frame.Url.Contains("BookSeat", StringComparison.OrdinalIgnoreCase) ||
+                        frame.Url.Contains("BookMain", StringComparison.OrdinalIgnoreCase))
+                        return frame;
+
+                    var seatMap = frame.Locator("map[name='MapMapMap'], #TmgsTable, #imgSeatMap");
+                    if (await seatMap.CountAsync() > 0)
+                        return frame;
+                }
+                catch (PlaywrightException) { }
+            }
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
+        }
+        throw new TimeoutException("NOL 레거시 좌석 프레임(ifrmSeat)을 찾지 못했습니다.");
+    }
+
+    private static async Task<bool> IsNolLegacyZoneSelectionRequiredAsync(IFrame frame)
+    {
+        try
+        {
+            var areaCount = await frame.Locator("map area, [onclick*='GetBlockSeatList']").CountAsync();
+            return areaCount > 3;
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    private async Task WaitForNolLegacyZoneSelectionAsync(IFrame frame, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("[LegacySeat] 구역 선택 대기 시작.");
+        progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역을 선택해주세요."));
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var seatElements = await frame.EvaluateAsync<int>(@"() => {
+                    const links = document.querySelectorAll('a[onclick*=""SeatClick""], a[onclick*=""fnSeat""], td.seat, .seat_td, [class*=""seat"" i]');
+                    if (links.length > 0) return links.length;
+                    const areas = document.querySelectorAll('map area');
+                    if (areas.length > 50) return areas.length;
+                    const svgSeats = document.querySelectorAll('svg rect, svg circle');
+                    if (svgSeats.length > 10) return svgSeats.length;
+                    return 0;
+                }");
+                if (seatElements > 0)
+                {
+                    _logger.LogInformation("[LegacySeat] 구역 선택 후 좌석 {Count}개 감지.", seatElements);
+                    return;
+                }
+            }
+            catch (PlaywrightException) { }
+            await Task.Delay(50, cancellationToken);
+        }
+    }
+
+    private async Task SelectNolLegacySeatAsync(IFrame workFrame, HashSet<string> excludedSeats, CancellationToken cancellationToken)
+    {
+        const int maxRetries = 10;
+        for (var retry = 0; retry < maxRetries; retry++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var excludedArray = excludedSeats.ToArray();
+                var scanResult = await workFrame.EvaluateAsync<string>(@"(args) => {
+                    const excluded = args.excluded || [];
+                    const links = document.querySelectorAll('a[onclick*=""SeatClick""], a[onclick*=""fnSeat""], a[onclick*=""seat"" i], td[onclick*=""seat"" i]');
+                    if (links.length > 0) {
+                        for (const link of links) {
+                            const text = (link.innerText || '').trim();
+                            const onclick = link.getAttribute('onclick') || '';
+                            const id = text || onclick.substring(0, 40);
+                            if (excluded.includes(id)) continue;
+                            const style = window.getComputedStyle(link);
+                            if (style.display === 'none' || style.visibility === 'hidden') continue;
+                            link.click();
+                            return JSON.stringify({ s: 'clicked', c: links.length, id: id, t: 'link' });
+                        }
+                        return JSON.stringify({ s: 'empty', c: links.length, t: 'link' });
+                    }
+                    const areas = document.querySelectorAll('map area');
+                    if (areas.length > 0) {
+                        for (const area of areas) {
+                            const onclick = area.getAttribute('onclick') || '';
+                            const title = area.getAttribute('title') || '';
+                            if (!onclick && area.getAttribute('href') === '#') continue;
+                            const id = title || onclick.substring(0, 40);
+                            if (excluded.includes(id)) continue;
+                            area.click();
+                            return JSON.stringify({ s: 'clicked', c: areas.length, id: id, t: 'area' });
+                        }
+                        return JSON.stringify({ s: 'empty', c: areas.length, t: 'area' });
+                    }
+                    const svgSeats = document.querySelectorAll('svg rect, svg circle');
+                    if (svgSeats.length > 0) {
+                        for (const s of svgSeats) {
+                            const fill = (s.getAttribute('fill') || '').toLowerCase();
+                            if (fill === 'none' || fill === '#dddddd' || fill === 'gray' || fill === 'white') continue;
+                            const cx = s.getAttribute('cx') || s.getAttribute('x') || '0';
+                            const cy = s.getAttribute('cy') || s.getAttribute('y') || '0';
+                            const id = cx + ',' + cy;
+                            if (excluded.includes(id)) continue;
+                            s.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            return JSON.stringify({ s: 'clicked', c: svgSeats.length, id: id, t: 'svg' });
+                        }
+                        return JSON.stringify({ s: 'empty', c: svgSeats.length, t: 'svg' });
+                    }
+                    return JSON.stringify({ s: 'no_seats', c: 0, t: 'none' });
+                }", new { excluded = excludedArray });
+
+                using var doc = JsonDocument.Parse(scanResult);
+                var status = doc.RootElement.GetProperty("s").GetString();
+                var count = doc.RootElement.GetProperty("c").GetInt32();
+                var type = doc.RootElement.GetProperty("t").GetString();
+
+                if (status == "empty" || status == "no_seats")
+                {
+                    if (excludedSeats.Count > 0) { excludedSeats.Clear(); }
+                    _logger.LogWarning("[LegacySeat] 선택 가능 좌석 없음. type={Type}, retry={Retry}", type, retry);
+                    await Task.Delay(100, cancellationToken);
+                    continue;
+                }
+
+                if (status == "clicked")
+                {
+                    var seatId = doc.RootElement.GetProperty("id").GetString()!;
+                    _logger.LogInformation("[LegacySeat] 좌석 클릭 완료. type={Type}, count={Count}, seatId={SeatId}", type, count, seatId);
+                    await Task.Delay(200, cancellationToken);
+                    return;
+                }
+            }
+            catch (PlaywrightException ex)
+            {
+                _logger.LogWarning("[LegacySeat] 좌석 선택 중 예외. retry={Retry}, error={Error}", retry, ex.Message);
+                await Task.Delay(100, cancellationToken);
+            }
+        }
+        throw new InvalidOperationException($"레거시 좌석 선택 실패 ({maxRetries}회 시도).");
+    }
+
+    private async Task ClickNolLegacySeatCompleteAsync(IFrame seatFrame, IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var jsSubmit = await seatFrame.EvaluateAsync<bool>(@"() => {
+                if (typeof fnSeatUpdate === 'function') { fnSeatUpdate(); return true; }
+                if (typeof fnSeatPrice === 'function') { fnSeatPrice(); return true; }
+                if (typeof fnNext === 'function') { fnNext(); return true; }
+                return false;
+            }");
+            if (jsSubmit) { _logger.LogInformation("[LegacySeat] JS 함수로 좌석 확정 완료."); return; }
+        }
+        catch (PlaywrightException) { }
+
+        const string submitSelector = "a:has-text('좌석 선택 완료'), button:has-text('좌석 선택'), a:has-text('선택완료'), a:has-text('선택 완료'), #btnSeatSelect, [onclick*='fnBook'], [onclick*='fnNext']";
+        try
+        {
+            var frameSubmit = seatFrame.Locator(submitSelector);
+            if (await frameSubmit.CountAsync() > 0)
+            {
+                try { await frameSubmit.First.EvaluateAsync("el => el.click()"); }
+                catch (PlaywrightException) { await frameSubmit.First.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1000 }); }
+                _logger.LogInformation("[LegacySeat] 좌석 선택 완료 버튼 클릭 (frame).");
+                return;
+            }
+
+            var pageSubmit = page.Locator(submitSelector);
+            if (await pageSubmit.CountAsync() > 0)
+            {
+                try { await pageSubmit.First.EvaluateAsync("el => el.click()"); }
+                catch (PlaywrightException) { await pageSubmit.First.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1000 }); }
+                _logger.LogInformation("[LegacySeat] 좌석 선택 완료 버튼 클릭 (page).");
+                return;
+            }
+        }
+        catch (PlaywrightException) { }
+
+        try
+        {
+            var formSubmit = await seatFrame.EvaluateAsync<bool>(@"() => {
+                const form = document.querySelector('#formBook, form[name=""formBook""]');
+                if (form) { form.submit(); return true; }
+                return false;
+            }");
+            if (formSubmit) { _logger.LogInformation("[LegacySeat] formBook 제출 완료."); return; }
+        }
+        catch (PlaywrightException) { }
+
+        _logger.LogWarning("[LegacySeat] 좌석 선택 완료 방법을 찾지 못함 — 진행 시도.");
     }
 
     private static string StripUrlFragment(string url)
