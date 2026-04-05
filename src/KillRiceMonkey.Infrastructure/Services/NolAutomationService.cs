@@ -15,6 +15,7 @@ namespace KillRiceMonkey.Infrastructure.Services;
 
 public sealed class NolAutomationService : INolAutomationService, IAsyncDisposable
 {
+    private const string NolOnestopSeatCircleSelector = "[class*=\"SeatMap_seatGroup\"] circle";
     private static readonly Regex NolRoundPattern = new(@"^\D*(?<round>\d{1,2})\s*(?:회차|회|희|히|외)?\s*(?<time>\d{1,2}(?::|\.|,)?\d{2})", RegexOptions.Compiled);
     private const string NolRemoteDebugLaunchUrl = "https://tickets.interpark.com/";
     private const string NolCdpEndpoint = "http://127.0.0.1:9222/";
@@ -1708,31 +1709,34 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             {
                 try
                 {
-                    var circleCount = await page.Locator("svg circle").CountAsync();
-                    return circleCount > 10;
+                    if (await page.Locator("[class*='SeatPlan_seatPlan'], [class*='SeatMap_seatMap'], [class*='SeatMap_blockImg'], [class*='SeatMap_placeImg'], [class*='SeatMap_seatGroup']").CountAsync() > 0)
+                        return true;
+
+                    var circleCount = await page.Locator(NolOnestopSeatCircleSelector).CountAsync();
+                    return circleCount > 0;
                 }
                 catch (PlaywrightException) { return false; }
             },
             timeout,
             cancellationToken,
-            "NOL 원스탑 좌석맵(svg circle)을 찾지 못했습니다.");
+            "NOL 원스탑 좌석/구역 맵을 찾지 못했습니다.");
     }
 
     private static async Task<bool> IsNolOnestopZoneSelectionRequiredAsync(IPage page)
     {
         try
         {
-            var available = await page.EvaluateAsync<int>(@"() => {
-                const circles = document.querySelectorAll('svg circle');
+            var available = await page.EvaluateAsync<int>($@"() => {{
+                const circles = document.querySelectorAll('{NolOnestopSeatCircleSelector}');
                 let count = 0;
-                for (const c of circles) {
+                for (const c of circles) {{
                     const cls = c.getAttribute('class') || '';
                     if (cls.includes('disabled')) continue;
                     count++;
-                }
+                }}
                 return count;
-            }");
-            return available < 3;
+            }}");
+            return available < 10;
         }
         catch (PlaywrightException) { return false; }
     }
@@ -1746,17 +1750,17 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var available = await page.EvaluateAsync<int>(@"() => {
-                    const circles = document.querySelectorAll('svg circle');
+                var available = await page.EvaluateAsync<int>($@"() => {{
+                    const circles = document.querySelectorAll('{NolOnestopSeatCircleSelector}');
                     let count = 0;
-                    for (const c of circles) {
+                    for (const c of circles) {{
                         const cls = c.getAttribute('class') || '';
                         if (cls.includes('disabled')) continue;
                         count++;
-                    }
+                    }}
                     return count;
-                }");
-                if (available >= 3)
+                }}");
+                if (available >= 10)
                 {
                     _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지.", available);
                     return;
@@ -1776,14 +1780,21 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             try
             {
                 var excludedArray = excludedSeats.ToArray();
-                var scanResult = await page.EvaluateAsync<string>(@"(args) => {
-                    const circles = document.querySelectorAll('svg circle');
+                var scanScript = @"(args) => {
+                    const circles = document.querySelectorAll('__SEAT_SELECTOR__');
                     const excluded = args.excluded || [];
                     const seats = [];
                     let i = 0;
                     for (const c of circles) {
                         const cls = c.getAttribute('class') || '';
                         if (cls.includes('disabled') || cls.includes('selected') || cls.includes('active')) { i++; continue; }
+                        const style = window.getComputedStyle(c);
+                        const pointerEvents = style.pointerEvents || '';
+                        const opacity = Number(style.opacity || '1');
+                        const visibility = style.visibility || '';
+                        const display = style.display || '';
+                        const radius = parseFloat(c.getAttribute('r') || '0');
+                        if (pointerEvents === 'none' || opacity <= 0 || visibility === 'hidden' || display === 'none' || radius <= 0) { i++; continue; }
                         const cx = parseFloat(c.getAttribute('cx') || '0');
                         const cy = parseFloat(c.getAttribute('cy') || '0');
                         const seatId = cx.toFixed(1) + ',' + cy.toFixed(1);
@@ -1794,11 +1805,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     if (seats.length === 0) return JSON.stringify({ s: 'empty', c: 0 });
                     seats.sort((a, b) => a.cy - b.cy || a.cx - b.cx);
                     const t = seats[0];
-                    const circle = circles[t.idx];
-                    if (!circle) return JSON.stringify({ s: 'not_found', c: seats.length });
-                    circle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                    return JSON.stringify({ s: 'clicked', c: seats.length, id: t.id, cx: t.cx, cy: t.cy });
-                }", new { excluded = excludedArray });
+                    return JSON.stringify({ s: 'candidate', c: seats.length, id: t.id, idx: t.idx, cx: t.cx, cy: t.cy });
+                }".Replace("__SEAT_SELECTOR__", NolOnestopSeatCircleSelector.Replace("'", "\\'"));
+                var scanResult = await page.EvaluateAsync<string>(scanScript, new { excluded = excludedArray });
 
                 using var doc = JsonDocument.Parse(scanResult);
                 var status = doc.RootElement.GetProperty("s").GetString();
@@ -1817,14 +1826,25 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     continue;
                 }
 
-                if (status != "clicked")
+                if (status != "candidate")
                 {
                     _logger.LogWarning("[OnestopSeat] 좌석 클릭 실패: status={Status}, count={Count}", status, count);
                     continue;
                 }
 
                 var seatId = doc.RootElement.GetProperty("id").GetString()!;
-                _logger.LogInformation("[OnestopSeat] 좌석 스캔+클릭 완료. available={Count}, seatId={SeatId}", count, seatId);
+                var seatIndex = doc.RootElement.GetProperty("idx").GetInt32();
+                var circleLocator = page.Locator(NolOnestopSeatCircleSelector).Nth(seatIndex);
+                try
+                {
+                    await circleLocator.ScrollIntoViewIfNeededAsync();
+                }
+                catch (PlaywrightException)
+                {
+                }
+
+                await PlaywrightRuntime.ClickElementAsync(circleLocator);
+                _logger.LogInformation("[OnestopSeat] 좌석 후보 실제 클릭 완료. available={Count}, seatId={SeatId}, idx={Index}", count, seatId, seatIndex);
                 await Task.Delay(100, cancellationToken);
 
                 var selectionConfirmed = await PlaywrightRuntime.TryWaitForConditionAsync(
@@ -1832,12 +1852,25 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     {
                         try
                         {
-                            var text = await page.Locator("[class*='InfoSelected'], [class*='infoSelected']").First.InnerTextAsync();
-                            return !text.Contains("선택한 좌석이 없습니다", StringComparison.OrdinalIgnoreCase);
+                            var infoLocator = page.Locator("[class*='InfoSelected'], [class*='infoSelected']").First;
+                            if (await infoLocator.CountAsync() > 0)
+                            {
+                                var text = await infoLocator.InnerTextAsync();
+                                if (!text.Contains("선택한 좌석이 없습니다", StringComparison.OrdinalIgnoreCase))
+                                    return true;
+                            }
+
+                            var completeBtn = page.Locator("button:has-text('선택 완료'), [class*='EntButton'] button:has-text('완료')").First;
+                            if (await completeBtn.CountAsync() > 0 && !await completeBtn.IsDisabledAsync())
+                                return true;
+
+                            var className = await circleLocator.GetAttributeAsync("class") ?? string.Empty;
+                            return className.Contains("selected", StringComparison.OrdinalIgnoreCase) ||
+                                   className.Contains("active", StringComparison.OrdinalIgnoreCase);
                         }
                         catch { return false; }
                     },
-                    TimeSpan.FromMilliseconds(500), cancellationToken);
+                    TimeSpan.FromMilliseconds(1200), cancellationToken);
 
                 if (!selectionConfirmed)
                 {
