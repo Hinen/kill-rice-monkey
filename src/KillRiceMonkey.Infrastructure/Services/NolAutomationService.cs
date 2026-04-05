@@ -1502,7 +1502,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             var newPage = openPages.FirstOrDefault(x => !beforePages.Contains(x));
             if (newPage is not null)
             {
-                return await PrepareNolBookingResultPageAsync(newPage, deadline);
+                if (await HasNolBookingResultAppearedAsync(newPage, string.Empty, string.Empty))
+                    return await PrepareNolBookingResultPageAsync(newPage, deadline);
             }
 
             if (!page.IsClosed && await HasNolBookingResultAppearedAsync(page, beforeUrl, beforeTitle))
@@ -1560,8 +1561,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var newPage2 = openPages2.FirstOrDefault(x => !beforePages.Contains(x));
                 if (newPage2 is not null)
                 {
-                    // NOL 대기열 종료 — 새 페이지 감지
-                    return await PrepareNolBookingResultPageAsync(newPage2, DateTimeOffset.UtcNow + timeout);
+                    if (await HasNolBookingResultAppearedAsync(newPage2, string.Empty, string.Empty))
+                    {
+                        // NOL 대기열 종료 — 새 페이지 감지
+                        return await PrepareNolBookingResultPageAsync(newPage2, DateTimeOffset.UtcNow + timeout);
+                    }
                 }
 
                 await Task.Delay(100, cancellationToken);
@@ -1581,16 +1585,23 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         try
         {
             var currentUrl = page.Url;
-            if (!string.Equals(currentUrl, beforeUrl, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(StripUrlFragment(currentUrl), StripUrlFragment(beforeUrl), StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
             var currentTitle = await PlaywrightRuntime.GetPageTitleOrEmptyAsync(page);
-            return !string.IsNullOrWhiteSpace(currentTitle) &&
-                   !string.Equals(currentTitle, beforeTitle, StringComparison.Ordinal) &&
-                   await page.Locator("#productSide").CountAsync() == 0;
+            var hasProductSide = await page.Locator("#productSide").CountAsync() > 0;
+            var hasCaptchaInput = await page.Locator("#txtCaptcha, [class*='captchaInput'] input, [class*='ModalCaptchaText_captchaInput'] input, input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']").CountAsync() > 0;
+            var hasCaptchaModal = await page.Locator("[class*='ModalCaptchaText_layerWrap'], [class*='captchaModal'], #divCaptchaWrap, #divCaptcha_R, .captcha_area, .wrap_captcha").CountAsync() > 0;
+            var hasLegacySeatFrame = page.Frames.Any(f => f != page.MainFrame && string.Equals(f.Name, "ifrmSeat", StringComparison.OrdinalIgnoreCase));
+            var hasOnestopSeatMap = await page.Locator("svg circle, [class*='SeatPlan_seatPlan'], [class*='SeatMap_seatGroup']").CountAsync() > 0;
+
+            return NolBookingPageClassifier.Classify(
+                       currentUrl,
+                       beforeUrl,
+                       currentTitle,
+                       beforeTitle,
+                       hasProductSide,
+                       hasCaptchaInput,
+                       hasCaptchaModal,
+                       hasLegacySeatFrame,
+                       hasOnestopSeatMap) == NolBookingPageState.BookingReady;
         }
         catch (PlaywrightException ex) when (PlaywrightRuntime.IsClosedTargetError(ex))
         {
