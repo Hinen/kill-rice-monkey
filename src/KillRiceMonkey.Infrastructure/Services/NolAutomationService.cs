@@ -1083,7 +1083,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     }
     private async Task SolveNolCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        const int maxAttempts = 5;
+        const int maxAttempts = 20;
         const int nolCaptchaLength = 6;
 
         var captchaSearchSw = Stopwatch.StartNew();
@@ -1194,7 +1194,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}", attempt);
 
                 var captchaPassed = false;
-                var resultDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(1500);
+                var resultDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(800);
 
                 while (!captchaPassed && DateTimeOffset.UtcNow < resultDeadline)
                 {
@@ -1236,7 +1236,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     return;
 
                 if (DateTimeOffset.UtcNow >= resultDeadline)
-                    _logger.LogWarning("[CAPTCHA] CAPTCHA 결과 판단 타임아웃 (1.5초) — 실패로 간주. attempt={Attempt}", attempt);
+                    _logger.LogWarning("[CAPTCHA] CAPTCHA 결과 판단 타임아웃 (0.8초) — 실패로 간주. attempt={Attempt}", attempt);
 
                 if (attempt < maxAttempts)
                     await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
@@ -1372,7 +1372,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
             if (jsResult)
             {
-                await Task.Delay(50, cancellationToken);
+                await Task.Delay(20, cancellationToken);
                 return;
             }
         }
@@ -1389,7 +1389,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             if (count > 0)
             {
                 await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
-                await Task.Delay(50, cancellationToken);
+                await Task.Delay(20, cancellationToken);
                 return;
             }
         }
@@ -1405,7 +1405,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
                 return true;
             }");
-            await Task.Delay(50, cancellationToken);
+            await Task.Delay(20, cancellationToken);
         }
         catch (Exception ex)
         {

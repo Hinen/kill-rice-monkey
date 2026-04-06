@@ -344,7 +344,104 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
 
     internal string RunLocalCaptchaOcr(byte[] screenshotBytes)
     {
-        return FilterCaptchaText(RunDdddOcrOnBytes(screenshotBytes));
+        return RunEnsembleCaptchaOcr(screenshotBytes);
+    }
+
+    internal static string RunEnsembleCaptchaOcr(byte[] screenshotBytes)
+    {
+        var original = FilterCaptchaTextStatic(RunDdddOcrOnBytes(screenshotBytes));
+        if (original.Length == 6 && original.All(char.IsAsciiLetterUpper))
+        {
+            using var source = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
+            if (source.Empty()) return original;
+
+            var preprocessors = new (string name, Func<Mat, Mat> fn, double weight)[]
+            {
+                ("gray", DdddPreprocessGray, 1.0),
+                ("invert", DdddPreprocessInvert, 1.5),
+                ("contrast", DdddPreprocessContrast, 1.0),
+            };
+
+            var candidates = new List<(string result, double weight)> { (original, 2.0) };
+            foreach (var (name, fn, weight) in preprocessors)
+            {
+                try
+                {
+                    using var processed = fn(source);
+                    Cv2.ImEncode(".png", processed, out var pngBytes);
+                    var text = FilterCaptchaTextStatic(RunDdddOcrOnBytes(pngBytes));
+                    if (text.Length == 6 && text.All(char.IsAsciiLetterUpper))
+                        candidates.Add((text, weight));
+                }
+                catch { }
+            }
+
+            if (candidates.Count >= 2)
+                return BuildEnsembleResult(candidates);
+        }
+
+        using var src = Cv2.ImDecode(screenshotBytes, ImreadModes.Color);
+        if (src.Empty()) return original;
+
+        var allCandidates = new List<(string result, double weight)>();
+        if (original.Length >= 4) allCandidates.Add((original, 2.0));
+
+        var allPreprocessors = new (string name, Func<Mat, Mat> fn, double weight)[]
+        {
+            ("gray", DdddPreprocessGray, 1.0),
+            ("binary", DdddPreprocessBinary, 1.0),
+            ("invert", DdddPreprocessInvert, 1.5),
+            ("contrast", DdddPreprocessContrast, 1.0),
+        };
+
+        foreach (var (name, fn, weight) in allPreprocessors)
+        {
+            try
+            {
+                using var processed = fn(src);
+                Cv2.ImEncode(".png", processed, out var pngBytes);
+                var text = FilterCaptchaTextStatic(RunDdddOcrOnBytes(pngBytes));
+                if (text.Length == 6 && text.All(char.IsAsciiLetterUpper))
+                    allCandidates.Add((text, weight));
+            }
+            catch { }
+        }
+
+        if (allCandidates.Count == 0) return original;
+        return BuildEnsembleResult(allCandidates);
+    }
+
+    private static string BuildEnsembleResult(List<(string result, double weight)> candidates)
+    {
+        var valid = candidates.Where(c => c.result.Length == 6 && c.result.All(char.IsAsciiLetterUpper)).ToList();
+        if (valid.Count == 0) return candidates.FirstOrDefault().result ?? string.Empty;
+        if (valid.Count == 1) return valid[0].result;
+
+        var result = new char[6];
+        for (var pos = 0; pos < 6; pos++)
+        {
+            var votes = new Dictionary<char, double>();
+            foreach (var (text, weight) in valid)
+            {
+                var ch = text[pos];
+                votes[ch] = votes.GetValueOrDefault(ch) + weight;
+            }
+            result[pos] = votes.OrderByDescending(v => v.Value).First().Key;
+        }
+        return new string(result);
+    }
+
+    private static string FilterCaptchaTextStatic(string raw)
+    {
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (var ch in raw)
+        {
+            var upper = char.ToUpperInvariant(ch);
+            if (CaptchaCharCorrectionMap.TryGetValue(upper, out var mapped)) sb.Append(mapped);
+            else if (CaptchaCharCorrectionMap.TryGetValue(ch, out var mapped2)) sb.Append(mapped2);
+            else if (char.IsAsciiLetterUpper(upper)) sb.Append(upper);
+        }
+        return sb.ToString();
     }
 
     internal static void EnsureDdddOcrWarmedUp()
