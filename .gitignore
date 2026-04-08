@@ -24,6 +24,7 @@ tools/inspect-*.ps1
 
 captcha-samples/
 publish-output/
+publish/kill-rice-monkey-yes24/
 
 .claude
 .omc
