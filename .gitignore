@@ -27,3 +27,7 @@ publish-output/
 
 .claude
 .omc
+.sisyphus/
+.tmp-yes24-qa/
+yes24.txt
+kakao.txt
