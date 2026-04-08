@@ -714,7 +714,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
 
                 try
                 {
-                    await ConfirmYes24SeatAsync(salePopup, timeout, cancellationToken);
+                    await ConfirmYes24SeatAsync(salePopup, seatFrame, timeout, cancellationToken);
                     return string.IsNullOrWhiteSpace(clickResult.Title) ? (clickResult.Grade ?? clickResult.Value ?? "좌석") : clickResult.Title;
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or TimeoutException)
@@ -725,8 +725,8 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     }
 
                     await DismissYes24SeatConflictAlertAsync(salePopup);
-                    _logger.LogWarning(ex, "[YES24] 다음단계 진입 실패 — 다른 좌석으로 재시도. seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
-                    progress?.Report(new AutomationProgress("좌석 재선택 중", "다음단계 진입 실패 — 다른 좌석 재선택"));
+                    _logger.LogWarning(ex, "[YES24] 좌석 선택 완료 진입 실패 — 다른 좌석으로 재시도. seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
+                    progress?.Report(new AutomationProgress("좌석 재선택 중", "좌석 선택 완료 진입 실패 — 다른 좌석 재선택"));
                 }
             }
             catch (PlaywrightException ex) when (seatAttempt < maxSeatRetries - 1)
@@ -938,18 +938,91 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             root.TryGetProperty("g", out var grade) ? grade.GetString() : null);
     }
 
-    private async Task ConfirmYes24SeatAsync(IPage salePopup, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task ConfirmYes24SeatAsync(IPage salePopup, IFrame seatFrame, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        var result = await salePopup.EvaluateAsync<string>("() => { try { fdc_VerifySelSeatNumber(); return 'ok'; } catch (e) { return 'err:' + e.message; } }");
-        if (!string.Equals(result, "ok", StringComparison.Ordinal))
+        // YES24 좌석 선택 완료 흐름 (실측 검증):
+        //   1) seat iframe 내부의 ChoiceEnd() 호출 → AJAX → ChoiceEnd_CallBack
+        //   2) 응답 Code='none' 일 때 ChoiceEndProcess(token@class) → 부모 step01_time 의 selSeatClass 등 갱신
+        //   3) 등급/매수 자동 선택 후 fdc_VerifySelSeatNumber() 가 step3 로 진입
+        // - 응답 Code='block' 이면 STCLAB 캡차 → 상위에서 감지하여 사용자 개입 요청
+        // - alert (다른 고객 결제중 등) 은 Dialog 핸들러에서 __yes24AlertDetected 로 표시 → 호출자가 재시도
+        var iframeInvoke = await seatFrame.EvaluateAsync<string>(
+            "() => { try { if (typeof ChoiceEnd === 'function') { ChoiceEnd(); return 'ok'; } return 'missing'; } catch (e) { return 'err:' + e.message; } }");
+        if (string.Equals(iframeInvoke, "missing", StringComparison.Ordinal))
         {
-            var nextButton = salePopup.Locator("#StepCtrlBtn01 a").First;
-            if (await nextButton.CountAsync() == 0)
+            // 폴백: iframe 내부 '좌석선택완료' 링크를 직접 클릭
+            var endLink = seatFrame.Locator("a[href*='ChoiceEnd']").First;
+            if (await endLink.CountAsync() == 0)
             {
-                throw new InvalidOperationException($"YES24 다음단계 진입 호출 실패: {result}");
+                throw new InvalidOperationException("YES24 좌석 선택 완료(ChoiceEnd) 진입 수단을 찾지 못했습니다.");
             }
 
-            await PlaywrightRuntime.ClickElementAsync(nextButton);
+            await PlaywrightRuntime.ClickElementAsync(endLink);
+        }
+        else if (!string.Equals(iframeInvoke, "ok", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"YES24 ChoiceEnd 호출 실패: {iframeInvoke}");
+        }
+
+        // ChoiceEnd_CallBack 후 부모 step01_time 의 selSeatClass 가 등장하면 등급/수량 자동 확정 후 fdc_VerifySelSeatNumber 로 step3 전환
+        var preconditionMet = await PlaywrightRuntime.TryWaitForConditionAsync(async () =>
+        {
+            if (salePopup.IsClosed)
+            {
+                return false;
+            }
+
+            if (await DetectYes24SeatConflictAsync(salePopup))
+            {
+                return false;
+            }
+
+            return await salePopup.EvaluateAsync<bool>(@"() => {
+                const sel = document.querySelector(""#step01_time #ulSeatSpace select[id='selSeatClass']"");
+                return !!sel;
+            }");
+        }, timeout, cancellationToken);
+
+        if (await DetectYes24SeatConflictAsync(salePopup))
+        {
+            throw new InvalidOperationException("YES24 좌석 중복 감지");
+        }
+
+        if (await TryHandleYes24StclabCaptchaAsync(salePopup, cancellationToken))
+        {
+            throw new InvalidOperationException("YES24 STCLAB CAPTCHA 감지 — 사용자 확인이 필요합니다.");
+        }
+
+        if (preconditionMet)
+        {
+            await salePopup.EvaluateAsync(@"() => {
+                const selects = document.querySelectorAll(""#step01_time #ulSeatSpace select[id='selSeatClass']"");
+                selects.forEach(sel => {
+                    let picked = null;
+                    for (const opt of sel.options) {
+                        if (opt.value && opt.value !== '0' && opt.value !== '-1') { picked = opt.value; break; }
+                    }
+                    if (picked) {
+                        sel.value = picked;
+                        sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                });
+            }");
+        }
+
+        var verifyResult = await salePopup.EvaluateAsync<string>(
+            "() => { try { if (typeof fdc_VerifySelSeatNumber === 'function') { fdc_VerifySelSeatNumber(); return 'ok'; } return 'missing'; } catch (e) { return 'err:' + e.message; } }");
+        if (string.Equals(verifyResult, "missing", StringComparison.Ordinal))
+        {
+            var nextButton = salePopup.Locator("#StepCtrlBtn01 a").First;
+            if (await nextButton.CountAsync() > 0)
+            {
+                await PlaywrightRuntime.ClickElementAsync(nextButton);
+            }
+        }
+        else if (!string.Equals(verifyResult, "ok", StringComparison.Ordinal))
+        {
+            _logger.LogWarning("[YES24] fdc_VerifySelSeatNumber 호출 결과: {Result}", verifyResult);
         }
 
         var advanced = await PlaywrightRuntime.TryWaitForConditionAsync(async () =>
