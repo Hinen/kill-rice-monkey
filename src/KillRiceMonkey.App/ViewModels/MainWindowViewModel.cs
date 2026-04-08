@@ -9,7 +9,6 @@ namespace KillRiceMonkey.App.ViewModels;
 
 public sealed class MainWindowViewModel : INotifyPropertyChanged
 {
-    private const string Yes24FixedImageDirectory = "button-images/yes24";
     private const string BoothFixedImageDirectory = "button-images/booth";
     private const string MelonFixedImageDirectory = "button-images/melon";
 
@@ -55,7 +54,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public IReadOnlyList<string> TemplateOptions { get; } = ["Yes24", "Booth", "NOL", "Melon", "Custom"];
+    public IReadOnlyList<string> TemplateOptions { get; } = ["Booth", "NOL", "Melon", "Custom"];
 
     public AsyncCommand StartAutomationCommand { get; }
 
@@ -339,7 +338,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         {
             var imageDirectory = templateType switch
             {
-                TicketingTemplateType.Yes24 => Yes24FixedImageDirectory,
                 TicketingTemplateType.Booth => BoothFixedImageDirectory,
                 TicketingTemplateType.Melon => MelonFixedImageDirectory,
                 _ => ImageDirectory
@@ -578,11 +576,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private void HandleSelectedTemplateChanged(string? value)
     {
         var templateType = ParseTemplateType(value);
-        if (templateType == TicketingTemplateType.Yes24)
-        {
-            ImageDirectory = Yes24FixedImageDirectory;
-        }
-        else if (templateType == TicketingTemplateType.Booth)
+        if (templateType == TicketingTemplateType.Booth)
         {
             ImageDirectory = BoothFixedImageDirectory;
         }
@@ -656,11 +650,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         if (string.IsNullOrWhiteSpace(value))
         {
             return TicketingTemplateType.Custom;
-        }
-
-        if (value.Equals("Yes24", StringComparison.OrdinalIgnoreCase))
-        {
-            return TicketingTemplateType.Yes24;
         }
 
         if (value.Equals("Booth", StringComparison.OrdinalIgnoreCase))

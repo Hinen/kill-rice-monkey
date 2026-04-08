@@ -15,14 +15,6 @@ namespace KillRiceMonkey.Infrastructure.Services;
 public sealed class ImageAutomationService : IImageAutomationService
 {
     private const int SeatSelectionOffset = 1;
-    private const int Yes24LegendPaddingX = 8;
-    private const double Yes24LegendSearchStartRatio = 0.70;
-    private const double Yes24LegendMinIgnoreRatio = 0.55;
-    private const double Yes24LegendThresholdDelta = 0.08;
-    private const double Yes24LegendFallbackIgnoreRatio = 0.72;
-    private const double Yes24LegendMaxIgnoreRatio = 0.92;
-    private const int Yes24SeatColorSampleRadius = 6;
-    private const double Yes24SeatMinSaturation = 35;
 
     private readonly ILogger<ImageAutomationService> _logger;
     private readonly ResiliencePipeline _pipeline;
@@ -77,7 +69,7 @@ public sealed class ImageAutomationService : IImageAutomationService
                     {
                         token.ThrowIfCancellationRequested();
 
-                        var found = await WaitAndClickStepAsync(stepGroup, request.TemplateType, request.MatchThreshold, request.StepTimeoutSeconds, token);
+                        var found = await WaitAndClickStepAsync(stepGroup, request.MatchThreshold, request.StepTimeoutSeconds, token);
                         if (!found.IsSuccess)
                         {
                             return new AutomationRunResult(false, found.Message, DateTimeOffset.Now);
@@ -103,7 +95,6 @@ public sealed class ImageAutomationService : IImageAutomationService
 
     private static async Task<(bool IsSuccess, string Message)> WaitAndClickStepAsync(
         StepGroup stepGroup,
-        TicketingTemplateType templateType,
         double threshold,
         int timeoutSeconds,
         CancellationToken cancellationToken)
@@ -112,7 +103,6 @@ public sealed class ImageAutomationService : IImageAutomationService
         var activeTemplates = stepGroup.Templates.Where(x => x.State == "active").ToList();
         var normalTemplates = stepGroup.Templates.Where(x => x.State == "normal" && !x.IsViewMask).ToList();
         var singleTemplates = stepGroup.Templates.Where(x => x.State == "single" && !x.IsViewMask).ToList();
-        var viewTemplates = stepGroup.Templates.Where(x => x.IsViewMask).ToList();
         var hasPriorityTemplates = singleTemplates.Any(x => x.Priority is not null);
 
         if (normalTemplates.Count == 0 && singleTemplates.Count == 0)
@@ -121,7 +111,6 @@ public sealed class ImageAutomationService : IImageAutomationService
         }
 
         var bestScore = double.NegativeInfinity;
-        int? cachedIgnoreFromX = null;
 
         while (DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(timeoutSeconds))
         {
@@ -129,20 +118,6 @@ public sealed class ImageAutomationService : IImageAutomationService
 
             using var frame = PlaywrightRuntime.CaptureScreen();
             using var grayFrame = PlaywrightRuntime.ToGray(frame.Image);
-            int? ignoreFromX = null;
-            if (templateType == TicketingTemplateType.Yes24)
-            {
-                if (hasPriorityTemplates && normalTemplates.Count == 0)
-                {
-                    cachedIgnoreFromX ??= GetYes24FallbackIgnoreFromX(grayFrame.Width);
-                }
-                else
-                {
-                    cachedIgnoreFromX ??= ResolveYes24IgnoreFromX(grayFrame, viewTemplates, threshold);
-                }
-
-                ignoreFromX = cachedIgnoreFromX;
-            }
 
             var clickableTemplates = normalTemplates.Count > 0 ? normalTemplates : singleTemplates;
             MatchHit? clickMatch;
@@ -150,15 +125,7 @@ public sealed class ImageAutomationService : IImageAutomationService
 
             if (hasPriorityTemplates && normalTemplates.Count == 0)
             {
-                if (templateType == TicketingTemplateType.Yes24 && ignoreFromX is not null && ignoreFromX.Value > 50 && ignoreFromX.Value < grayFrame.Width)
-                {
-                    using var seatRoiGray = new Mat(grayFrame, new OpenCvSharp.Rect(0, 0, ignoreFromX.Value, grayFrame.Height));
-                    clickMatch = TryFindPrioritySeatMatch(frame.Image, seatRoiGray, clickableTemplates, threshold, null, true, out clickBestScore);
-                }
-                else
-                {
-                    clickMatch = TryFindPrioritySeatMatch(frame.Image, grayFrame, clickableTemplates, threshold, ignoreFromX, templateType == TicketingTemplateType.Yes24, out clickBestScore);
-                }
+                clickMatch = TryFindPrioritySeatMatch(grayFrame, clickableTemplates, threshold, out clickBestScore);
             }
             else
             {
@@ -377,91 +344,10 @@ public sealed class ImageAutomationService : IImageAutomationService
         return null;
     }
 
-    private static int? DetectLegendIgnoreFromX(Mat grayScreenshot, IReadOnlyList<StepTemplate> viewTemplates, double threshold)
-    {
-        if (viewTemplates.Count == 0)
-        {
-            return null;
-        }
-
-        var minLegendX = (int)Math.Round(grayScreenshot.Width * Yes24LegendSearchStartRatio);
-        var minAllowedIgnoreX = (int)Math.Round(grayScreenshot.Width * Yes24LegendMinIgnoreRatio);
-        var legendThreshold = Math.Max(0.60, threshold - Yes24LegendThresholdDelta);
-        var candidateXs = new List<int>();
-
-        foreach (var template in viewTemplates)
-        {
-            foreach (var scaledTemplate in template.ScaledTemplates)
-            {
-                if (grayScreenshot.Width < scaledTemplate.Width || grayScreenshot.Height < scaledTemplate.Height)
-                {
-                    continue;
-                }
-
-                using var result = new Mat();
-                Cv2.MatchTemplate(grayScreenshot, scaledTemplate, result, TemplateMatchModes.CCoeffNormed);
-
-                for (var y = 0; y < result.Rows; y++)
-                {
-                    for (var x = 0; x < result.Cols; x++)
-                    {
-                        var score = result.At<float>(y, x);
-                        if (score < legendThreshold)
-                        {
-                            continue;
-                        }
-
-                        var centerX = x + (scaledTemplate.Width / 2);
-                        if (centerX < minLegendX)
-                        {
-                            continue;
-                        }
-
-                        candidateXs.Add(x);
-                    }
-                }
-            }
-        }
-
-        if (candidateXs.Count == 0)
-        {
-            return null;
-        }
-
-        var ignoreFromX = Math.Max(0, candidateXs.Min() - Yes24LegendPaddingX);
-        return ignoreFromX >= minAllowedIgnoreX ? ignoreFromX : null;
-    }
-
-    private static int ResolveYes24IgnoreFromX(Mat grayScreenshot, IReadOnlyList<StepTemplate> viewTemplates, double threshold)
-    {
-        var fallback = GetYes24FallbackIgnoreFromX(grayScreenshot.Width);
-        var detected = DetectLegendIgnoreFromX(grayScreenshot, viewTemplates, threshold);
-        if (detected is null)
-        {
-            return fallback;
-        }
-
-        var maxAllowed = (int)Math.Round(grayScreenshot.Width * Yes24LegendMaxIgnoreRatio);
-        if (detected.Value > maxAllowed)
-        {
-            return fallback;
-        }
-
-        return detected.Value;
-    }
-
-    private static int GetYes24FallbackIgnoreFromX(int frameWidth)
-    {
-        return (int)Math.Round(frameWidth * Yes24LegendFallbackIgnoreRatio);
-    }
-
     private static MatchHit? TryFindPrioritySeatMatch(
-        Mat colorScreenshot,
         Mat grayScreenshot,
         IReadOnlyList<StepTemplate> templates,
         double threshold,
-        int? ignoreFromX,
-        bool enforceColoredSeat,
         out double bestScore)
     {
         bestScore = double.NegativeInfinity;
@@ -474,10 +360,10 @@ public sealed class ImageAutomationService : IImageAutomationService
         {
             var candidates = new List<PriorityCandidate>();
 
-            CollectPriorityCandidates(grayScreenshot, priorityGroup, threshold, ignoreFromX, candidates, fastPathOnly: true, ref bestScore);
+            CollectPriorityCandidates(grayScreenshot, priorityGroup, threshold, candidates, fastPathOnly: true, ref bestScore);
             if (candidates.Count == 0)
             {
-                CollectPriorityCandidates(grayScreenshot, priorityGroup, threshold, ignoreFromX, candidates, fastPathOnly: false, ref bestScore);
+                CollectPriorityCandidates(grayScreenshot, priorityGroup, threshold, candidates, fastPathOnly: false, ref bestScore);
             }
 
             if (candidates.Count == 0)
@@ -489,13 +375,6 @@ public sealed class ImageAutomationService : IImageAutomationService
                 .OrderBy(x => x.Y)
                 .ThenBy(x => x.X)
                 .ToList();
-
-            if (enforceColoredSeat)
-            {
-                ordered = ordered
-                    .Where(x => IsLikelyColoredSeat(colorScreenshot, x.X, x.Y))
-                    .ToList();
-            }
 
             if (ordered.Count == 0)
             {
@@ -514,7 +393,6 @@ public sealed class ImageAutomationService : IImageAutomationService
         Mat grayScreenshot,
         IGrouping<int, StepTemplate> priorityGroup,
         double threshold,
-        int? ignoreFromX,
         ICollection<PriorityCandidate> candidates,
         bool fastPathOnly,
         ref double bestScore)
@@ -539,7 +417,7 @@ public sealed class ImageAutomationService : IImageAutomationService
                     continue;
                 }
 
-                CollectMatchCandidates(result, scaledTemplate.Width, scaledTemplate.Height, threshold, ignoreFromX, candidates);
+                CollectMatchCandidates(result, scaledTemplate.Width, scaledTemplate.Height, threshold, candidates);
             }
         }
     }
@@ -549,7 +427,6 @@ public sealed class ImageAutomationService : IImageAutomationService
         int templateWidth,
         int templateHeight,
         double threshold,
-        int? ignoreFromX,
         ICollection<PriorityCandidate> output)
     {
         for (var y = 0; y < result.Rows; y++)
@@ -563,11 +440,6 @@ public sealed class ImageAutomationService : IImageAutomationService
                 }
 
                 var centerX = x + (templateWidth / 2);
-                if (ignoreFromX is not null && centerX >= ignoreFromX.Value)
-                {
-                    continue;
-                }
-
                 var centerY = y + (templateHeight / 2);
                 output.Add(new PriorityCandidate(centerX, centerY, score));
             }
@@ -594,45 +466,6 @@ public sealed class ImageAutomationService : IImageAutomationService
         }
 
         return deduped;
-    }
-
-    private static bool IsLikelyColoredSeat(Mat colorScreenshot, int centerX, int centerY)
-    {
-        if (colorScreenshot.Empty())
-        {
-            return false;
-        }
-
-        var left = Math.Max(0, centerX - Yes24SeatColorSampleRadius);
-        var top = Math.Max(0, centerY - Yes24SeatColorSampleRadius);
-        var right = Math.Min(colorScreenshot.Width - 1, centerX + Yes24SeatColorSampleRadius);
-        var bottom = Math.Min(colorScreenshot.Height - 1, centerY + Yes24SeatColorSampleRadius);
-        var width = right - left + 1;
-        var height = bottom - top + 1;
-        if (width <= 1 || height <= 1)
-        {
-            return false;
-        }
-
-        using var roi = new Mat(colorScreenshot, new OpenCvSharp.Rect(left, top, width, height));
-        using var bgr = new Mat();
-        if (roi.Channels() == 4)
-        {
-            Cv2.CvtColor(roi, bgr, ColorConversionCodes.BGRA2BGR);
-        }
-        else if (roi.Channels() == 1)
-        {
-            Cv2.CvtColor(roi, bgr, ColorConversionCodes.GRAY2BGR);
-        }
-        else
-        {
-            roi.CopyTo(bgr);
-        }
-
-        using var hsv = new Mat();
-        Cv2.CvtColor(bgr, hsv, ColorConversionCodes.BGR2HSV);
-        var mean = Cv2.Mean(hsv);
-        return mean.Val1 >= Yes24SeatMinSaturation;
     }
 
     private static async Task<bool> WaitForTransitionAsync(
