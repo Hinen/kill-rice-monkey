@@ -11,9 +11,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 {
     private const string BoothFixedImageDirectory = "button-images/booth";
     private const string MelonFixedImageDirectory = "button-images/melon";
+    private const string Yes24FixedImageDirectory = "button-images/yes24";
 
     private readonly INolAutomationService _nolAutomationService;
     private readonly IMelonAutomationService _melonAutomationService;
+    private readonly IYes24AutomationService _yes24AutomationService;
     private readonly IImageAutomationService _imageAutomationService;
     private string? _selectedTemplate;
     private string _imageDirectory = "button-images";
@@ -22,6 +24,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private int _melonHour = 18;
     private int _melonMinute;
     private string _desiredRound = string.Empty;
+    private string _desiredIdTime = string.Empty;
+    private string _desiredGrade = string.Empty;
+    private string _desiredBlock = string.Empty;
+    private int _desiredSeatIndex = 1;
     private double _matchThreshold = 0.86;
     private int _stepTimeoutSeconds = 8;
     private string _hotkeyText = "F8";
@@ -31,6 +37,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private readonly ObservableCollection<string> _runLogs = [];
     private DateTimeOffset _nolAutomationReadyAt;
     private DateTimeOffset _melonAutomationReadyAt;
+    private DateTimeOffset _yes24AutomationReadyAt;
     private CancellationTokenSource? _runCts;
     private bool _pauseBeforeSeatSelection;
     private ManualResetEventSlim? _pauseGate;
@@ -39,22 +46,26 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public MainWindowViewModel(
         INolAutomationService nolAutomationService,
         IMelonAutomationService melonAutomationService,
+        IYes24AutomationService yes24AutomationService,
         IImageAutomationService imageAutomationService)
     {
         _nolAutomationService = nolAutomationService;
         _melonAutomationService = melonAutomationService;
+        _yes24AutomationService = yes24AutomationService;
         _imageAutomationService = imageAutomationService;
         LaunchNolRemoteDebugCommand = new AsyncCommand(LaunchNolRemoteDebugAsync, () => !IsRunning && IsNolTemplate);
         PrepareNolAutomationCommand = new AsyncCommand(PrepareNolAutomationAsync, () => !IsRunning && IsNolTemplate);
         LaunchMelonRemoteDebugCommand = new AsyncCommand(LaunchMelonRemoteDebugAsync, () => !IsRunning && IsMelonTemplate);
         PrepareMelonAutomationCommand = new AsyncCommand(PrepareMelonAutomationAsync, () => !IsRunning && IsMelonTemplate);
+        LaunchYes24RemoteDebugCommand = new AsyncCommand(LaunchYes24RemoteDebugAsync, () => !IsRunning && IsYes24Template);
+        PrepareYes24AutomationCommand = new AsyncCommand(PrepareYes24AutomationAsync, () => !IsRunning && IsYes24Template);
         StartAutomationCommand = new AsyncCommand(StartAutomationAsync, () => !IsRunning && HasSelectedTemplate);
         ResumeAutomationCommand = new AsyncCommand(ResumeAutomationAsync, () => IsPaused);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public IReadOnlyList<string> TemplateOptions { get; } = ["Booth", "NOL", "Melon", "Custom"];
+    public IReadOnlyList<string> TemplateOptions { get; } = ["Booth", "NOL", "Melon", "Yes24", "Custom"];
 
     public AsyncCommand StartAutomationCommand { get; }
 
@@ -65,6 +76,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public AsyncCommand LaunchMelonRemoteDebugCommand { get; }
 
     public AsyncCommand PrepareMelonAutomationCommand { get; }
+
+    public AsyncCommand LaunchYes24RemoteDebugCommand { get; }
+
+    public AsyncCommand PrepareYes24AutomationCommand { get; }
 
     public AsyncCommand ResumeAutomationCommand { get; }
 
@@ -130,6 +145,30 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         set => SetProperty(ref _desiredRound, value);
     }
 
+    public string DesiredIdTime
+    {
+        get => _desiredIdTime;
+        set => SetProperty(ref _desiredIdTime, value);
+    }
+
+    public string DesiredGrade
+    {
+        get => _desiredGrade;
+        set => SetProperty(ref _desiredGrade, value);
+    }
+
+    public string DesiredBlock
+    {
+        get => _desiredBlock;
+        set => SetProperty(ref _desiredBlock, value);
+    }
+
+    public int DesiredSeatIndex
+    {
+        get => _desiredSeatIndex;
+        set => SetProperty(ref _desiredSeatIndex, value);
+    }
+
     public double MatchThreshold
     {
         get => _matchThreshold;
@@ -169,6 +208,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             PrepareNolAutomationCommand.NotifyCanExecuteChanged();
             LaunchMelonRemoteDebugCommand.NotifyCanExecuteChanged();
             PrepareMelonAutomationCommand.NotifyCanExecuteChanged();
+            LaunchYes24RemoteDebugCommand.NotifyCanExecuteChanged();
+            PrepareYes24AutomationCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -217,7 +258,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     public bool IsMelonTemplate => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Melon;
 
-    public bool IsSeatPauseSupported => IsMelonTemplate;
+    public bool IsYes24Template => ParseTemplateType(SelectedTemplate) == TicketingTemplateType.Yes24;
+
+    public bool IsSeatPauseSupported => IsMelonTemplate || IsYes24Template;
 
     public bool IsSuccessStatus => string.Equals(StatusMessage, "성공 종료", StringComparison.Ordinal);
 
@@ -321,6 +364,41 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             }
         }
 
+        if (templateType == TicketingTemplateType.Yes24)
+        {
+            if (DesiredDate is null)
+            {
+                StatusMessage = "입력 확인 필요";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 관람일을 선택하세요.";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(DesiredRound) && string.IsNullOrWhiteSpace(DesiredIdTime))
+            {
+                StatusMessage = "입력 확인 필요";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | YES24 시간/회차 또는 IdTime을 입력하세요.";
+                return;
+            }
+
+            var readyCacheValid = (DateTimeOffset.UtcNow - _yes24AutomationReadyAt).TotalMinutes < 10;
+            if (!readyCacheValid)
+            {
+                if (!await _yes24AutomationService.IsRemoteDebugBrowserAvailableAsync(CancellationToken.None))
+                {
+                    StatusMessage = "remote debug 필요";
+                    LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 먼저 'YES24 Remote Debug 열기' 버튼으로 브라우저를 실행하세요.";
+                    return;
+                }
+
+                if (!await _yes24AutomationService.IsAutomationPreparedAsync(CancellationToken.None))
+                {
+                    StatusMessage = "YES24 준비 필요";
+                    LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | 공연 페이지를 연 뒤 'YES24 준비' 버튼으로 연결을 미리 준비하세요.";
+                    return;
+                }
+            }
+        }
+
         _runCts?.Dispose();
         _runCts = new CancellationTokenSource();
         ResetPauseGate();
@@ -340,6 +418,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             {
                 TicketingTemplateType.Booth => BoothFixedImageDirectory,
                 TicketingTemplateType.Melon => MelonFixedImageDirectory,
+                TicketingTemplateType.Yes24 => Yes24FixedImageDirectory,
                 _ => ImageDirectory
             };
 
@@ -348,10 +427,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 imageDirectory,
                 MatchThreshold,
                 StepTimeoutSeconds,
-                IsNolTemplate || IsMelonTemplate ? DesiredDate?.ToString("yyyy.MM.dd") : null,
-                IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : null),
+                IsNolTemplate || IsMelonTemplate || IsYes24Template ? DesiredDate?.ToString("yyyy.MM.dd") : null,
+                IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : (IsYes24Template ? DesiredRound : null)),
                 PauseBeforeSeatSelection && IsSeatPauseSupported,
-                _pauseGate);
+                _pauseGate,
+                IsYes24Template ? DesiredIdTime : null,
+                IsYes24Template ? DesiredGrade : null,
+                IsYes24Template ? DesiredBlock : null,
+                IsYes24Template ? Math.Max(DesiredSeatIndex, 1) : 1);
 
             var progress = new Progress<AutomationProgress>(automationProgress =>
             {
@@ -411,6 +494,37 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
                     StatusMessage = "Melon 자동화 실행 중";
                     var result = await _melonAutomationService.RunAsync(request, progress, _runCts.Token);
+
+                    if (result.IsSuccess)
+                    {
+                        AppendLog(result.Message);
+                        StatusMessage = "성공 종료";
+                        LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {result.Message}";
+                        return;
+                    }
+
+                    AppendLog($"시도 실패 — {result.Message}");
+                    LastRunSummary = $"{result.ExecutedAt:yyyy-MM-dd HH:mm:ss} | {attempt}회 시도 실패 — {result.Message}";
+                    await Task.Delay(100, _runCts.Token);
+                }
+            }
+            else if (templateType == TicketingTemplateType.Yes24)
+            {
+                var attempt = 0;
+                while (true)
+                {
+                    _runCts.Token.ThrowIfCancellationRequested();
+                    attempt++;
+
+                    if (!await _yes24AutomationService.IsPageReadyAsync(_runCts.Token))
+                    {
+                        StatusMessage = $"YES24 페이지 대기 중 ({attempt}회 폴링)";
+                        await Task.Delay(50, _runCts.Token);
+                        continue;
+                    }
+
+                    StatusMessage = "YES24 자동화 실행 중";
+                    var result = await _yes24AutomationService.RunAsync(request, progress, _runCts.Token);
 
                     if (result.IsSuccess)
                     {
@@ -573,6 +687,61 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         }
     }
 
+    private async Task LaunchYes24RemoteDebugAsync()
+    {
+        if (!IsYes24Template)
+        {
+            return;
+        }
+
+        IsRunning = true;
+        StatusMessage = "remote debug 브라우저 실행 중";
+
+        try
+        {
+            var message = await _yes24AutomationService.LaunchRemoteDebugBrowserAsync(CancellationToken.None);
+            StatusMessage = "성공 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = "예외 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | remote debug 브라우저 실행 실패: {ex.Message}";
+        }
+        finally
+        {
+            IsRunning = false;
+        }
+    }
+
+    private async Task PrepareYes24AutomationAsync()
+    {
+        if (!IsYes24Template)
+        {
+            return;
+        }
+
+        IsRunning = true;
+        StatusMessage = "YES24 자동화 준비 중";
+
+        try
+        {
+            var message = await _yes24AutomationService.PrepareAutomationAsync(CancellationToken.None);
+            _yes24AutomationReadyAt = DateTimeOffset.UtcNow;
+            StatusMessage = "성공 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | {message}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = "예외 종료";
+            LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | YES24 준비 실패: {ex.Message}";
+        }
+        finally
+        {
+            IsRunning = false;
+        }
+    }
+
     private void HandleSelectedTemplateChanged(string? value)
     {
         var templateType = ParseTemplateType(value);
@@ -583,6 +752,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         else if (templateType == TicketingTemplateType.Melon)
         {
             ImageDirectory = MelonFixedImageDirectory;
+        }
+        else if (templateType == TicketingTemplateType.Yes24)
+        {
+            ImageDirectory = Yes24FixedImageDirectory;
         }
         else if (templateType == TicketingTemplateType.Nol)
         {
@@ -598,12 +771,15 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(HasSelectedTemplate));
         OnPropertyChanged(nameof(IsNolTemplate));
         OnPropertyChanged(nameof(IsMelonTemplate));
+        OnPropertyChanged(nameof(IsYes24Template));
         OnPropertyChanged(nameof(IsSeatPauseSupported));
         StartAutomationCommand.NotifyCanExecuteChanged();
         LaunchNolRemoteDebugCommand.NotifyCanExecuteChanged();
         PrepareNolAutomationCommand.NotifyCanExecuteChanged();
         LaunchMelonRemoteDebugCommand.NotifyCanExecuteChanged();
         PrepareMelonAutomationCommand.NotifyCanExecuteChanged();
+        LaunchYes24RemoteDebugCommand.NotifyCanExecuteChanged();
+        PrepareYes24AutomationCommand.NotifyCanExecuteChanged();
     }
 
     private void AppendLog(string message)
@@ -665,6 +841,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         if (value.Equals("Melon", StringComparison.OrdinalIgnoreCase))
         {
             return TicketingTemplateType.Melon;
+        }
+
+        if (value.Equals("Yes24", StringComparison.OrdinalIgnoreCase))
+        {
+            return TicketingTemplateType.Yes24;
         }
 
         return TicketingTemplateType.Custom;

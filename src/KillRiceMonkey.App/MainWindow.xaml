@@ -333,10 +333,10 @@
                                 </Grid>
                             </Border>
 
-                            <Border
-                                    Style="{StaticResource SoftCardStyle}"
-                                    Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                <Grid>
+                             <Border
+                                     Style="{StaticResource SoftCardStyle}"
+                                     Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="1.2*" />
                                         <ColumnDefinition Width="12" />
@@ -375,9 +375,71 @@
                                         </Grid>
                                     </StackPanel>
 
-                                    <TextBox Grid.ColumnSpan="3"
-                                             Visibility="Collapsed"
-                                             Text="{Binding DesiredTime, UpdateSourceTrigger=PropertyChanged}" />
+                                     <TextBox Grid.ColumnSpan="3"
+                                              Visibility="Collapsed"
+                                              Text="{Binding DesiredTime, UpdateSourceTrigger=PropertyChanged}" />
+                                 </Grid>
+                             </Border>
+
+                            <Border
+                                    Style="{StaticResource SoftCardStyle}"
+                                    Visibility="{Binding IsYes24Template, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="10" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.1*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="1.1*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="1.1*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Row="0" Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="관람일" />
+                                        <DatePicker Style="{StaticResource InputDatePickerStyle}"
+                                                    SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
+                                                    SelectedDateFormat="Short" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="0" Grid.Column="2">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="시간/회차" />
+                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                 Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="0" Grid.Column="4">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="IdTime(옵션)" />
+                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                 Text="{Binding DesiredIdTime, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="2" Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="등급(옵션)" />
+                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                 Text="{Binding DesiredGrade, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="2" Grid.Column="2">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="구역(옵션)" />
+                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                 Text="{Binding DesiredBlock, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="2" Grid.Column="4">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="좌석 순번" />
+                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                 Text="{Binding DesiredSeatIndex, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
                                 </Grid>
                             </Border>
 
@@ -413,10 +475,25 @@
                                 </StackPanel>
                             </Button>
 
+                             <Button Grid.Column="0"
+                                     Style="{StaticResource SecondaryActionButtonStyle}"
+                                     Command="{Binding LaunchMelonRemoteDebugCommand}"
+                                     Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Data="{StaticResource ExternalLinkIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="OPEN" />
+                                     </StackPanel>
+                             </Button>
+
                             <Button Grid.Column="0"
                                     Style="{StaticResource SecondaryActionButtonStyle}"
-                                    Command="{Binding LaunchMelonRemoteDebugCommand}"
-                                    Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    Command="{Binding LaunchYes24RemoteDebugCommand}"
+                                    Visibility="{Binding IsYes24Template, Converter={StaticResource BooleanToVisibilityConverter}}">
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                     <Viewbox Width="15" Height="15" Margin="0,0,8,0">
                                         <Canvas Width="24" Height="24">
@@ -443,10 +520,25 @@
                                 </StackPanel>
                             </Button>
 
+                             <Button Grid.Column="2"
+                                     Style="{StaticResource ReadyActionButtonStyle}"
+                                     Command="{Binding PrepareMelonAutomationCommand}"
+                                     Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
+                                        <Canvas Width="24" Height="24">
+                                            <Path Style="{StaticResource ActionIconPathStyle}"
+                                                  Data="{StaticResource ShieldCheckIcon}" />
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock VerticalAlignment="Center" Text="READY" />
+                                     </StackPanel>
+                             </Button>
+
                             <Button Grid.Column="2"
                                     Style="{StaticResource ReadyActionButtonStyle}"
-                                    Command="{Binding PrepareMelonAutomationCommand}"
-                                    Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    Command="{Binding PrepareYes24AutomationCommand}"
+                                    Visibility="{Binding IsYes24Template, Converter={StaticResource BooleanToVisibilityConverter}}">
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                     <Viewbox Width="15" Height="15" Margin="0,0,8,0">
                                         <Canvas Width="24" Height="24">
