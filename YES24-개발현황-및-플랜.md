@@ -282,12 +282,47 @@ private readonly SemaphoreSlim _yes24BrowserLock = new(1, 1);
 - **Polly `MaxRetryAttempts = 2`** 외부 감싸기 (Melon 동일)
 - **ExcludedSeats HashSet<string>**: 실패(중복·alert) 시 다음 시도에서 제외
 - **좌석 재스캔 최대 10회**: Melon 의 `maxSeatRetries` 와 동일
+- **제외 목록 리셋 fallback**: `ClickYes24SeatAsync` 가 `'not_found'` (필터링된 좌석은 존재하지만 전부 `excludedSeats` 에 포함) 를 반환하면 Melon/NOL 과 동일하게 `excludedSeats.Clear()` 후 재시도한다. 그 사이 다른 고객이 결제 포기해 풀린 좌석을 재시도할 기회를 주기 위함.
 - **frame detached 감지**: `PlaywrightException` 감지 시 seat iframe 재탐색
 - **팝업 닫힘 감지**: `salePopup.IsClosed === true` 면 외부 재시도로 통째 다시 트리거
 - **dialog/alert 감지 (이중 경로)**:
   - 경로 1 (native): `salePopup.Dialog += handler` 로 native `alert/confirm/prompt` 를 자동 accept 하고 `window.__yes24AlertDetected = true` 세팅.
   - 경로 2 (jQuery): `fbk_Alert` 와 `window.alert` 를 JS 훅으로 감싸서 HTML 기반 jQuery 다이얼로그도 동일한 플래그로 캡처.
   - 좌석 중복 시 제외 처리는 두 경로 모두 플래그 기반 → `DetectYes24SeatConflictAsync` 가 양쪽을 포괄.
+
+### 5.7 NetFunnel 대기열 처리 (2026-04-09 추가)
+
+YES24 의 `jsf_base_ShowPerfSaleProcess` 함수는 perf ID 에 따라 두 가지 경로 중 하나를 탄다:
+
+1. **Direct**: 일반 perf — 바로 `window.open(PerfSaleProcess.aspx)` 호출
+2. **NetFunnel**: 하드코딩된 perf ID 리스트에 포함되거나 `#HidIsNetfunnel === '1'` 일 때 — `NetFunnel_Action({action_id, ...}, {success: ..., continued: ..., ...})` 호출. 대기열이 있는 동안 `netfunnel-skin.js` 의 `yesticket` 스킨이 `#NetFunnel_Skin_Top` div 를 메인 페이지에 inline 으로 삽입해 사용자에게 대기 UI 를 표시하고, success 콜백에서 비로소 `window.open + form.submit(POST netfunnel_key)` 를 실행한다.
+
+**감지 방법**: `#NetFunnel_Skin_Top` 의 존재 + 가시성을 체크. `netfunnel-skin.js` 소스의 `yesticket` 스킨 템플릿에서 확인한 루트 셀렉터이다.
+
+```csharp
+// IsYes24QueueActiveAsync
+return await page.EvaluateAsync<bool>(@"() => {
+    const el = document.querySelector('#NetFunnel_Skin_Top');
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}");
+```
+
+**대기 플로우** (`WaitForYes24SalePopupWithQueueAsync`):
+
+1. Phase 1 — `timeout` 초 제한 내에서 30ms 간격으로 폴링:
+   - `PerfSaleProcess.aspx` 팝업 발견 시 즉시 반환
+   - NetFunnel `#NetFunnel_Skin_Top` 감지 시 Phase 2 진입
+2. Phase 1.5 — 타임아웃 직후 한 번 더 NetFunnel 재확인 (늦게 뜨는 경우 안전망)
+3. Phase 2 — **무한 대기 루프** (Melon `ClickMelonBookingAsync` / NOL `ClickNolBookingAsync` 와 동일 패턴):
+   - `while (!cancellationToken.IsCancellationRequested)` 로 100ms 폴링
+   - `PerfSaleProcess.aspx` 팝업 감지 시 `"대기열 통과 ({초}초)"` 진행 보고 후 반환
+   - 10초마다 `"대기열 대기 중... ({초}초)"` 진행 보고 (사용자 UX)
+   - 메인 페이지가 닫히면 `InvalidOperationException`
+4. 대기열 없이 timeout 만료 → `TimeoutException("YES24 예매 버튼 클릭 후 팝업 전환을 확인하지 못했습니다.")`
 
 ### 5.5 성능 최적화 포인트 (Melon 대비 추가 개선)
 
@@ -453,6 +488,68 @@ AGENTS.md 정책: 한국어 메시지, 변수명/기술 용어는 영어 유지.
 ### 검증
 - CDP 로 팝업 raw timeline 측정: 약 618ms 이후 `#IdTime.value = '1429899'`, `#ulTime > li.on = 1` 로 안정화 → 수정된 대기 루프가 정확히 이 시점에서 통과.
 - 57918 시나리오에서 수정 후 알림 다이얼로그가 한 번도 발생하지 않고 좌석 iframe 생성 → 좌석 클릭 → `fdc_VerifySelSeatNumber` → step01→step03 전환이 순차적으로 성공.
+
+## 12. 2026-04-09 후속 개선 로그 — 대기열 처리 + 제외 목록 리셋
+
+초기 플랜에 "YES24 는 대기열 없음" 이라고 기재했으나, 재검토 결과 `jsf_base_ShowPerfSaleProcess` 가 일부 perf 에 대해 `NetFunnel_Action` 으로 대기열을 사용함을 발견. Melon/NOL 과 달리 YES24 는 대기열을 **별도 페이지가 아닌 메인 페이지에 inline 모달** (`#NetFunnel_Skin_Top`) 로 표시하기 때문에 기존 코드의 "새 팝업 URL 매칭" 로직으로는 감지 불가능했다. 또한 `SelectYes24SeatAndAdvanceAsync` 의 `excludedSeats` 는 한 번 채워지면 시도 종료까지 비워지지 않아 Melon/NOL 의 fallback 리셋 로직이 빠져있었다.
+
+### 증상
+1. **대기열 처리 누락** — 경쟁이 많은 공연에서 NetFunnel 대기열이 뜨면 `TryWaitForYes24SalePopupAsync` 가 `PerfSaleProcess.aspx` 만 기다리므로 `StepTimeoutSeconds` 후 `TimeoutException` 으로 실패.
+2. **제외 목록 리셋 없음** — 10회 재시도 동안 중복 감지된 좌석이 누적되어 가용 좌석이 전부 `excludedSeats` 에 들어가면 `'not_found'` 가 반복되어 조기 실패. 실제로는 재시도 사이에 다른 고객이 결제 포기해 좌석이 풀릴 수 있으므로 리셋 기회가 필요.
+
+### 수정
+**1) `TriggerYes24BookingPopupAsync` + 신규 `WaitForYes24SalePopupWithQueueAsync` + 신규 `IsYes24QueueActiveAsync`**
+
+```
+TriggerYes24BookingPopupAsync(page, idTime, timeout, progress, ct)
+  ├─ 캐시/기존 팝업 검사 → 재사용
+  ├─ jsf_base_ShowPerfSaleProcess 직접 호출 시도 (popup blocker 로 보통 실패)
+  ├─ a.rn-bb03 클릭 (trusted)
+  └─ WaitForYes24SalePopupWithQueueAsync(page, timeout, progress, ct)
+        ├─ Phase 1: 30ms 폴링, timeout 까지
+        │     ├─ PerfSaleProcess.aspx 감지 → 반환
+        │     └─ #NetFunnel_Skin_Top 감지 → Phase 2 진입
+        ├─ Phase 1.5: timeout 만료 후 한번 더 NetFunnel 재확인
+        └─ Phase 2: while (!ct.IsCancellationRequested) 무한 대기
+              ├─ 10초마다 "대기열 대기 중... (N초)" progress
+              ├─ PerfSaleProcess.aspx 감지 → "대기열 통과 (N초)" 후 반환
+              └─ 메인 페이지 닫힘 감지 → InvalidOperationException
+```
+
+`IsYes24QueueActiveAsync` 는 `#NetFunnel_Skin_Top` 의 존재 + `display/visibility/bounding rect` 검사로 활성 여부 판정.
+
+**2) `SelectYes24SeatAndAdvanceAsync` 제외 목록 리셋 fallback**
+
+`ClickYes24SeatAsync` 가 반환하는 status:
+- `'clicked'`: 정상 클릭
+- `'empty'`: 가용 좌석 없음 (원본 카운트 0)
+- `'not_found'`: 가용 좌석은 존재하나 전부 `excludedSeats` 에 포함
+
+`'not_found'` 이고 `excludedSeats.Count > 0` 이면 Melon/NOL 과 동일하게 다음을 수행:
+```csharp
+_logger.LogWarning("[YES24] 제외 좌석 {Count}개를 빼면 선택 가능한 좌석 없음 — 제외 목록 초기화 후 재시도. ...");
+excludedSeats.Clear();
+progress?.Report(new AutomationProgress("좌석 재선택 중", "제외 목록 초기화 후 재시도"));
+```
+
+### 검증
+- **대기열 end-to-end 시나리오** (`run_queue_scenario.py`):
+  1. 메인 페이지에 `jsf_pdi_GoPerfSale` + `jsf_base_ShowPerfSaleProcess` 1회성 override 설치 — 첫 호출 시 `#NetFunnel_Skin_Top` fake 요소 주입 + 원본 suppress.
+  2. 실제 `Yes24AutomationService.RunAsync` 실행.
+  3. 자동화가 1.49s 에서 "대기열 감지" 로그 출력 및 `"대기열 대기 중..."` progress 보고.
+  4. Python 테스트가 2.5초 후 fake 요소 제거 + CDP trusted click 으로 2차 클릭 발사.
+  5. 원본 `jsf_pdi_GoPerfSale` 실행 → 실제 팝업 오픈.
+  6. 자동화가 팝업 감지 → `"대기열 통과 (3초)"` 보고 → 좌석 iframe 로드 → 좌석 선택 → 완료.
+  - 결과: `success=True`, `saw_queue=True`, `saw_release=True`, rc=0 — **PASS**.
+- **제외 목록 리셋 JS 검증** (`test_js_synthetic.py`): 합성 DOM 3좌석(S001/S002 VIP, S003 R) 에 대해 `ClickYes24SeatAsync` JS 7 케이스 검증.
+  - empty excluded → clicked S001 ✅
+  - exclude S001 → clicked S002 ✅
+  - exclude S001+S002 → clicked S003 ✅
+  - exclude ALL → `'not_found'` ✅ **리셋 트리거**
+  - grade=VIP → clicked S001 ✅
+  - grade=VIP + exclude VIP → `'not_found'` ✅
+  - grade=NONEXISTENT → `'empty'` ✅
+- **회귀**: baseline 57918 정상 실행 (warm 2s, cold 7~16s with/without conflict retry), `dotnet test` 4/4 통과, `dotnet build` 0 errors.
 
 ---
 
