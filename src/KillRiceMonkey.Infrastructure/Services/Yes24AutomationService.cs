@@ -639,10 +639,93 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
     private static async Task TriggerYes24SeatLoadAsync(IPage salePopup, TimeSpan timeout, CancellationToken cancellationToken)
     {
         await salePopup.BringToFrontAsync();
-        try { await salePopup.EvaluateAsync("() => { window.__yes24AlertDetected = false; }"); } catch { }
 
-        var result = await salePopup.EvaluateAsync<string>("() => { if (typeof fdc_FlashSeatLoad === 'function') { fdc_FlashSeatLoad(); return 'ok'; } return 'missing'; }");
-        if (!string.Equals(result, "ok", StringComparison.Ordinal))
+        // 1) 팝업 내부 alert 훅 설치 (2026-04-09 race condition 대응)
+        //    fbk_Alert 는 `jgBookAlert === jcMODE_JQUERY (=1)` 일 때 native alert 가 아닌 `$j('#dialogAlert').jAlert(...)` HTML
+        //    다이얼로그로 표시된다. Playwright 의 Page.Dialog 이벤트는 native 에만 반응하므로 JS 측 훅이 필요하다.
+        //    window.alert 와 fbk_Alert 양쪽을 감싸서 `window.__yes24AlertDetected` / `window.__yes24LastAlert` 를 세팅.
+        try
+        {
+            await salePopup.EvaluateAsync(@"() => {
+                window.__yes24AlertDetected = false;
+                window.__yes24LastAlert = null;
+                if (!window.__yes24NativeAlertHooked) {
+                    const origAlert = window.alert;
+                    window.alert = function(message) {
+                        window.__yes24AlertDetected = true;
+                        window.__yes24LastAlert = 'alert:' + String(message);
+                        if (typeof origAlert === 'function') {
+                            return origAlert.apply(this, arguments);
+                        }
+                    };
+                    window.__yes24NativeAlertHooked = true;
+                }
+                const hookFbk = () => {
+                    if (typeof fbk_Alert === 'function' && !window.__yes24FbkHooked) {
+                        const origFbk = fbk_Alert;
+                        window.fbk_Alert = function(message) {
+                            window.__yes24AlertDetected = true;
+                            window.__yes24LastAlert = 'fbk:' + String(message);
+                            return origFbk.apply(this, arguments);
+                        };
+                        window.__yes24FbkHooked = true;
+                        return true;
+                    }
+                    return false;
+                };
+                if (!hookFbk()) {
+                    const handle = setInterval(() => {
+                        if (hookFbk()) {
+                            clearInterval(handle);
+                        }
+                    }, 5);
+                    setTimeout(() => { try { clearInterval(handle); } catch (e) {} }, 15000);
+                }
+            }");
+        }
+        catch (PlaywrightException)
+        {
+            // 팝업이 아직 실행 컨텍스트 준비 전이면 무시 — 다음 대기 루프에서 자연 해결
+        }
+
+        // 2) 팝업 초기화 대기 (2026-04-09 race condition 수정 핵심)
+        //    `fdc_FlashSeatLoad` 내부 가드:
+        //      if ($j("#IdTime").val() == "" || $j("#IdTime").val() == "0" || $j("#ulTime > li.on").length == 0) {
+        //          fbk_Alert("공연회차를 선택하세요."); return;
+        //      }
+        //    `window.open` 직후 팝업이 "loading" → "interactive" → "complete" 전환 과정에서 약 520~617ms 구간에
+        //    함수는 정의됐지만 #IdTime.value / #ulTime > li.on 이 아직 채워지지 않은 race window 가 존재한다.
+        //    이 윈도우에서 호출하면 alert 가 발동하며, jQuery 다이얼로그라 Dialog 이벤트로도 잡히지 않는다.
+        await PlaywrightRuntime.WaitForConditionAsync(
+            async () =>
+            {
+                try
+                {
+                    return await salePopup.EvaluateAsync<bool>(@"() => {
+                        if (typeof fdc_FlashSeatLoad !== 'function') return false;
+                        const idInput = document.querySelector('#IdTime');
+                        if (!idInput) return false;
+                        const val = idInput.value || '';
+                        if (val === '' || val === '0') return false;
+                        return document.querySelectorAll('#ulTime > li.on').length > 0;
+                    }");
+                }
+                catch (PlaywrightException)
+                {
+                    return false;
+                }
+            },
+            timeout,
+            cancellationToken,
+            "YES24 예매 팝업 초기화(회차 정보 로드)를 확인하지 못했습니다.");
+
+        // 3) alert 플래그 리셋 후 fdc_FlashSeatLoad 호출
+        try { await salePopup.EvaluateAsync("() => { window.__yes24AlertDetected = false; window.__yes24LastAlert = null; }"); } catch { }
+
+        var result = await salePopup.EvaluateAsync<string>(
+            "() => { try { if (typeof fdc_FlashSeatLoad !== 'function') return 'missing'; fdc_FlashSeatLoad(); return 'ok'; } catch (e) { return 'err:' + (e && e.message ? e.message : e); } }");
+
+        if (string.Equals(result, "missing", StringComparison.Ordinal))
         {
             var nextButton = salePopup.Locator("#StepCtrlBtn01 a").First;
             await PlaywrightRuntime.WaitForConditionAsync(
@@ -651,6 +734,18 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                 cancellationToken,
                 "YES24 좌석 진입 버튼을 찾지 못했습니다.");
             await PlaywrightRuntime.ClickElementAsync(nextButton);
+        }
+        else if (!string.Equals(result, "ok", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"YES24 fdc_FlashSeatLoad 실행 오류: {result}");
+        }
+
+        // 4) 호출 직후 alert 가 발동했는지 확인 — 초기화 가드를 통과했다면 정상적으로는 발생하지 않아야 한다.
+        var alertAfter = await salePopup.EvaluateAsync<string>(
+            "() => (window.__yes24AlertDetected === true ? String(window.__yes24LastAlert || '') : '')");
+        if (!string.IsNullOrEmpty(alertAfter))
+        {
+            throw new InvalidOperationException($"YES24 fdc_FlashSeatLoad 호출 직후 알림 감지: {alertAfter}");
         }
     }
 
