@@ -273,7 +273,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
 
             _logger.LogInformation("[YES24] 예매 팝업 열기 시작. idTime={IdTime}", idTime);
             progress?.Report(new AutomationProgress("예매 클릭 중"));
-            salePopup = await TriggerYes24BookingPopupAsync(page, idTime, timeout, cancellationToken);
+            salePopup = await TriggerYes24BookingPopupAsync(page, idTime, timeout, progress, cancellationToken);
             _preparedYes24SalePopup = salePopup;
             progress?.Report(new AutomationProgress("예매 팝업 열림", "예매 팝업 열림"));
 
@@ -554,7 +554,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         throw new InvalidOperationException($"YES24 시간을 찾지 못했습니다: {request.DesiredRound}");
     }
 
-    private async Task<IPage> TriggerYes24BookingPopupAsync(IPage page, string idTime, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task<IPage> TriggerYes24BookingPopupAsync(IPage page, string idTime, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -598,7 +598,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         await bookingButton.ScrollIntoViewIfNeededAsync();
         await PlaywrightRuntime.ClickBookingButtonAsync(bookingButton, timeout);
 
-        var popup = await TryWaitForYes24SalePopupAsync(page, beforePages, timeout, cancellationToken);
+        var popup = await WaitForYes24SalePopupWithQueueAsync(page, timeout, progress, cancellationToken);
         if (popup is null)
         {
             throw new TimeoutException("YES24 예매 버튼 클릭 후 팝업 전환을 확인하지 못했습니다.");
@@ -607,6 +607,120 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         _preparedYes24SalePopup = popup;
         await popup.BringToFrontAsync();
         return popup;
+    }
+
+    /// <summary>
+    /// 예매하기 클릭 후 PerfSaleProcess.aspx 팝업 전환을 기다린다. 도중에 YES24 NetFunnel 대기열
+    /// (`#NetFunnel_Skin_Top` 모달) 이 감지되면 취소 토큰이 내려올 때까지 무한 대기하면서 10초마다
+    /// 진행 상황을 보고한다. 대기열이 감지되지 않은 상태로 timeout 이 만료되면 null 을 반환.
+    /// </summary>
+    private async Task<IPage?> WaitForYes24SalePopupWithQueueAsync(
+        IPage page,
+        TimeSpan timeout,
+        IProgress<AutomationProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var queueEverDetected = false;
+        var boundedDeadline = DateTimeOffset.UtcNow + timeout;
+
+        // Phase 1: 기본 폴링 대기 (timeout 으로 제한). 도중 대기열 감지 시 즉시 Phase 2 로 진입.
+        while (DateTimeOffset.UtcNow < boundedDeadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var target = FindYes24SalePopup(page);
+            if (target is not null)
+            {
+                return target;
+            }
+
+            if (await IsYes24QueueActiveAsync(page))
+            {
+                queueEverDetected = true;
+                break;
+            }
+
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
+        }
+
+        // Phase 1.5: 타임아웃 직후에도 한 번 더 큐 상태를 재확인 (늦게 뜨는 경우 보호).
+        if (!queueEverDetected)
+        {
+            queueEverDetected = await IsYes24QueueActiveAsync(page);
+        }
+
+        if (!queueEverDetected)
+        {
+            return null;
+        }
+
+        // Phase 2: 대기열 감지 — PerfSaleProcess.aspx 팝업 전환까지 무한 대기 (Melon/NOL 동일 패턴).
+        _logger.LogInformation("[YES24] 대기열 감지 (#NetFunnel_Skin_Top) — PerfSaleProcess.aspx 전환까지 무한 대기");
+        var queueSw = Stopwatch.StartNew();
+        var lastQueueReportBucket = 0L;
+        progress?.Report(new AutomationProgress("대기열 대기 중...", "YES24 NetFunnel 대기열 진입 — 팝업 전환 대기"));
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var queueReportBucket = (long)(queueSw.Elapsed.TotalSeconds / 10);
+            if (queueReportBucket > lastQueueReportBucket)
+            {
+                lastQueueReportBucket = queueReportBucket;
+                progress?.Report(new AutomationProgress($"대기열 대기 중... ({(int)queueSw.Elapsed.TotalSeconds}초)"));
+            }
+
+            if (page.IsClosed)
+            {
+                throw new InvalidOperationException("YES24 메인 페이지가 대기 중 닫혔습니다.");
+            }
+
+            var target = FindYes24SalePopup(page);
+            if (target is not null)
+            {
+                _logger.LogInformation("[YES24] 대기열 종료 — PerfSaleProcess.aspx 도착. elapsed={Elapsed}s, url={Url}",
+                    (int)queueSw.Elapsed.TotalSeconds, PlaywrightRuntime.SafePageUrl(target));
+                progress?.Report(new AutomationProgress("대기열 통과", $"대기열 통과 ({(int)queueSw.Elapsed.TotalSeconds}초)"));
+                return target;
+            }
+
+            await Task.Delay(100, cancellationToken);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return null;
+    }
+
+    private static IPage? FindYes24SalePopup(IPage page)
+    {
+        return page.Context.Pages
+            .Where(x => !x.IsClosed)
+            .FirstOrDefault(x => PlaywrightRuntime.SafePageUrl(x).Contains("/Pages/Perf/Sale/PerfSaleProcess.aspx", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// YES24 NetFunnel 대기열이 현재 활성 상태인지 확인.
+    /// netfunnel-skin.js 의 yesticket 스킨은 `#NetFunnel_Skin_Top` 이라는 루트 div 를 inline 으로 삽입한다.
+    /// 이 요소가 존재하고 실제 화면에 렌더링(visible)되어 있으면 대기열이 진행 중.
+    /// </summary>
+    private static async Task<bool> IsYes24QueueActiveAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>(@"() => {
+                const el = document.querySelector('#NetFunnel_Skin_Top');
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }");
+        }
+        catch (PlaywrightException)
+        {
+            return false;
+        }
     }
 
     private static async Task<IPage?> TryWaitForYes24SalePopupAsync(IPage page, HashSet<IPage> beforePages, TimeSpan timeout, CancellationToken cancellationToken)
