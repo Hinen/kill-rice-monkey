@@ -886,7 +886,20 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                 var clickResult = await ClickYes24SeatAsync(seatFrame, request.DesiredGrade, desiredSeatIndex, excludedSeats, cancellationToken);
                 if (!string.Equals(clickResult.Status, "clicked", StringComparison.Ordinal))
                 {
-                    _logger.LogInformation("[YES24] 좌석 후보 없음 또는 클릭 실패. status={Status}, attempt={Attempt}/{Max}", clickResult.Status, seatAttempt + 1, maxSeatRetries);
+                    // 'not_found' = 가용 좌석은 존재하나 전부 excludedSeats 에 포함된 상태.
+                    // Melon/NOL 과 동일하게 제외 목록을 리셋한 뒤 한 번 더 스캔하여,
+                    // 그 사이 다른 고객이 결제 포기해 풀린 좌석을 재시도할 기회를 준다.
+                    if (string.Equals(clickResult.Status, "not_found", StringComparison.Ordinal) && excludedSeats.Count > 0)
+                    {
+                        _logger.LogWarning("[YES24] 제외 좌석 {Count}개를 빼면 선택 가능한 좌석 없음 — 제외 목록 초기화 후 재시도. attempt={Attempt}/{Max}",
+                            excludedSeats.Count, seatAttempt + 1, maxSeatRetries);
+                        excludedSeats.Clear();
+                        progress?.Report(new AutomationProgress("좌석 재선택 중", "제외 목록 초기화 후 재시도"));
+                    }
+                    else
+                    {
+                        _logger.LogInformation("[YES24] 좌석 후보 없음 또는 클릭 실패. status={Status}, attempt={Attempt}/{Max}", clickResult.Status, seatAttempt + 1, maxSeatRetries);
+                    }
                     await Task.Delay(50, cancellationToken);
                     continue;
                 }
