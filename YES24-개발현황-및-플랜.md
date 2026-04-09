@@ -2,11 +2,13 @@
 
 ## 1. 조사 개요
 
-- **조사일**: 2026-04-08
+- **초기 조사일**: 2026-04-08
+- **버그 재조사일**: 2026-04-09 (팝업 초기화 race condition)
 - **조사 방식**: Chrome remote-debugging(CDP) + websockets로 두 URL 모두 직접 접속 → 로그인 → 시간 선택 → 예매 버튼 → 좌석 iframe까지 전 과정 DOM 구조 확인
 - **무구역 사이트**: https://ticket.yes24.com/Perf/57553 (Sou LIVE TOUR 2026 「Finder」 in Seoul)
 - **구역 사이트**: https://ticket.yes24.com/Perf/55989?Gcode=009_300 (tuki. 1ST ASIA TOUR 2026 IN SEOUL)
-- **로그인**: `yes24.txt` 자격증명(hinen/casa15)으로 실제 CDP 로그인 성공 확인
+- **버그 재조사 대상**: https://ticket.yes24.com/Perf/57918?Gcode=009_210_001 (포레스텔라 정규 4집 투어 콘서트 [THE LEGACY: SYMPHONY] In Seoul, IdTime=1429899)
+- **로그인**: `yes24.txt` 자격증명으로 실제 CDP 로그인 성공 확인
 - **참고**: 기존 `MelonAutomationService.cs` 패턴을 그대로 따름. YES24도 동일하게 jQuery 기반이며 Melon보다 오히려 플로우가 단순(CAPTCHA·대기열 없음).
 
 ---
@@ -39,20 +41,45 @@
 새 창(별도 `window`) 이며 jQuery 기반. Melon 의 `onestop.htm` 팝업과 역할 동일.
 
 - **URL 템플릿**: `https://ticket.yes24.com/Pages/Perf/Sale/PerfSaleProcess.aspx?IdPerf={IdPerf}&IdTime={IdTime}`
-- **페이지 진입 시 상태**:
+- **페이지 진입 시 상태 (완전 로드 후)**:
   - `jgCalSelDate = "YYYY-MM-DD"` (IdTime 으로부터 자동 결정됨)
-  - `#IdTime.val() === {IdTime}` / `#ulTime > li.on` 이 이미 선택되어 있음
+  - `#IdTime.val() === {IdTime}` / `#ulTime > li.on` 이 선택되어 있음
   - `#step01`, `#step01_date`, `#step01_time`, `#step01_notice` 가 `display: block`
   - `#step03`, `#step04`, `#step05` 는 `display: none`
+- **⚠️ 초기화 Race Condition (중요)**: 2026-04-09 재조사에서 확인한 사실.
+  - `window.open` 직후 팝업의 `Page` 객체는 Playwright에 즉시 할당되지만, HTML 파싱/인라인 JS 실행은 아직 진행 중이다.
+  - CDP 폴링 타임라인 (trigger click=0ms 기준, 57918 기준 실측값):
+    - 0~230ms: 구 페이지(about:blank) 컨텍스트, `readyState=complete`, `fdc_FlashSeatLoad` 미정의
+    - ~230~510ms: `readyState=loading`, 문서 본문 파싱 중, `fdc_FlashSeatLoad` 여전히 미정의
+    - **~520ms**: `readyState=interactive`, `fdc_FlashSeatLoad` 정의됨, `#IdTime` 엘리먼트는 존재하지만 `value=""`, `#ulTime > li` 0개
+    - **~520~617ms (약 100ms 위험 윈도우)**: `fdc_FlashSeatLoad` 는 호출 가능하지만 내부 가드에서 fail → alert
+    - **~618ms**: `#IdTime.value` 채워지고 `#ulTime > li.on` 1개 → 이제 안전하게 호출 가능
+    - ~1050ms: `readyState=complete`
+  - `fdc_FlashSeatLoad` 내부 가드(실측):
+    ```js
+    if ($j("#IdTime").val() == "" || $j("#IdTime").val() == "0" || $j("#ulTime > li.on").length == 0) {
+        jcSTEP_SEAT_CHK = true;
+        fbk_Alert("공연회차를 선택하세요.");
+    } else {
+        // fdc_CtrlStep(jcSTEP_SEAT) → seat iframe 생성
+    }
+    ```
+  - 이 100ms 위험 윈도우 안에서 호출되면 `fbk_Alert("공연회차를 선택하세요.")` 가 발동한다.
+- **⚠️ fbk_Alert 모드 주의**: `jgBookAlert == jcMODE_JQUERY` (=1, 팝업 실측 기본값) 이므로 `fbk_Alert` 은 **native `alert()` 가 아닌 `$j("#dialogAlert").jAlert(...)` HTML 다이얼로그** 로 렌더된다.
+  - 결과: Playwright 의 `Page.Dialog` 이벤트는 **native 다이얼로그에만 반응**하므로 jQuery 다이얼로그는 감지되지 않는다.
+  - 대응: 팝업 진입 직후 JS 측에서 `fbk_Alert`, `window.alert` 를 훅해 `window.__yes24AlertDetected` 플래그 세팅.
 - **StepCtrlBtn01 (다음단계 버튼)**: `a` onclick=`fdc_VerifySelSeatNumber()`
   - 현재 좌석 class 가 없으면 → `fdc_FlashSeatLoad()` 호출
   - `fdc_FlashSeatLoad()` → `fdc_CtrlStep(jcSTEP_SEAT)` → `#SeatFlashArea` 내부에 **좌석 iframe 생성**
 - **좌석 iframe 생성 URL** (예시):
   - 무구역: `https://ticket.yes24.com/Pages/Perf/Sale/PerfSaleHtmlSeat.aspx?idTime=1425353&idHall=14062&block=0&stMax=10&pHCardAppOpt=0`
   - 구역: `https://ticket.yes24.com/Pages/Perf/Sale/PerfSaleHtmlSeat.aspx?idTime=1397006&idHall=13754&block=2&stMax=10&pHCardAppOpt=0`
+  - 57918: `https://ticket.yes24.com/Pages/Perf/Sale/PerfSaleHtmlSeat.aspx?idTime=1429899&idHall=14129&block=101&stMax=10&pHCardAppOpt=0` (구역 사이트)
 - **자동화 관점 최적화 규칙**:
-  1. 팝업이 열리자마자 바로 `fdc_FlashSeatLoad()` 를 호출(검증 함수 경유 불필요).
-  2. 동일 orgin 이므로 좌석 iframe 접근은 `iframe.contentDocument` 또는 Playwright `Frame` API 로 직접 가능.
+  1. **팝업 초기화 대기 필수**: `fdc_FlashSeatLoad` 호출 전에 `typeof fdc_FlashSeatLoad === 'function' && #IdTime.value && #ulTime > li.on > 0` 조건을 만족할 때까지 30ms 폴링 대기.
+  2. **alert 훅 설치**: 초기화 대기 전에 `window.alert` + `fbk_Alert` 를 훅해 이후 호출 중 alert 가 발동되면 `__yes24AlertDetected` 플래그로 감지.
+  3. 동일 origin 이므로 좌석 iframe 접근은 `iframe.contentDocument` 또는 Playwright `Frame` API 로 직접 가능.
+  4. `jsf_base_ShowPerfSaleProcess` 직접 호출은 Chrome popup blocker 로 인해 **trusted user gesture 없이는 동작하지 않는다** (CDP `Input.dispatchMouseEvent` 또는 Playwright `ClickAsync` 필요). 현재 `Yes24AutomationService.TriggerYes24BookingPopupAsync` 의 직접 호출 경로는 사실상 언제나 350ms 대기 후 폴백 버튼 클릭으로 떨어진다.
 
 ### 2.3 좌석 iframe (`PerfSaleHtmlSeat.aspx`)
 
@@ -199,20 +226,23 @@ private readonly SemaphoreSlim _yes24BrowserLock = new(1, 1);
 1. EnsurePreparedYes24ConnectedPageAsync
    - ticket.yes24.com/Perf/ 페이지 탐색 + 검증
    - BringToFrontAsync
-2. SelectYes24TimeAsync (옵션 — DesiredIdTime 이 비어있으면 스킵 가능)
+2. SelectYes24DateAsync + SelectYes24TimeAsync (옵션 — DesiredIdTime 이 비어있으면 round 텍스트 매칭)
    - a[idTime="{DesiredIdTime}"] 찾기 + ScrollIntoViewIfNeededAsync + ClickAsync(force=true)
-   - 실패 시 텍스트 매칭 fallback (Melon NormalizeText + idTime 텍스트 매칭)
+   - 실패 시 텍스트 매칭 fallback (PlaywrightRuntime.NormalizeText + idTime 텍스트 매칭)
 3. TriggerYes24BookingPopupAsync  (Melon ClickMelonBookingAsync 상응)
    - 우선순위:
-     (a) page.EvaluateAsync("() => typeof jsf_base_ShowPerfSaleProcess === 'function' && jsf_base_ShowPerfSaleProcess($('#HidIdPerf').val(), $('.rn-04-left-calist a.on').attr('idTime'))")
-         → 이게 실패하면 (b)
+     (a) page.EvaluateAsync("() => jsf_base_ShowPerfSaleProcess(perf, time)")
+         → Chrome popup blocker 때문에 trusted gesture 없으면 실패 → 350ms 대기 후 (b)
      (b) a.rn-bb03 Playwright ClickAsync(force:true)
    - page.Context.Pages 에서 새 페이지 중 URL contains "/Pages/Perf/Sale/PerfSaleProcess.aspx" 인 것을 대기 (polling 30ms, timeout = request.StepTimeoutSeconds)
    - 대기열 없음 — Melon 의 queuePage 분기 전부 생략
 4. TriggerYes24SeatLoadAsync
    - salePopup.BringToFrontAsync
-   - salePopup.EvaluateAsync("() => { if (typeof fdc_FlashSeatLoad === 'function') { fdc_FlashSeatLoad(); return 'ok'; } return 'missing'; }")
-   - 실패 시 fallback: salePopup.Locator("#StepCtrlBtn01 a").First.ClickAsync
+   - **⚠️ 팝업 alert 훅 설치**: `window.alert` + `fbk_Alert` 을 감싸서 `window.__yes24AlertDetected` 플래그로 캡처 (jQuery `fbk_Alert` 는 Playwright Dialog 이벤트로는 잡히지 않음)
+   - **⚠️ 팝업 초기화 대기 (신규, 2026-04-09)**: `typeof fdc_FlashSeatLoad === 'function'` AND `#IdTime.value` 가 비어있지 않고 "0"이 아님 AND `#ulTime > li.on` 가 1개 이상일 때까지 30ms 폴링. 이 조건을 건너뛰면 약 520~617ms 사이의 race window 에서 `fbk_Alert("공연회차를 선택하세요.")` 가 발동되어 자동화가 멈춘다.
+   - `__yes24AlertDetected` 리셋 후 `salePopup.EvaluateAsync("() => { fdc_FlashSeatLoad(); return 'ok'; }")`
+   - 함수 미정의 시 폴백: `salePopup.Locator("#StepCtrlBtn01 a").First.ClickAsync`
+   - 호출 직후 `__yes24AlertDetected` 재확인 → 알림 감지되면 예외로 상위 복구 유도
 5. FindYes24SeatFrameAsync
    - Frames 순회 → url contains "PerfSaleHtmlSeat.aspx" 인 Frame 캐시
    - Fast-path: `[name=tk]` 가 존재하고 `divSeatArray > div` count > 0 이면 반환
@@ -254,7 +284,10 @@ private readonly SemaphoreSlim _yes24BrowserLock = new(1, 1);
 - **좌석 재스캔 최대 10회**: Melon 의 `maxSeatRetries` 와 동일
 - **frame detached 감지**: `PlaywrightException` 감지 시 seat iframe 재탐색
 - **팝업 닫힘 감지**: `salePopup.IsClosed === true` 면 외부 재시도로 통째 다시 트리거
-- **dialog/alert 감지**: `salePopup.Dialog += handler` 로 자동 accept + `window.__yes24AlertDetected = true` 플래그 저장 → 좌석 중복 시 제외 처리
+- **dialog/alert 감지 (이중 경로)**:
+  - 경로 1 (native): `salePopup.Dialog += handler` 로 native `alert/confirm/prompt` 를 자동 accept 하고 `window.__yes24AlertDetected = true` 세팅.
+  - 경로 2 (jQuery): `fbk_Alert` 와 `window.alert` 를 JS 훅으로 감싸서 HTML 기반 jQuery 다이얼로그도 동일한 플래그로 캡처.
+  - 좌석 중복 시 제외 처리는 두 경로 모두 플래그 기반 → `DetectYes24SeatConflictAsync` 가 양쪽을 포괄.
 
 ### 5.5 성능 최적화 포인트 (Melon 대비 추가 개선)
 
@@ -380,19 +413,46 @@ AGENTS.md 정책: 한국어 메시지, 변수명/기술 용어는 영어 유지.
 
 ---
 
-## 9. 현재 미구현 요약 (시작 시점 기준)
+## 9. 구현 현황 (2026-04-09 기준)
 
 | 항목 | 상태 | 비고 |
 |---|---|---|
-| `TicketingTemplateType.Yes24` | ❌ | enum 추가 필요 |
-| `IYes24AutomationService` | ❌ | 신규 인터페이스 |
-| `Yes24AutomationService` | ❌ | 신규 구현 |
-| DI 등록 | ❌ | `AddInfrastructure` 에 1줄 추가 |
-| `TicketingJobRequest` 확장 | ❌ | optional 필드 4개 |
-| `MainWindowViewModel` 분기 | ❌ | 상태 + 커맨드 + 분기 |
-| `MainWindow.xaml` UI | ❌ | 템플릿 옵션 + 전용 패널 |
+| `TicketingTemplateType.Yes24` | ✅ | enum 추가 완료 |
+| `IYes24AutomationService` | ✅ | 신규 인터페이스 완료 |
+| `Yes24AutomationService` | ✅ | 완료, 2026-04-09 팝업 초기화 race condition 수정 |
+| DI 등록 | ✅ | `AddInfrastructure` 등록 완료 |
+| `TicketingJobRequest` 확장 | ✅ | `DesiredIdTime`, `DesiredGrade`, `DesiredBlock`, `DesiredSeatIndex` 추가 |
+| `MainWindowViewModel` 분기 | ✅ | 상태 + 커맨드 + 분기 완료 |
+| `MainWindow.xaml` UI | ✅ | 템플릿 옵션 + 전용 패널 완료 |
 | 본 플랜 문서 | ✅ | 본 파일 |
-| 탐색용 QA 헬퍼(`.tmp-yes24-qa`) | ⚠️ 임시 | 작업 종료 시 제거 |
+| 탐색용 QA 헬퍼(`.tmp-yes24-qa`, `.tmp-yes24-bug`) | ⚠️ 임시 | 작업 종료 시 제거 |
+
+## 11. 2026-04-09 버그 수정 로그
+
+### 증상
+- 57918 (`Gcode=009_210_001`) 자동화 실행 시 관람일/회차 선택 페이지에서 `fbk_Alert("공연회차를 선택하세요.")` jQuery 다이얼로그가 뜬 채 상태가 "좌석 선택 중" 으로 넘어감.
+- 8초 정도 대기 후 자동으로 복구되어 좌석 선택까지 완료되기도 하지만 (Playwright frame 폴링 루프 동안 팝업 JS가 사용자 모르게 스스로 다시 초기화), 안정적이지 않고 시간 손실이 크다.
+
+### 원인
+1. `TriggerYes24BookingPopupAsync` 는 팝업의 URL 이 `/Pages/Perf/Sale/PerfSaleProcess.aspx` 로 바뀌는 순간 즉시 `IPage` 를 반환한다.
+2. `TriggerYes24SeatLoadAsync` 는 `typeof fdc_FlashSeatLoad === 'function'` 만 확인하고 즉시 호출한다.
+3. 팝업 HTML 파싱이 진행 중인 약 **520~617ms 구간**에서는 `fdc_FlashSeatLoad` 함수는 이미 정의되어 있으나 `#IdTime.value` 가 아직 비어 있고 `#ulTime > li.on` 이 0개다.
+4. 이 구간에 호출되면 `fdc_FlashSeatLoad` 내부 가드가 실패해 `fbk_Alert("공연회차를 선택하세요.")` 가 발동.
+5. `fbk_Alert` 은 `jgBookAlert === jcMODE_JQUERY (=1)` 이므로 native alert 가 아닌 `$j("#dialogAlert").jAlert(...)` HTML 다이얼로그로 표시 → Playwright `Page.Dialog` 이벤트에 잡히지 않음.
+6. 결과: 팝업 내 화면은 관람일/회차 선택에 머물고, 코드는 "좌석 선택 중" 으로 진행, 이후 `FindYes24SeatFrameAsync` 가 seat iframe 을 찾지 못해 타임아웃까지 소모.
+
+### 수정 (`TriggerYes24SeatLoadAsync`)
+1. 팝업 진입 직후 `window.alert` + `fbk_Alert` 에 JS 훅을 심어 `window.__yes24AlertDetected` / `window.__yes24LastAlert` 를 갱신하도록 변경.
+2. `fdc_FlashSeatLoad` 호출 전에 아래 조건을 `PlaywrightRuntime.WaitForConditionAsync` (30ms 폴링) 로 대기:
+   - `typeof fdc_FlashSeatLoad === 'function'`
+   - `#IdTime` 엘리먼트의 `value` 가 비어있지 않고 `'0'` 이 아님
+   - `#ulTime > li.on` 이 1개 이상 존재
+3. 호출 전에 `__yes24AlertDetected = false` 로 리셋, 호출 후 `__yes24LastAlert` 확인하여 알림 발생 시 `InvalidOperationException` 으로 상위 재시도 유도.
+4. 호출 결과가 `missing` 이면 기존대로 `#StepCtrlBtn01 a` 폴백 클릭.
+
+### 검증
+- CDP 로 팝업 raw timeline 측정: 약 618ms 이후 `#IdTime.value = '1429899'`, `#ulTime > li.on = 1` 로 안정화 → 수정된 대기 루프가 정확히 이 시점에서 통과.
+- 57918 시나리오에서 수정 후 알림 다이얼로그가 한 번도 발생하지 않고 좌석 iframe 생성 → 좌석 클릭 → `fdc_VerifySelSeatNumber` → step01→step03 전환이 순차적으로 성공.
 
 ---
 
