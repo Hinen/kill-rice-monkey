@@ -26,7 +26,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string _desiredRound = string.Empty;
     private string _desiredGrade = string.Empty;
     private string _desiredBlock = string.Empty;
-    private int _desiredSeatIndex = 1;
     private double _matchThreshold = 0.86;
     private int _stepTimeoutSeconds = 8;
     private string _hotkeyText = "F8";
@@ -154,12 +153,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         get => _desiredBlock;
         set => SetProperty(ref _desiredBlock, value);
-    }
-
-    public int DesiredSeatIndex
-    {
-        get => _desiredSeatIndex;
-        set => SetProperty(ref _desiredSeatIndex, value);
     }
 
     public double MatchThreshold
@@ -425,8 +418,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 PauseBeforeSeatSelection && IsSeatPauseSupported,
                 _pauseGate,
                 IsYes24Template ? DesiredGrade : null,
-                IsYes24Template ? DesiredBlock : null,
-                IsYes24Template ? Math.Max(DesiredSeatIndex, 1) : 1);
+                IsYes24Template ? DesiredBlock : null);
 
             var progress = new Progress<AutomationProgress>(automationProgress =>
             {

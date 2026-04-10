@@ -846,7 +846,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
     {
         const int maxSeatRetries = 10;
         var excludedSeats = new HashSet<string>(StringComparer.Ordinal);
-        var desiredSeatIndex = Math.Max(request.DesiredSeatIndex, 1);
+        var desiredSeatIndex = 1;
         IFrame? seatFrame = null;
         var inventoryReady = false;
 

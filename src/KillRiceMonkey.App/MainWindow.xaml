@@ -391,11 +391,9 @@
                                         <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="1.1*" />
+                                        <ColumnDefinition Width="1.25*" />
                                         <ColumnDefinition Width="12" />
-                                        <ColumnDefinition Width="1.1*" />
-                                        <ColumnDefinition Width="12" />
-                                        <ColumnDefinition Width="1.1*" />
+                                        <ColumnDefinition Width="0.75*" />
                                     </Grid.ColumnDefinitions>
 
                                     <StackPanel Grid.Row="0" Grid.Column="0">
@@ -425,13 +423,6 @@
                                                    Text="구역(옵션)" />
                                         <TextBox Style="{StaticResource InputTextBoxStyle}"
                                                  Text="{Binding DesiredBlock, UpdateSourceTrigger=PropertyChanged}" />
-                                    </StackPanel>
-
-                                    <StackPanel Grid.Row="2" Grid.Column="4">
-                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                   Text="좌석 순번" />
-                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                 Text="{Binding DesiredSeatIndex, UpdateSourceTrigger=PropertyChanged}" />
                                     </StackPanel>
                                 </Grid>
                             </Border>
