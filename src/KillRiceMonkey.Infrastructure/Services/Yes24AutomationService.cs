@@ -866,14 +866,8 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
     private async Task<string> SelectYes24SeatAndAdvanceAsync(IPage salePopup, TicketingJobRequest request, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxSeatRetries = 10;
-        // 중복 좌석 감지 후 재시도까지의 최대 대기 시간. 15ms 폴링으로 alert 이 발동하자마자 루프를
-        // 빠져나가므로 실제 경험 지연은 네트워크 1왕복 + 폴링 한 주기 수준.
-        var seatOutcomeMaxWait = TimeSpan.FromMilliseconds(1500);
         var excludedSeats = new HashSet<string>(StringComparer.Ordinal);
         var desiredSeatIndex = Math.Max(request.DesiredSeatIndex, 1);
-
-        // iframe 과 인벤토리 준비 상태는 첫 iteration 에서 한 번만 확인하고 이후 재사용한다.
-        // PlaywrightException (frame detach 등) 발생 시에만 null 로 재설정해서 재탐색을 강제한다.
         IFrame? seatFrame = null;
         var inventoryReady = false;
 
@@ -900,21 +894,29 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     inventoryReady = true;
                 }
 
-                // click 직전에 alert 플래그 리셋 — outcome 을 정확히 측정하기 위해 매 시도마다 세트.
+                // Phase 0: 이전 iteration 잔재 클린업.
+                // 이전 시도에서 선택됐다가 ConfirmYes24SeatAsync 에서 중복 판정된 좌석의 .son class 가
+                // iframe 에 남아 있으면, 다음 click 후 selectionVerified 가 이전 잔재를 감지해
+                // 즉시 true → ConfirmYes24SeatAsync 진입 → timeout 소진 (false positive). 이를 방지한다.
+                try
+                {
+                    await seatFrame.EvaluateAsync(@"() => {
+                        document.querySelectorAll('[name=tk].son').forEach(el => el.classList.remove('son'));
+                        document.querySelectorAll('#liSelSeat > li').forEach(el => el.remove());
+                    }");
+                }
+                catch (PlaywrightException) { }
+
                 try
                 {
                     await salePopup.EvaluateAsync("() => { window.__yes24AlertDetected = false; window.__yes24LastAlert = null; }");
                 }
-                catch (PlaywrightException)
-                {
-                }
+                catch (PlaywrightException) { }
 
+                // Phase 1: 좌석 클릭
                 var clickResult = await ClickYes24SeatAsync(seatFrame, request.DesiredGrade, desiredSeatIndex, excludedSeats, cancellationToken);
                 if (!string.Equals(clickResult.Status, "clicked", StringComparison.Ordinal))
                 {
-                    // 'not_found' = 가용 좌석은 존재하나 전부 excludedSeats 에 포함된 상태.
-                    // Melon/NOL 과 동일하게 제외 목록을 리셋한 뒤 한 번 더 스캔하여,
-                    // 그 사이 다른 고객이 결제 포기해 풀린 좌석을 재시도할 기회를 준다.
                     if (string.Equals(clickResult.Status, "not_found", StringComparison.Ordinal) && excludedSeats.Count > 0)
                     {
                         _logger.LogWarning("[YES24] 제외 좌석 {Count}개를 빼면 선택 가능한 좌석 없음 — 제외 목록 초기화 후 재시도. attempt={Attempt}/{Max}",
@@ -930,12 +932,17 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     continue;
                 }
 
-                // Fast outcome loop: 15ms 간격으로 [알림 발동] 또는 [좌석 확정] 을 동시 감시.
-                // 기존에는 "확정 300ms 고정 대기 → 그 후 알림 체크" 순차 구조여서 중복 케이스에서 매번
-                // 300ms 를 소진했으나, 이 루프는 알림이 네트워크 왕복으로 도착하자마자 즉시 탈출한다.
-                var outcome = await WaitForYes24SeatOutcomeAsync(salePopup, seatFrame, seatOutcomeMaxWait, cancellationToken);
+                // Phase 2: 100ms 내 .son 확인.
+                // Phase 0 에서 이전 잔재를 제거했으므로 .son > 0 이면 이번 click 의 새 선택.
+                // 중복 좌석이면 ChoiceSeat AJAX 가 서버 거부 → .son 미부여 → 100ms 후 실패 → 즉시 다음 좌석.
+                // 100ms 은 정상 케이스 32ms (실측) 의 ~3x 여유.
+                var selectionVerified = await PlaywrightRuntime.TryWaitForConditionAsync(async () =>
+                {
+                    return await seatFrame.Locator("[name=tk].son").CountAsync() > 0
+                        || await seatFrame.Locator("#liSelSeat > li").CountAsync() > 0;
+                }, TimeSpan.FromMilliseconds(100), cancellationToken);
 
-                if (outcome.Kind == Yes24SeatOutcomeKind.Conflict)
+                if (!selectionVerified)
                 {
                     if (!string.IsNullOrWhiteSpace(clickResult.Value))
                     {
@@ -943,25 +950,38 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     }
 
                     await DismissYes24SeatConflictAlertAsync(salePopup);
-                    _logger.LogInformation("[YES24] 좌석 중복 감지 — 즉시 재선택. seat={Seat}, msg={Msg}, attempt={Attempt}/{Max}",
-                        clickResult.Value, outcome.AlertMessage, seatAttempt + 1, maxSeatRetries);
-                    progress?.Report(new AutomationProgress("좌석 재선택 중", "중복 좌석 감지 — 다른 좌석 재선택"));
+                    _logger.LogInformation("[YES24] 좌석 선택 미반영 (100ms) — 다음 좌석. seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
+                    progress?.Report(new AutomationProgress("좌석 재선택 중", "좌석 선택 미반영 — 다른 좌석 재선택"));
                     continue;
                 }
 
-                if (outcome.Kind == Yes24SeatOutcomeKind.Unknown)
+                // Phase 2B: .son 안정화 대기 (200ms).
+                // YES24 의 ChoiceSeat 는 click 직후 .son class 를 낙관적으로 부여한 뒤,
+                // 서버 AJAX 응답 (100~300ms) 에서 중복이면 .son 을 다시 제거 + alert 발동.
+                // 200ms 대기 후 .son 이 여전히 유지 = 서버 승인 → Phase 3.
+                // .son 제거됨 = 서버 거부 (중복) → 즉시 다음 좌석.
+                await Task.Delay(200, cancellationToken);
+                try
                 {
-                    if (!string.IsNullOrWhiteSpace(clickResult.Value))
+                    if (await seatFrame.Locator("[name=tk].son").CountAsync() == 0)
                     {
-                        excludedSeats.Add(clickResult.Value);
-                    }
+                        if (!string.IsNullOrWhiteSpace(clickResult.Value))
+                        {
+                            excludedSeats.Add(clickResult.Value);
+                        }
 
-                    _logger.LogWarning("[YES24] 좌석 선택 결과 불명 (timeout). seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
-                    await Task.Delay(50, cancellationToken);
-                    continue;
+                        await DismissYes24SeatConflictAlertAsync(salePopup);
+                        _logger.LogInformation("[YES24] .son 제거됨 (서버 거부) — 다음 좌석. seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
+                        progress?.Report(new AutomationProgress("좌석 재선택 중", "좌석 선택 서버 거부 — 다른 좌석 재선택"));
+                        continue;
+                    }
+                }
+                catch (PlaywrightException)
+                {
+                    throw;
                 }
 
-                // outcome.Confirmed → ConfirmYes24SeatAsync 진행
+                // Phase 3: 좌석 선택 완료 (ChoiceEnd → step 전환)
                 try
                 {
                     await ConfirmYes24SeatAsync(salePopup, seatFrame, timeout, cancellationToken);
@@ -982,7 +1002,6 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             catch (PlaywrightException ex) when (seatAttempt < maxSeatRetries - 1)
             {
                 _logger.LogWarning(ex, "[YES24] 좌석 선택 중 frame/page 재연결 필요. attempt={Attempt}/{Max}", seatAttempt + 1, maxSeatRetries);
-                // frame detach 등: 다음 iteration 에서 재탐색 + 인벤토리 재확인 강제
                 seatFrame = null;
                 inventoryReady = false;
                 await Task.Delay(100, cancellationToken);
@@ -990,86 +1009,6 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         }
 
         throw new InvalidOperationException($"YES24 좌석 선택 실패 ({maxSeatRetries}회 시도).");
-    }
-
-    /// <summary>
-    /// 좌석 클릭 후 [중복 알림 발동] 또는 [좌석 확정 DOM 반영] 을 동시 감시하는 tight loop.
-    /// 20ms 주기로 세 가지 신호를 병렬 체크:
-    ///   1) `seatFrame.Locator("[name=tk].son")` — 좌석에 son class 부여 (iframe)
-    ///   2) `seatFrame.Locator("#liSelSeat > li")` — 선택 좌석 요약 리스트 (iframe)
-    ///   3) `salePopup` 의 `window.__yes24AlertDetected` — alert flag (popup main)
-    ///
-    /// 기존 selectionVerified 는 DOM 신호만 300ms 고정 대기 후 한 번 확인하는 구조라 중복 케이스에서
-    /// 매 시도마다 300ms 를 소진했다. 이 루프는 20ms 주기로 세 신호 모두 확인하고 알림이 먼저 도착
-    /// 하면 즉시 탈출한다. 실측 baseline: 정상 케이스 confirmed 는 2~30ms 내에 감지된다.
-    /// </summary>
-    private static async Task<Yes24SeatOutcome> WaitForYes24SeatOutcomeAsync(
-        IPage salePopup,
-        IFrame seatFrame,
-        TimeSpan maxWait,
-        CancellationToken cancellationToken)
-    {
-        var sonLocator = seatFrame.Locator("[name=tk].son");
-        var listLocator = seatFrame.Locator("#liSelSeat > li");
-        var deadline = DateTimeOffset.UtcNow + maxWait;
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // 1) alert flag 체크 — jQuery fbk_Alert / native alert 훅이 popup main 에 설치되어 있음
-            try
-            {
-                var alertMsg = await salePopup.EvaluateAsync<string>(
-                    "() => (window.__yes24AlertDetected === true ? String(window.__yes24LastAlert || 'alert') : '')");
-                if (!string.IsNullOrEmpty(alertMsg))
-                {
-                    return Yes24SeatOutcome.Conflict(alertMsg);
-                }
-            }
-            catch (PlaywrightException)
-            {
-                return Yes24SeatOutcome.Unknown();
-            }
-
-            // 2) 좌석 확정 체크 — iframe 내부의 [name=tk].son 또는 #liSelSeat > li
-            try
-            {
-                if (await sonLocator.CountAsync() > 0 || await listLocator.CountAsync() > 0)
-                {
-                    return Yes24SeatOutcome.Confirmed();
-                }
-            }
-            catch (PlaywrightException)
-            {
-                return Yes24SeatOutcome.Unknown();
-            }
-
-            try
-            {
-                await Task.Delay(20, cancellationToken);
-            }
-            catch (TaskCanceledException)
-            {
-                throw;
-            }
-        }
-
-        return Yes24SeatOutcome.Unknown();
-    }
-
-    private enum Yes24SeatOutcomeKind
-    {
-        Unknown = 0,
-        Confirmed = 1,
-        Conflict = 2
-    }
-
-    private readonly record struct Yes24SeatOutcome(Yes24SeatOutcomeKind Kind, string? AlertMessage)
-    {
-        public static Yes24SeatOutcome Confirmed() => new(Yes24SeatOutcomeKind.Confirmed, null);
-        public static Yes24SeatOutcome Conflict(string? message) => new(Yes24SeatOutcomeKind.Conflict, message);
-        public static Yes24SeatOutcome Unknown() => new(Yes24SeatOutcomeKind.Unknown, null);
     }
 
     private async Task<IFrame> FindYes24SeatFrameAsync(IPage salePopup, TimeSpan timeout, CancellationToken cancellationToken)
@@ -1282,7 +1221,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         //
         // 2026-04-09 성능 개선: 내부 폴링 타임아웃을 min(timeout, 2500ms) 로 cap 하여 중복 시나리오에서
         // step01→step03 전환 대기에 8초 가까이 소진되던 문제를 차단. 2.5초면 정상 케이스의 수 배 여유.
-        var confirmTimeout = TimeSpan.FromMilliseconds(Math.Min(timeout.TotalMilliseconds, 2500));
+        var confirmTimeout = TimeSpan.FromMilliseconds(Math.Min(timeout.TotalMilliseconds, 1000));
 
         var iframeInvoke = await seatFrame.EvaluateAsync<string>(
             "() => { try { if (typeof ChoiceEnd === 'function') { ChoiceEnd(); return 'ok'; } return 'missing'; } catch (e) { return 'err:' + e.message; } }");
