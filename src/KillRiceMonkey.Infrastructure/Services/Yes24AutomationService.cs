@@ -955,15 +955,49 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     continue;
                 }
 
-                // Phase 2B: .son 안정화 대기 (200ms).
-                // YES24 의 ChoiceSeat 는 click 직후 .son class 를 낙관적으로 부여한 뒤,
-                // 서버 AJAX 응답 (100~300ms) 에서 중복이면 .son 을 다시 제거 + alert 발동.
-                // 200ms 대기 후 .son 이 여전히 유지 = 서버 승인 → Phase 3.
-                // .son 제거됨 = 서버 거부 (중복) → 즉시 다음 좌석.
-                await Task.Delay(200, cancellationToken);
-                try
+                // Phase 2B: 안정화 polling (최대 300ms, 15ms 주기).
+                // YES24 ChoiceSeat 는 click 직후 .son 을 낙관적으로 부여하지만 서버가 중복을
+                // 거부하면 .son 은 제거하지 않고 native alert 만 발동하는 사례가 실측됨.
+                // 따라서 두 신호를 동시 감시:
+                //   1) __yes24AlertDetected = true → ChoiceSeat 서버 거부 (alert 발동)
+                //   2) .son count = 0 → .son 제거됨 (일부 공연에서 관찰)
+                // 둘 중 하나라도 먼저 감지되면 즉시 다음 좌석 전환.
+                // 300ms 내 둘 다 안 오면 서버 승인으로 판단 → Phase 3.
                 {
-                    if (await seatFrame.Locator("[name=tk].son").CountAsync() == 0)
+                    var stabilizeDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(300);
+                    var seatRejected = false;
+
+                    while (DateTimeOffset.UtcNow < stabilizeDeadline)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            if (await salePopup.EvaluateAsync<bool>("() => window.__yes24AlertDetected === true"))
+                            {
+                                seatRejected = true;
+                                break;
+                            }
+                        }
+                        catch (PlaywrightException) { }
+
+                        try
+                        {
+                            if (await seatFrame.Locator("[name=tk].son").CountAsync() == 0)
+                            {
+                                seatRejected = true;
+                                break;
+                            }
+                        }
+                        catch (PlaywrightException)
+                        {
+                            throw;
+                        }
+
+                        await Task.Delay(15, cancellationToken);
+                    }
+
+                    if (seatRejected)
                     {
                         if (!string.IsNullOrWhiteSpace(clickResult.Value))
                         {
@@ -971,14 +1005,10 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                         }
 
                         await DismissYes24SeatConflictAlertAsync(salePopup);
-                        _logger.LogInformation("[YES24] .son 제거됨 (서버 거부) — 다음 좌석. seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
+                        _logger.LogInformation("[YES24] 좌석 서버 거부 (alert/.son) — 다음 좌석. seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
                         progress?.Report(new AutomationProgress("좌석 재선택 중", "좌석 선택 서버 거부 — 다른 좌석 재선택"));
                         continue;
                     }
-                }
-                catch (PlaywrightException)
-                {
-                    throw;
                 }
 
                 // Phase 3: 좌석 선택 완료 (ChoiceEnd → step 전환)
