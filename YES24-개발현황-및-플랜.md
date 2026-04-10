@@ -547,30 +547,49 @@ AGENTS.md 정책: 한국어 메시지, 변수명/기술 용어는 영어 유지.
   - `[RESULT] PASS — conflict handled in 1422ms (target <1500ms)`
 - **회귀**: dotnet build 0 errors (warnings 2 기존), dotnet test 4/4 pass, dotnet publish 성공.
 
-### 동작 플로우 (수정 후)
+### 동작 플로우 (2026-04-10 Phase 2B Dialog event 최종)
 
 ```
 SelectYes24SeatAndAdvanceAsync:
   [1회 only] FindYes24SeatFrameAsync + EnsureYes24SeatInventoryReadyAsync
+  [1회] C# Dialog event handler 등록 (dialogFlag int[] + phase2BHandler)
   for seatAttempt in 0..9:
-    1. __yes24AlertDetected = false (reset)
-    2. ClickYes24SeatAsync → target.click()
-    3. WaitForYes24SeatOutcomeAsync (20ms 폴링, max 1500ms):
-         - alert flag ON   → Conflict (즉시)
-         - .son > 0 OR #liSelSeat > 0 → Confirmed (tick 1~2 내 대부분)
-         - timeout 1500ms  → Unknown
-    4a. Conflict:
-         - excludedSeats.Add(value)
-         - DismissYes24SeatConflictAlertAsync (flag reset + jQuery dialog close + DOM hide)
-         - continue (다음 iteration 시 seatFrame 캐시 재사용)
-    4b. Unknown:
-         - excludedSeats.Add(value)
-         - 50ms delay
-         - continue
-    4c. Confirmed:
-         - ConfirmYes24SeatAsync (cap 2500ms)
+    Phase 0: .son 클린업 + JS flag reset + C# dialogFlag reset
+    Phase 1: ClickYes24SeatAsync → target.click()
+    Phase 2: TryWaitForConditionAsync(.son > 0 OR #liSelSeat > 0, 100ms)
+         - 미반영 → excludedSeats + continue (즉시 다음 좌석)
+    Phase 2B: C# Dialog event 기반 중복 감지 (10ms polling, max 300ms)
+         - Volatile.Read(dialogFlag[0]) == 1 → 즉시 reject (~10ms)
+         - 300ms 내 미감지 → JS flag 보완 체크 (fbk_Alert jQuery dialog 대응)
+         - rejected → excludedSeats + DismissYes24SeatConflictAlertAsync + continue
+    Phase 3: ConfirmYes24SeatAsync (cap 1000ms, dialogFlag 전달)
+         - ChoiceEnd() → selSeatClass 대기 → fdc_VerifySelSeatNumber → step 전환
+         - polling 루프 내 C# dialogFlag 우선 체크로 native alert 교착 방지
          - 예외 시 excludedSeats + continue, 아니면 return title
 ```
+
+### 근본 병목 분석 (0.83s → <0.05s)
+
+**증상**: 중복 좌석 재시도에 좌석당 0.83s 소요. 사용자 평가 "인간이 더 빠름".
+
+**근본 원인**: native `alert()` 가 JS main thread 를 차단하면 Playwright 의 CDP `Runtime.evaluate`
+명령이 응답을 받을 수 없어 `EvaluateAsync` 가 교착. Phase 2B 의 15ms polling 이 전부 교착 상태로
+300ms timeout 만료 → Phase 3 진입 → Phase 3 의 `DetectYes24SeatConflictAsync` 도 동일 교착 →
+`confirmTimeout` (1000ms) 근처까지 소진 후에야 Dialog handler 의 `AcceptAsync` 가 처리됨.
+
+**핵심 메커니즘**: Playwright 내부에서 CDP 명령이 직렬화되어 `Runtime.evaluate` (alert 차단) 와
+`Page.handleJavaScriptDialog` (AcceptAsync) 가 상호 대기하는 사실상 교착 상태.
+
+**해결**: Playwright `Page.Dialog` C# event 는 CDP `Page.javascriptDialogOpening` 알림으로
+발동하므로 JS 차단과 무관하게 즉시 감지 가능. `EvaluateAsync` 를 제거하고 C# `int[]` flag +
+`Volatile.Read` 10ms polling 으로 교체하여 교착 완전 해소.
+
+- Phase 2B: `EvaluateAsync` 완전 제거 → `Volatile.Read(ref dialogFlag[0])` 10ms polling
+- Phase 3: `DetectYes24SeatConflictAsync` 앞에 `Volatile.Read` 게이트 추가로 교착 방지
+- fbk_Alert 보완: 300ms 후 JS flag 1회 체크 (jQuery dialog 는 Dialog event 미발동, JS 비차단)
+
+**기대 성능**: 중복 좌석 감지 Phase 2B 내 ~10ms (이전 300ms+ 교착 → 10ms), 총 재시도 시간
+Phase 2 (30ms) + Phase 2B (alert 시점 ~150ms + 감지 10ms) + dismiss (20ms) ≈ **0.2s/좌석** 목표.
 
 ## 12. 2026-04-09 후속 개선 로그 — 대기열 처리 + 제외 목록 리셋
 
