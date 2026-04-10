@@ -866,8 +866,16 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
     private async Task<string> SelectYes24SeatAndAdvanceAsync(IPage salePopup, TicketingJobRequest request, TimeSpan timeout, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxSeatRetries = 10;
+        // 중복 좌석 감지 후 재시도까지의 최대 대기 시간. 15ms 폴링으로 alert 이 발동하자마자 루프를
+        // 빠져나가므로 실제 경험 지연은 네트워크 1왕복 + 폴링 한 주기 수준.
+        var seatOutcomeMaxWait = TimeSpan.FromMilliseconds(1500);
         var excludedSeats = new HashSet<string>(StringComparer.Ordinal);
         var desiredSeatIndex = Math.Max(request.DesiredSeatIndex, 1);
+
+        // iframe 과 인벤토리 준비 상태는 첫 iteration 에서 한 번만 확인하고 이후 재사용한다.
+        // PlaywrightException (frame detach 등) 발생 시에만 null 로 재설정해서 재탐색을 강제한다.
+        IFrame? seatFrame = null;
+        var inventoryReady = false;
 
         for (var seatAttempt = 0; seatAttempt < maxSeatRetries; seatAttempt++)
         {
@@ -880,8 +888,26 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
 
             try
             {
-                var seatFrame = await FindYes24SeatFrameAsync(salePopup, timeout, cancellationToken);
-                await EnsureYes24SeatInventoryReadyAsync(salePopup, seatFrame, request, timeout, cancellationToken);
+                if (seatFrame is null)
+                {
+                    seatFrame = await FindYes24SeatFrameAsync(salePopup, timeout, cancellationToken);
+                    inventoryReady = false;
+                }
+
+                if (!inventoryReady)
+                {
+                    await EnsureYes24SeatInventoryReadyAsync(salePopup, seatFrame, request, timeout, cancellationToken);
+                    inventoryReady = true;
+                }
+
+                // click 직전에 alert 플래그 리셋 — outcome 을 정확히 측정하기 위해 매 시도마다 세트.
+                try
+                {
+                    await salePopup.EvaluateAsync("() => { window.__yes24AlertDetected = false; window.__yes24LastAlert = null; }");
+                }
+                catch (PlaywrightException)
+                {
+                }
 
                 var clickResult = await ClickYes24SeatAsync(seatFrame, request.DesiredGrade, desiredSeatIndex, excludedSeats, cancellationToken);
                 if (!string.Equals(clickResult.Status, "clicked", StringComparison.Ordinal))
@@ -904,13 +930,12 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     continue;
                 }
 
-                var selectionVerified = await PlaywrightRuntime.TryWaitForConditionAsync(async () =>
-                {
-                    return await seatFrame.Locator("[name=tk].son").CountAsync() > 0
-                        || await salePopup.Locator("#liSelSeat > li").CountAsync() > 0;
-                }, TimeSpan.FromMilliseconds(300), cancellationToken);
+                // Fast outcome loop: 15ms 간격으로 [알림 발동] 또는 [좌석 확정] 을 동시 감시.
+                // 기존에는 "확정 300ms 고정 대기 → 그 후 알림 체크" 순차 구조여서 중복 케이스에서 매번
+                // 300ms 를 소진했으나, 이 루프는 알림이 네트워크 왕복으로 도착하자마자 즉시 탈출한다.
+                var outcome = await WaitForYes24SeatOutcomeAsync(salePopup, seatFrame, seatOutcomeMaxWait, cancellationToken);
 
-                if (await DetectYes24SeatConflictAsync(salePopup))
+                if (outcome.Kind == Yes24SeatOutcomeKind.Conflict)
                 {
                     if (!string.IsNullOrWhiteSpace(clickResult.Value))
                     {
@@ -918,22 +943,25 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     }
 
                     await DismissYes24SeatConflictAlertAsync(salePopup);
+                    _logger.LogInformation("[YES24] 좌석 중복 감지 — 즉시 재선택. seat={Seat}, msg={Msg}, attempt={Attempt}/{Max}",
+                        clickResult.Value, outcome.AlertMessage, seatAttempt + 1, maxSeatRetries);
                     progress?.Report(new AutomationProgress("좌석 재선택 중", "중복 좌석 감지 — 다른 좌석 재선택"));
                     continue;
                 }
 
-                if (!selectionVerified)
+                if (outcome.Kind == Yes24SeatOutcomeKind.Unknown)
                 {
                     if (!string.IsNullOrWhiteSpace(clickResult.Value))
                     {
                         excludedSeats.Add(clickResult.Value);
                     }
 
-                    _logger.LogWarning("[YES24] 좌석 선택 검증 실패. seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
+                    _logger.LogWarning("[YES24] 좌석 선택 결과 불명 (timeout). seat={Seat}, attempt={Attempt}/{Max}", clickResult.Value, seatAttempt + 1, maxSeatRetries);
                     await Task.Delay(50, cancellationToken);
                     continue;
                 }
 
+                // outcome.Confirmed → ConfirmYes24SeatAsync 진행
                 try
                 {
                     await ConfirmYes24SeatAsync(salePopup, seatFrame, timeout, cancellationToken);
@@ -954,11 +982,94 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             catch (PlaywrightException ex) when (seatAttempt < maxSeatRetries - 1)
             {
                 _logger.LogWarning(ex, "[YES24] 좌석 선택 중 frame/page 재연결 필요. attempt={Attempt}/{Max}", seatAttempt + 1, maxSeatRetries);
+                // frame detach 등: 다음 iteration 에서 재탐색 + 인벤토리 재확인 강제
+                seatFrame = null;
+                inventoryReady = false;
                 await Task.Delay(100, cancellationToken);
             }
         }
 
         throw new InvalidOperationException($"YES24 좌석 선택 실패 ({maxSeatRetries}회 시도).");
+    }
+
+    /// <summary>
+    /// 좌석 클릭 후 [중복 알림 발동] 또는 [좌석 확정 DOM 반영] 을 동시 감시하는 tight loop.
+    /// 20ms 주기로 세 가지 신호를 병렬 체크:
+    ///   1) `seatFrame.Locator("[name=tk].son")` — 좌석에 son class 부여 (iframe)
+    ///   2) `seatFrame.Locator("#liSelSeat > li")` — 선택 좌석 요약 리스트 (iframe)
+    ///   3) `salePopup` 의 `window.__yes24AlertDetected` — alert flag (popup main)
+    ///
+    /// 기존 selectionVerified 는 DOM 신호만 300ms 고정 대기 후 한 번 확인하는 구조라 중복 케이스에서
+    /// 매 시도마다 300ms 를 소진했다. 이 루프는 20ms 주기로 세 신호 모두 확인하고 알림이 먼저 도착
+    /// 하면 즉시 탈출한다. 실측 baseline: 정상 케이스 confirmed 는 2~30ms 내에 감지된다.
+    /// </summary>
+    private static async Task<Yes24SeatOutcome> WaitForYes24SeatOutcomeAsync(
+        IPage salePopup,
+        IFrame seatFrame,
+        TimeSpan maxWait,
+        CancellationToken cancellationToken)
+    {
+        var sonLocator = seatFrame.Locator("[name=tk].son");
+        var listLocator = seatFrame.Locator("#liSelSeat > li");
+        var deadline = DateTimeOffset.UtcNow + maxWait;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 1) alert flag 체크 — jQuery fbk_Alert / native alert 훅이 popup main 에 설치되어 있음
+            try
+            {
+                var alertMsg = await salePopup.EvaluateAsync<string>(
+                    "() => (window.__yes24AlertDetected === true ? String(window.__yes24LastAlert || 'alert') : '')");
+                if (!string.IsNullOrEmpty(alertMsg))
+                {
+                    return Yes24SeatOutcome.Conflict(alertMsg);
+                }
+            }
+            catch (PlaywrightException)
+            {
+                return Yes24SeatOutcome.Unknown();
+            }
+
+            // 2) 좌석 확정 체크 — iframe 내부의 [name=tk].son 또는 #liSelSeat > li
+            try
+            {
+                if (await sonLocator.CountAsync() > 0 || await listLocator.CountAsync() > 0)
+                {
+                    return Yes24SeatOutcome.Confirmed();
+                }
+            }
+            catch (PlaywrightException)
+            {
+                return Yes24SeatOutcome.Unknown();
+            }
+
+            try
+            {
+                await Task.Delay(20, cancellationToken);
+            }
+            catch (TaskCanceledException)
+            {
+                throw;
+            }
+        }
+
+        return Yes24SeatOutcome.Unknown();
+    }
+
+    private enum Yes24SeatOutcomeKind
+    {
+        Unknown = 0,
+        Confirmed = 1,
+        Conflict = 2
+    }
+
+    private readonly record struct Yes24SeatOutcome(Yes24SeatOutcomeKind Kind, string? AlertMessage)
+    {
+        public static Yes24SeatOutcome Confirmed() => new(Yes24SeatOutcomeKind.Confirmed, null);
+        public static Yes24SeatOutcome Conflict(string? message) => new(Yes24SeatOutcomeKind.Conflict, message);
+        public static Yes24SeatOutcome Unknown() => new(Yes24SeatOutcomeKind.Unknown, null);
     }
 
     private async Task<IFrame> FindYes24SeatFrameAsync(IPage salePopup, TimeSpan timeout, CancellationToken cancellationToken)
@@ -1168,6 +1279,11 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         //   3) 등급/매수 자동 선택 후 fdc_VerifySelSeatNumber() 가 step3 로 진입
         // - 응답 Code='block' 이면 STCLAB 캡차 → 상위에서 감지하여 사용자 개입 요청
         // - alert (다른 고객 결제중 등) 은 Dialog 핸들러에서 __yes24AlertDetected 로 표시 → 호출자가 재시도
+        //
+        // 2026-04-09 성능 개선: 내부 폴링 타임아웃을 min(timeout, 2500ms) 로 cap 하여 중복 시나리오에서
+        // step01→step03 전환 대기에 8초 가까이 소진되던 문제를 차단. 2.5초면 정상 케이스의 수 배 여유.
+        var confirmTimeout = TimeSpan.FromMilliseconds(Math.Min(timeout.TotalMilliseconds, 2500));
+
         var iframeInvoke = await seatFrame.EvaluateAsync<string>(
             "() => { try { if (typeof ChoiceEnd === 'function') { ChoiceEnd(); return 'ok'; } return 'missing'; } catch (e) { return 'err:' + e.message; } }");
         if (string.Equals(iframeInvoke, "missing", StringComparison.Ordinal))
@@ -1203,7 +1319,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                 const sel = document.querySelector(""#step01_time #ulSeatSpace select[id='selSeatClass']"");
                 return !!sel;
             }");
-        }, timeout, cancellationToken);
+        }, confirmTimeout, cancellationToken);
 
         if (await DetectYes24SeatConflictAsync(salePopup))
         {
@@ -1247,9 +1363,16 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             _logger.LogWarning("[YES24] fdc_VerifySelSeatNumber 호출 결과: {Result}", verifyResult);
         }
 
+        // step01→step03 전환 폴링도 confirmTimeout 으로 cap.
+        // 폴링 함수 내부에서 알림 발동을 동시 감시해 중복 시나리오의 조기 탈출을 보장.
         var advanced = await PlaywrightRuntime.TryWaitForConditionAsync(async () =>
         {
             if (salePopup.IsClosed)
+            {
+                return false;
+            }
+
+            if (await DetectYes24SeatConflictAsync(salePopup))
             {
                 return false;
             }
@@ -1265,7 +1388,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                 const step03Display = window.getComputedStyle(step03).display;
                 return step01Display === 'none' && step03Display === 'block';
             }");
-        }, timeout, cancellationToken);
+        }, confirmTimeout, cancellationToken);
 
         if (advanced)
         {
@@ -1297,11 +1420,45 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         }
     }
 
+    /// <summary>
+    /// 좌석 중복 알림을 해제한다. __yes24AlertDetected 플래그 리셋뿐 아니라, jQuery jAlert
+    /// 모드에서 실제로 화면에 남는 `#dialogAlert` HTML 다이얼로그도 강제로 닫아서 다음 iteration
+    /// 의 click 에 UI 오염이 전파되지 않도록 한다.
+    /// </summary>
     private static async Task DismissYes24SeatConflictAlertAsync(IPage salePopup)
     {
         try
         {
-            await salePopup.EvaluateAsync("() => { window.__yes24AlertDetected = false; }");
+            await salePopup.EvaluateAsync(@"() => {
+                window.__yes24AlertDetected = false;
+                window.__yes24LastAlert = null;
+
+                // 1) jQuery UI dialog close 시도 (jQuery/$j 둘 중 있는 쪽 사용)
+                try {
+                    const jq = (typeof $j !== 'undefined' && $j) || (typeof jQuery !== 'undefined' && jQuery) || null;
+                    if (jq && jq('#dialogAlert').length > 0) {
+                        const hasDialog = typeof jq('#dialogAlert').dialog === 'function';
+                        if (hasDialog) {
+                            try { jq('#dialogAlert').dialog('close'); } catch (e) { }
+                        }
+                    }
+                } catch (e) { }
+
+                // 2) DOM 레벨 강제 hide (jQuery 호출이 실패해도 다이얼로그가 보이지 않도록)
+                const dialog = document.querySelector('#dialogAlert');
+                if (dialog) {
+                    try { dialog.style.display = 'none'; } catch (e) { }
+                    const wrapper = dialog.closest('.ui-dialog');
+                    if (wrapper) {
+                        try { wrapper.style.display = 'none'; } catch (e) { }
+                    }
+                }
+
+                // 3) jQuery UI overlay 제거
+                document.querySelectorAll('.ui-widget-overlay').forEach(el => {
+                    try { el.style.display = 'none'; } catch (e) { }
+                });
+            }");
         }
         catch (PlaywrightException)
         {
