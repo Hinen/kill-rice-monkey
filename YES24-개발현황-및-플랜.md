@@ -489,6 +489,89 @@ AGENTS.md 정책: 한국어 메시지, 변수명/기술 용어는 영어 유지.
 - CDP 로 팝업 raw timeline 측정: 약 618ms 이후 `#IdTime.value = '1429899'`, `#ulTime > li.on = 1` 로 안정화 → 수정된 대기 루프가 정확히 이 시점에서 통과.
 - 57918 시나리오에서 수정 후 알림 다이얼로그가 한 번도 발생하지 않고 좌석 iframe 생성 → 좌석 클릭 → `fdc_VerifySelSeatNumber` → step01→step03 전환이 순차적으로 성공.
 
+## 13. 2026-04-10 성능 최적화 — 중복 좌석 처리 속도
+
+### 증상
+- QA 재현 시나리오: 좌석 선택 전 일시정지 기능으로 진입 → 타 디바이스에서 목표 좌석 선점 → 재개.
+- 결과: 자동화가 3초 이상 대기한 뒤에야 다른 좌석을 재선택. "티켓팅은 속도가 생명" 요건을 근본적으로 위배.
+
+### 원인 (개선 전 기준)
+1. **`selectionVerified` 고정 300ms 대기** (`SelectYes24SeatAndAdvanceAsync` 중간 단계)
+   - `await TryWaitForConditionAsync([name=tk].son OR #liSelSeat > li, 300ms)` 로 좌석 확정만 대기.
+   - 중복 케이스에서 `.son` 이 절대 붙지 않으므로 300ms 전부 소진 후에야 alert 체크로 이동.
+2. **`ConfirmYes24SeatAsync` 내부 두 폴링 루프가 request timeout(기본 8s) 까지 대기**
+   - 중복 좌석 확정 시도 후 step01→step03 전환이 영영 오지 않아 8초 timeout 만료.
+   - 연쇄: `좌석 선택 → 300ms 낭비 → ConfirmYes24SeatAsync 진입 → 8s 대기 → 예외 → 재시도`.
+3. **`DismissYes24SeatConflictAlertAsync` 가 `__yes24AlertDetected` flag 만 리셋**
+   - jQuery `#dialogAlert` HTML 다이얼로그는 DOM 에 그대로 남아서 다음 iteration 의 click 에 UI 오염 가능.
+4. **`FindYes24SeatFrameAsync` + `EnsureYes24SeatInventoryReadyAsync` 매 iteration 반복**
+   - iframe 이 유지되고 inventory 가 안정된 이후에도 매 재시도마다 폴링 왕복 발생.
+
+### 수정
+
+**1) `WaitForYes24SeatOutcomeAsync` 신규 — 20ms 폴링 통합 outcome loop**
+- `selectionVerified` 고정 300ms 대기 제거. 대신 20ms 주기로 세 신호를 병렬 체크:
+  1. `salePopup` 의 `window.__yes24AlertDetected` — jQuery/native alert 훅이 세팅하는 flag
+  2. `seatFrame.Locator("[name=tk].son")` — 좌석에 son class 부여 (iframe)
+  3. `seatFrame.Locator("#liSelSeat > li")` — 선택 좌석 요약 리스트 (iframe)
+- 최대 대기 시간 1500ms. 실측: 정상 케이스는 tick=1 (2ms) 내 confirmed, 중복 케이스는 알림이 도착하자마자 즉시 탈출.
+- 반환 타입 `Yes24SeatOutcome` (Confirmed / Conflict / Unknown) record struct 로 분기 명확화.
+
+**2) `SelectYes24SeatAndAdvanceAsync` 리팩토링**
+- `seatFrame` 과 `inventoryReady` 를 iteration 외부에 캐싱. `PlaywrightException` 발생 시에만 null 로 재설정해 재탐색 강제.
+  - 매 재시도마다 `FindYes24SeatFrameAsync` + `EnsureYes24SeatInventoryReadyAsync` 호출을 **N회 → 1회 + 재연결 시 1회** 로 감축.
+- click 직전 `window.__yes24AlertDetected / __yes24LastAlert` 를 리셋하여 outcome loop 가 이전 iteration 의 잔재 플래그를 감지하지 않도록 보호.
+- outcome 분기를 `Confirmed → ConfirmYes24SeatAsync` / `Conflict → Dismiss + continue` / `Unknown → excludedSeats + continue` 로 단순화.
+
+**3) `DismissYes24SeatConflictAlertAsync` 강화**
+- `__yes24AlertDetected = false / __yes24LastAlert = null` 리셋 외에도:
+  - `jQuery('#dialogAlert').dialog('close')` 시도 (`$j` / `jQuery` 둘 다 fallback)
+  - DOM 레벨에서 `#dialogAlert` 및 `.ui-dialog` wrapper, `.ui-widget-overlay` 모두 `display:none` 으로 강제 hide
+- 이로써 다음 iteration 의 click 이 기존 HTML 다이얼로그의 이벤트 버블링에 영향받지 않음.
+
+**4) `ConfirmYes24SeatAsync` 내부 timeout cap**
+- 기존 `timeout` (기본 8s) 를 `confirmTimeout = min(timeout, 2500ms)` 로 cap.
+- `preconditionMet` (selSeatClass 등장) 과 `advanced` (step01→step03 전환) 두 폴링 루프 모두 `confirmTimeout` 사용.
+- 정상 케이스는 100~500ms 내 완료되므로 2.5s 면 5x 여유. 중복·오류 케이스는 2.5s 로 cap 되어 상위 재시도가 빠르게 트리거.
+- `advanced` 폴링의 조건 함수 내부에서도 `DetectYes24SeatConflictAsync` 확인 시 false 반환하여 알림 발동 시점에 조기 탈출.
+
+### 검증
+
+- **정상 baseline (57918)**: 
+  - `좌석 선택 중 → 좌석 선택 완료 = 774~1156ms`
+  - outcome loop 실측: tick=1, elapsed=2ms → Confirmed. 이전 300ms 고정 대기 대비 ~150x 빠름.
+- **중복 시나리오 end-to-end**: `run_conflict_scenario.py` — iframe 내부 자체 realm 에서 `ChoiceSeat` 1회성 override 로 fake duplicate alert 주입. 
+  - 총 `좌석 선택 중 → 좌석 선택 완료 = 1421ms`
+  - **conflict 감지 → 재선택 완료 = 247ms** (기존 3000ms+ → 247ms, 10x+ 개선)
+  - `conflicts observed: 1`, seat 4700074 제외 후 다른 좌석(1층 1구역04열 002번) 성공 선택
+  - `[RESULT] PASS — conflict handled in 1422ms (target <1500ms)`
+- **회귀**: dotnet build 0 errors (warnings 2 기존), dotnet test 4/4 pass, dotnet publish 성공.
+
+### 동작 플로우 (수정 후)
+
+```
+SelectYes24SeatAndAdvanceAsync:
+  [1회 only] FindYes24SeatFrameAsync + EnsureYes24SeatInventoryReadyAsync
+  for seatAttempt in 0..9:
+    1. __yes24AlertDetected = false (reset)
+    2. ClickYes24SeatAsync → target.click()
+    3. WaitForYes24SeatOutcomeAsync (20ms 폴링, max 1500ms):
+         - alert flag ON   → Conflict (즉시)
+         - .son > 0 OR #liSelSeat > 0 → Confirmed (tick 1~2 내 대부분)
+         - timeout 1500ms  → Unknown
+    4a. Conflict:
+         - excludedSeats.Add(value)
+         - DismissYes24SeatConflictAlertAsync (flag reset + jQuery dialog close + DOM hide)
+         - continue (다음 iteration 시 seatFrame 캐시 재사용)
+    4b. Unknown:
+         - excludedSeats.Add(value)
+         - 50ms delay
+         - continue
+    4c. Confirmed:
+         - ConfirmYes24SeatAsync (cap 2500ms)
+         - 예외 시 excludedSeats + continue, 아니면 return title
+```
+
 ## 12. 2026-04-09 후속 개선 로그 — 대기열 처리 + 제외 목록 리셋
 
 초기 플랜에 "YES24 는 대기열 없음" 이라고 기재했으나, 재검토 결과 `jsf_base_ShowPerfSaleProcess` 가 일부 perf 에 대해 `NetFunnel_Action` 으로 대기열을 사용함을 발견. Melon/NOL 과 달리 YES24 는 대기열을 **별도 페이지가 아닌 메인 페이지에 inline 모달** (`#NetFunnel_Skin_Top`) 로 표시하기 때문에 기존 코드의 "새 팝업 URL 매칭" 로직으로는 감지 불가능했다. 또한 `SelectYes24SeatAndAdvanceAsync` 의 `excludedSeats` 는 한 번 채워지면 시도 종료까지 비워지지 않아 Melon/NOL 의 fallback 리셋 로직이 빠져있었다.
