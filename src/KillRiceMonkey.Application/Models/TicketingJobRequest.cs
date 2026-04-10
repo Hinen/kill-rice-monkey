@@ -9,7 +9,6 @@ public sealed record TicketingJobRequest(
     string? DesiredRound = null,
     bool PauseBeforeSeatSelection = false,
     ManualResetEventSlim? PauseGate = null,
-    string? DesiredIdTime = null,
     string? DesiredGrade = null,
     string? DesiredBlock = null,
     int DesiredSeatIndex = 1);

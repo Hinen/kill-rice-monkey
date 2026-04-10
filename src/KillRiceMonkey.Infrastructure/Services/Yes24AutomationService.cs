@@ -211,9 +211,9 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             return new AutomationRunResult(false, "관람일 형식이 올바르지 않습니다. 예: 2026.04.11", DateTimeOffset.Now);
         }
 
-        if (string.IsNullOrWhiteSpace(request.DesiredIdTime) && string.IsNullOrWhiteSpace(request.DesiredRound))
+        if (string.IsNullOrWhiteSpace(request.DesiredRound))
         {
-            return new AutomationRunResult(false, "YES24 시간/회차 또는 IdTime 값이 필요합니다.", DateTimeOffset.Now);
+            return new AutomationRunResult(false, "YES24 시간/회차 값이 필요합니다.", DateTimeOffset.Now);
         }
 
         var timeout = TimeSpan.FromSeconds(request.StepTimeoutSeconds);
@@ -230,12 +230,12 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         }
         catch (TimeoutException ex)
         {
-            _logger.LogError(ex, "[RunYes24] 시간 초과. date={Date}, round={Round}, idTime={IdTime}", desiredDate, request.DesiredRound, request.DesiredIdTime);
+            _logger.LogError(ex, "[RunYes24] 시간 초과. date={Date}, round={Round}", desiredDate, request.DesiredRound);
             return new AutomationRunResult(false, $"YES24 DOM 자동화 시간 초과: {ex.Message}", DateTimeOffset.Now);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[RunYes24] 예외 발생. date={Date}, round={Round}, idTime={IdTime}", desiredDate, request.DesiredRound, request.DesiredIdTime);
+            _logger.LogError(ex, "[RunYes24] 예외 발생. date={Date}, round={Round}", desiredDate, request.DesiredRound);
             return new AutomationRunResult(false, $"YES24 DOM 자동화 예외: {ex.Message}", DateTimeOffset.Now);
         }
     }
@@ -266,7 +266,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             await SelectYes24DateAsync(page, desiredDate, timeout, cancellationToken);
             progress?.Report(new AutomationProgress("날짜 선택 완료", "날짜 선택 완료"));
 
-            _logger.LogInformation("[YES24] 시간 선택 시작. round={Round}, idTime={IdTime}", request.DesiredRound, request.DesiredIdTime);
+            _logger.LogInformation("[YES24] 시간 선택 시작. round={Round}", request.DesiredRound);
             progress?.Report(new AutomationProgress("시간 선택 중"));
             var idTime = await SelectYes24TimeAsync(page, request, timeout, cancellationToken);
             progress?.Report(new AutomationProgress("시간 선택 완료", $"시간 선택 완료: {idTime}"));
@@ -490,27 +490,6 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             timeout,
             cancellationToken,
             "YES24 회차 목록을 찾지 못했습니다.");
-
-        if (!string.IsNullOrWhiteSpace(request.DesiredIdTime))
-        {
-            var idTime = request.DesiredIdTime.Trim();
-            var target = page.Locator($".rn-04-left-calist a[idTime='{idTime}']").First;
-            if (await target.CountAsync() == 0)
-            {
-                throw new InvalidOperationException($"YES24 idTime을 찾지 못했습니다: {idTime}");
-            }
-
-            await target.ScrollIntoViewIfNeededAsync();
-            await PlaywrightRuntime.ClickElementAsync(target);
-            await PlaywrightRuntime.WaitForConditionAsync(
-                async () => string.Equals(await target.GetAttributeAsync("idTime"), idTime, StringComparison.Ordinal)
-                      && ((await target.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase)
-                          || string.Equals(await page.Locator(".rn-04-left-calist a.on").First.GetAttributeAsync("idTime"), idTime, StringComparison.Ordinal)),
-                timeout,
-                cancellationToken,
-                "YES24 회차 선택 반영을 확인하지 못했습니다.");
-            return idTime;
-        }
 
         var selected = page.Locator(".rn-04-left-calist a.on").First;
         if (await selected.CountAsync() > 0)

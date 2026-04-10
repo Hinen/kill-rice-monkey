@@ -24,7 +24,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private int _melonHour = 18;
     private int _melonMinute;
     private string _desiredRound = string.Empty;
-    private string _desiredIdTime = string.Empty;
     private string _desiredGrade = string.Empty;
     private string _desiredBlock = string.Empty;
     private int _desiredSeatIndex = 1;
@@ -143,12 +142,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         get => _desiredRound;
         set => SetProperty(ref _desiredRound, value);
-    }
-
-    public string DesiredIdTime
-    {
-        get => _desiredIdTime;
-        set => SetProperty(ref _desiredIdTime, value);
     }
 
     public string DesiredGrade
@@ -373,10 +366,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(DesiredRound) && string.IsNullOrWhiteSpace(DesiredIdTime))
+            if (string.IsNullOrWhiteSpace(DesiredRound))
             {
                 StatusMessage = "입력 확인 필요";
-                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | YES24 시간/회차 또는 IdTime을 입력하세요.";
+                LastRunSummary = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} | YES24 시간/회차를 입력하세요.";
                 return;
             }
 
@@ -431,7 +424,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 IsNolTemplate ? DesiredRound : (IsMelonTemplate ? DesiredTime : (IsYes24Template ? DesiredRound : null)),
                 PauseBeforeSeatSelection && IsSeatPauseSupported,
                 _pauseGate,
-                IsYes24Template ? DesiredIdTime : null,
                 IsYes24Template ? DesiredGrade : null,
                 IsYes24Template ? DesiredBlock : null,
                 IsYes24Template ? Math.Max(DesiredSeatIndex, 1) : 1);

@@ -413,13 +413,6 @@
                                                  Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
                                     </StackPanel>
 
-                                    <StackPanel Grid.Row="0" Grid.Column="4">
-                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                   Text="IdTime(옵션)" />
-                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                 Text="{Binding DesiredIdTime, UpdateSourceTrigger=PropertyChanged}" />
-                                    </StackPanel>
-
                                     <StackPanel Grid.Row="2" Grid.Column="0">
                                         <TextBlock Style="{StaticResource SectionLabelTextStyle}"
                                                    Text="등급(옵션)" />
