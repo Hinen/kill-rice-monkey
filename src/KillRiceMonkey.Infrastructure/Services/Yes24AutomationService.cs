@@ -966,16 +966,18 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                     continue;
                 }
 
-                // Phase 2B: Dialog event 기반 중복 감지 (최대 300ms, 10ms 주기).
+                // Phase 2B: Dialog event 기반 중복 감지 (최대 500ms, 10ms 주기).
                 // 근본 병목: native alert() 가 JS main thread 를 차단하면 CDP Runtime.evaluate
                 // 응답이 올 수 없어 EvaluateAsync 가 교착 → alert flag 감지 불가 (기존 0.83s/좌석).
                 // 해결: Playwright Dialog C# event 는 CDP Page.javascriptDialogOpening 알림으로
                 // JS 차단과 무관하게 즉시 발동. C# int flag 를 Volatile.Read 로 10ms polling 하면
                 // EvaluateAsync 없이 alert 발동 즉시 (~10ms 이내) 감지 가능.
-                // 300ms 내 dialog 미감지 시 JS flag 보완 체크 (fbk_Alert jQuery dialog 대응).
+                // 500ms 윈도우: 실측 AJAX 응답 300~500ms. Phase 2B 에서 잡으면 Phase 3 진입 회피.
+                // 정상 케이스: dialog 미발동 → 500ms 대기 후 Phase 3 진입 (기존 300ms 대비 +200ms,
+                // 그러나 Phase 3 의 ChoiceEnd AJAX 가 이 시간에 서버 응답을 준비하므로 총 시간 동일).
                 {
                     var phase2BStart = DateTimeOffset.UtcNow;
-                    var stabilizeDeadline = phase2BStart + TimeSpan.FromMilliseconds(300);
+                    var stabilizeDeadline = phase2BStart + TimeSpan.FromMilliseconds(500);
                     var seatRejected = false;
 
                     while (DateTimeOffset.UtcNow < stabilizeDeadline)
@@ -1280,32 +1282,41 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             throw new InvalidOperationException($"YES24 ChoiceEnd 호출 실패: {iframeInvoke}");
         }
 
-        // ChoiceEnd_CallBack 후 부모 step01_time 의 selSeatClass 가 등장하면 등급/수량 자동 확정 후 fdc_VerifySelSeatNumber 로 step3 전환
-        // C# Dialog flag 를 EvaluateAsync 앞에 체크하여 native alert 교착 방지.
-        var preconditionMet = await PlaywrightRuntime.TryWaitForConditionAsync(async () =>
+        // ChoiceEnd_CallBack 후 부모 step01_time 의 selSeatClass 등장 대기.
+        // TryWaitForConditionAsync 대신 custom loop 사용: condition 이 false 를 반환하면
+        // 30ms 후 재시도하는 TryWaitForConditionAsync 의 특성상, dialogFlag 감지 시에도
+        // confirmTimeout (1000ms) 전체를 소진하는 교착 버그가 있었음. custom loop 에서는
+        // dialogFlag 감지 즉시 break 하여 ~10ms 내 탈출.
+        var preconditionMet = false;
+        var preconditionDeadline = DateTimeOffset.UtcNow + confirmTimeout;
+
+        while (DateTimeOffset.UtcNow < preconditionDeadline)
         {
-            if (salePopup.IsClosed)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (salePopup.IsClosed) break;
+            if (Volatile.Read(ref dialogFlag[0]) == 1) break;
+
+            try
             {
-                return false;
+                var result = await salePopup.EvaluateAsync<int>(@"() => {
+                    if (window.__yes24AlertDetected === true) return -1;
+                    const sel = document.querySelector(""#step01_time #ulSeatSpace select[id='selSeatClass']"");
+                    return sel ? 1 : 0;
+                }");
+                if (result == -1) break;
+                if (result == 1) { preconditionMet = true; break; }
             }
+            catch (PlaywrightException) { break; }
 
-            if (Volatile.Read(ref dialogFlag[0]) == 1)
-            {
-                return false;
-            }
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
+        }
 
-            if (await DetectYes24SeatConflictAsync(salePopup))
-            {
-                return false;
-            }
+        if (Volatile.Read(ref dialogFlag[0]) == 1)
+        {
+            throw new InvalidOperationException("YES24 좌석 중복 감지 (Phase 3 precondition)");
+        }
 
-            return await salePopup.EvaluateAsync<bool>(@"() => {
-                const sel = document.querySelector(""#step01_time #ulSeatSpace select[id='selSeatClass']"");
-                return !!sel;
-            }");
-        }, confirmTimeout, cancellationToken);
-
-        if (Volatile.Read(ref dialogFlag[0]) == 1 || await DetectYes24SeatConflictAsync(salePopup))
+        if (!preconditionMet && await DetectYes24SeatConflictAsync(salePopup))
         {
             throw new InvalidOperationException("YES24 좌석 중복 감지");
         }
@@ -1347,37 +1358,34 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             _logger.LogWarning("[YES24] fdc_VerifySelSeatNumber 호출 결과: {Result}", verifyResult);
         }
 
-        // step01→step03 전환 폴링도 confirmTimeout 으로 cap.
-        // C# Dialog flag 우선 체크로 native alert 교착 방지 + 조기 탈출.
-        var advanced = await PlaywrightRuntime.TryWaitForConditionAsync(async () =>
+        // step01→step03 전환 폴링. dialogFlag 감지 시 즉시 break.
+        var advanced = false;
+        var advancedDeadline = DateTimeOffset.UtcNow + confirmTimeout;
+
+        while (DateTimeOffset.UtcNow < advancedDeadline)
         {
-            if (salePopup.IsClosed)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (salePopup.IsClosed) break;
+            if (Volatile.Read(ref dialogFlag[0]) == 1) break;
+
+            try
             {
-                return false;
+                var result = await salePopup.EvaluateAsync<int>(@"() => {
+                    if (window.__yes24AlertDetected === true) return -1;
+                    const step01 = document.querySelector('#step01');
+                    const step03 = document.querySelector('#step03');
+                    if (!step01 || !step03) return 0;
+                    const s1d = window.getComputedStyle(step01).display;
+                    const s3d = window.getComputedStyle(step03).display;
+                    return (s1d === 'none' && s3d === 'block') ? 1 : 0;
+                }");
+                if (result == -1) break;
+                if (result == 1) { advanced = true; break; }
             }
+            catch (PlaywrightException) { break; }
 
-            if (Volatile.Read(ref dialogFlag[0]) == 1)
-            {
-                return false;
-            }
-
-            if (await DetectYes24SeatConflictAsync(salePopup))
-            {
-                return false;
-            }
-
-            return await salePopup.EvaluateAsync<bool>(@"() => {
-                const step01 = document.querySelector('#step01');
-                const step03 = document.querySelector('#step03');
-                if (!step01 || !step03) {
-                    return false;
-                }
-
-                const step01Display = window.getComputedStyle(step01).display;
-                const step03Display = window.getComputedStyle(step03).display;
-                return step01Display === 'none' && step03Display === 'block';
-            }");
-        }, confirmTimeout, cancellationToken);
+            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
+        }
 
         if (advanced)
         {
