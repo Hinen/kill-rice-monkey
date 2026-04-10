@@ -342,6 +342,111 @@ public static class NolPages
 
     public static string CaptchaPage(bool hasCaptcha = true) => hasCaptcha ? CaptchaWithForm() : CaptchaNone();
 
+    public static string OnestopSeatPage() => """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NOL Mock - 좌석 선택</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; font-family: "Segoe UI", sans-serif; background: #151922; color: #fff; padding: 24px; }
+        h1 { margin: 0 0 16px; font-size: 24px; }
+        .SeatPlan_seatPlan__mock { position: relative; width: 460px; height: 320px; margin: 0 auto; }
+        .SeatMap_seatGroup__mock svg { width: 100%; height: 100%; }
+        .InfoSelected_outerWrap__mock { margin: 16px auto; width: 460px; padding: 16px; background: rgba(255,255,255,0.08); border-radius: 12px; min-height: 48px; }
+        .EntButton_button__mock { display: block; width: 460px; margin: 16px auto 0; padding: 16px; border: none; border-radius: 14px; font-size: 16px; font-weight: 800; cursor: pointer; transition: background 0.2s; }
+        .EntButton_primary__mock { background: #17c964; color: #08150d; }
+        .EntButton_primary__mock:disabled { background: #2a3a2e; color: #5a6a5e; cursor: not-allowed; }
+        .EntButton_primary__mock:not(:disabled):hover { background: #3ddc84; }
+        circle { cursor: pointer; transition: fill 0.15s; }
+        circle.selected { fill: #4aa3ff !important; stroke: #80c2ff; stroke-width: 2; }
+        circle.disabled { fill: #333 !important; cursor: not-allowed; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="__next">
+        <h1>NOL Mock - 좌석 선택 (원스탑)</h1>
+        <div class="SeatPlan_seatPlan__mock">
+            <div class="SeatMap_seatGroup__mock">
+                <svg viewBox="0 0 459 321">
+                    <g id="zone-a">
+                        <circle cx="50" cy="50" r="8" fill="#6a6" />
+                        <circle cx="70" cy="50" r="8" fill="#6a6" />
+                        <circle cx="90" cy="50" r="8" fill="#6a6" />
+                        <circle cx="110" cy="50" r="8" fill="#6a6" />
+                        <circle cx="130" cy="50" r="8" fill="#6a6" />
+                        <circle cx="50" cy="70" r="8" fill="#6a6" />
+                        <circle cx="70" cy="70" r="8" fill="#6a6" />
+                        <circle cx="90" cy="70" r="8" fill="#6a6" />
+                        <circle cx="110" cy="70" r="8" fill="#6a6" />
+                        <circle cx="130" cy="70" r="8" fill="#6a6" />
+                        <circle cx="50" cy="90" r="8" fill="#6a6" class="disabled" />
+                        <circle cx="70" cy="90" r="8" fill="#6a6" class="disabled" />
+                    </g>
+                </svg>
+            </div>
+        </div>
+        <div class="InfoSelected_outerWrap__mock" id="selectedInfo">선택한 좌석이 없습니다.</div>
+        <button class="EntButton_button__mock EntButton_primary__mock" id="completeBtn" disabled>선택 완료</button>
+    </div>
+
+    <script>
+        var selectedSeat = null;
+        var circles = document.querySelectorAll('[class*="SeatMap_seatGroup"] circle:not(.disabled)');
+        var info = document.getElementById('selectedInfo');
+        var completeBtn = document.getElementById('completeBtn');
+
+        circles.forEach(function(circle) {
+            circle.addEventListener('click', function(e) {
+                if (selectedSeat) selectedSeat.classList.remove('selected');
+                circle.classList.add('selected');
+                selectedSeat = circle;
+                var cx = circle.getAttribute('cx');
+                var cy = circle.getAttribute('cy');
+                info.textContent = 'A석 좌석 선택됨 (cx=' + cx + ', cy=' + cy + ')';
+                completeBtn.disabled = false;
+            });
+        });
+
+        /* "선택 완료" 버튼: isTrusted=true 이벤트만 처리한다.
+           이것은 실제 NOL 사이트의 EntButton React 컴포넌트 동작을 시뮬레이션한다.
+           JS el.click()은 isTrusted=false를 생성하므로 무시된다. */
+        completeBtn.addEventListener('click', function(e) {
+            if (!e.isTrusted) {
+                console.log('[Mock] Untrusted click ignored on 선택 완료 button');
+                return;
+            }
+            if (completeBtn.disabled) return;
+            window.location.href = '/onestop/complete';
+        });
+    </script>
+</body>
+</html>
+""";
+
+    public static string OnestopCompletePage() => """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8" />
+    <title>NOL Mock - 예매 완료</title>
+    <style>
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: "Segoe UI", sans-serif; background: #151922; color: #fff; }
+        .done { text-align: center; }
+        h1 { font-size: 36px; color: #17c964; }
+    </style>
+</head>
+<body>
+    <div class="done">
+        <h1>예매 완료</h1>
+        <p>선택 완료 버튼이 정상적으로 클릭되었습니다.</p>
+    </div>
+</body>
+</html>
+""";
+
     private static string CaptchaNone() => """
 <!DOCTYPE html>
 <html lang="ko">

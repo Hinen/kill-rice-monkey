@@ -71,4 +71,40 @@ public class NolBookingPageClassifierTests
 
         Assert.Equal(NolBookingPageState.Unknown, state);
     }
+
+    [Fact]
+    public void Onestop_seat_map_without_captcha_is_booking_ready()
+    {
+        var state = NolBookingPageClassifier.Classify(
+            currentUrl: "https://tickets.interpark.com/onestop/seat",
+            beforeUrl: "https://tickets.interpark.com/goods/25017910",
+            currentTitle: "좌석 선택",
+            beforeTitle: "상품",
+            hasProductSide: false,
+            hasCaptchaInput: false,
+            hasCaptchaModal: false,
+            hasLegacySeatFrame: false,
+            hasOnestopSeatMap: true);
+
+        Assert.Equal(NolBookingPageState.BookingReady, state);
+    }
+
+    [Fact]
+    public void Onestop_url_without_dom_markers_is_booking_ready()
+    {
+        // "선택 완료" 클릭 직후 URL이 /onestop이지만 아직 DOM 마커가 없는 경우
+        var state = NolBookingPageClassifier.Classify(
+            currentUrl: "https://tickets.interpark.com/onestop/complete",
+            beforeUrl: "https://tickets.interpark.com/onestop/seat",
+            currentTitle: "예매 완료",
+            beforeTitle: "좌석 선택",
+            hasProductSide: false,
+            hasCaptchaInput: false,
+            hasCaptchaModal: false,
+            hasLegacySeatFrame: false,
+            hasOnestopSeatMap: false);
+
+        // /onestop URL은 BookingReady로 분류된다
+        Assert.Equal(NolBookingPageState.BookingReady, state);
+    }
 }

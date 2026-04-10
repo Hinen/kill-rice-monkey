@@ -119,7 +119,7 @@
 
 ## 4. 현재 개발 완료된 기능
 
-### 4.1 NOL 자동화 플로우 (`NolAutomationService.cs`, 1,648줄)
+### 4.1 NOL 자동화 플로우 (`NolAutomationService.cs`, ~2,000줄)
 
 | 단계 | 기능 | 상태 | OLD 호환 | NEW 호환 |
 |------|------|------|---------|---------|
@@ -129,10 +129,10 @@
 | 3 | 날짜 선택 | ✅ | ✅ | ✅ |
 | 4 | 회차 선택 | ✅ | ✅ | ✅ |
 | 5 | 예매 클릭 + 대기열 | ✅ | ✅ | ✅ |
-| 6 | CAPTCHA 풀기 | ✅ | ⚠️ iframe 접근 검증 필요 | ❌ **셀렉터 불일치** |
-| 7 | 로그인 | ❌ | - | - |
-| 8 | 구역/좌석 선택 | ❌ | - | - |
-| 9 | 선택 완료 | ❌ | - | - |
+| 6 | CAPTCHA 풀기 | ✅ | ✅ (OLD iframe + NEW 모달 모두 대응) | ✅ |
+| 7 | 로그인 | ⚠️ 기존 세션 활용 (자동 로그인 미구현) | - | - |
+| 8 | 구역/좌석 선택 | ✅ | ✅ (레거시 span[onclick] 클릭) | ✅ (SVG circle 클릭) |
+| 9 | 선택 완료 | ✅ | ✅ (fnSelect/NextStepImage) | ✅ (Playwright trusted click) |
 
 ### 4.2 CAPTCHA 코드 호환성 비교
 
@@ -144,62 +144,15 @@
 | `fnCapchaRefresh()` | ✅ 존재 | ❌ 없음 (`.ModalCaptchaText_buttonRefresh__*`) |
 | `button:text-is('입력완료')` | ✅ | ✅ (동일 텍스트, 다른 class) |
 
-**결론**: CAPTCHA 코드는 OLD에서만 동작하고, NEW에서는 셀렉터 전면 수정 필요.
+**결론**: CAPTCHA 코드는 OLD/NEW 모두 대응 완료. `FindNolCaptchaInputAsync`가 OLD iframe 내 `#txtCaptcha`와 NEW 모달의 `[class*='captchaInput']` 양쪽을 검색한다.
 
 ---
 
-## 5. 미구현 / 개발 필요 사항
+## 5. 미구현 / 향후 개선 사항
 
-### 5.1 [최우선] NEW 원스탑 시스템 좌석 선택
+### 5.1 [미구현] 카카오 로그인 자동화
 
-**완전히 새로운 구현 필요** — 기존 코드 재사용 불가
-
-#### CAPTCHA (NEW)
-```
-셀렉터:
-- 모달: .ModalCaptchaText_layerWrap__*
-- 이미지: .ModalCaptchaText_captchaImage__* img (base64)
-- 입력: .ModalCaptchaText_captchaInput__* (input[type=text])
-- 새로고침: .ModalCaptchaText_buttonRefresh__*
-- 제출: button "입력완료" (.EntButton_*)
-특이사항: iframe 없음, 메인 페이지에 직접 존재
-```
-
-#### 좌석 선택 (NEW)
-```
-셀렉터:
-- SVG 컨테이너: .SeatMap_seatGroup__*
-- 개별 좌석: svg circle (2,926개)
-- 줌 컨트롤: .SeatPlan_zoomButton__*
-전략:
-- circle 요소에서 빈 좌석 식별 (fill color, class, data-* 속성 기반)
-- 원하는 등급/구역의 circle 클릭
-- SVG 좌표 기반이므로 Melon의 rect 방식과 유사한 접근 가능
-```
-
-#### 선택 완료 (NEW)
-```
-셀렉터: button "선택 완료" (.EntButton_button__* .EntButton_primary__*)
-상태: 좌석 미선택 시 disabled=true → 좌석 선택 후 enabled
-```
-
-### 5.2 [중요] OLD 레거시 시스템 좌석 선택
-
-**이미지맵 기반 구현 필요**
-
-#### 구역 선택 (OLD)
-```
-위치: ifrmSeat > ifrmSeatDetail
-구조: <img usemap="#MapMapMap"> + 42개 <area>
-동작: GetBlockSeatList('', '', 'BLOCK_CODE')
-```
-
-#### 개별 좌석 선택 (OLD)
-```
-GetBlockSeatList() 호출 후 로드되는 UI 추가 조사 필요
-```
-
-### 5.3 [중요] 카카오 로그인 자동화
+현재는 사용자가 미리 브라우저에서 로그인한 세션을 재사용한다.
 
 **직접 확인한 플로우 기반**:
 ```
@@ -212,29 +165,40 @@ GetBlockSeatList() 호출 후 로드되는 UI 추가 조사 필요
 7. 팝업 닫힘 대기 → 원래 페이지 복귀 → 예매하기 재클릭
 ```
 
-### 5.4 [보완] 시스템 분기 감지
+### 5.2 [참고] NEW/OLD 시스템 분기 감지 (구현 완료)
 
-예매하기 클릭 후 어떤 시스템으로 진입하는지 자동 감지 필요:
-- `poticket.interpark.com` → OLD 레거시 플로우
-- `tickets.interpark.com/onestop` → NEW 원스탑 플로우
+`FindNolSeatPageAsync`에서 URL 패턴으로 자동 분기:
+- `tickets.interpark.com/onestop` → NEW 원스탑 플로우 (`SelectNolOnestopSeatAndCompleteAsync`)
+- `poticket.interpark.com` → OLD 레거시 플로우 (`SelectNolLegacySeatAndCompleteAsync`)
 
-현재 `ClickNolBookingAsync`에서 페이지 전환을 감지하는 로직이 있으므로, URL 패턴으로 분기 가능.
+### 5.3 [참고] NEW 원스탑 좌석 선택 (구현 완료)
+
+```
+구현 메서드:
+├── WaitForNolOnestopSeatMapAsync()       -- SVG/SeatPlan 로드 대기
+├── IsNolOnestopZoneSelectionRequiredAsync() -- 구역 선택 필요 여부 판단
+├── WaitForNolOnestopZoneSelectionAsync() -- 구역 선택 대기 (사용자 클릭)
+├── SelectNolOnestopSeatAsync()           -- SVG circle 스캔 + 빈 좌석 클릭
+├── ClickNolOnestopSeatCompleteAsync()    -- "선택 완료" Playwright trusted click + 검증
+└── IsOnestopSeatCompleteConfirmedAsync() -- 클릭 후 페이지 전환/이탈 확인
+```
+
+### 5.4 [참고] OLD 레거시 좌석 선택 (구현 완료)
+
+```
+구현 메서드:
+├── FindNolLegacyFrameAsync()             -- ifrmSeat/ifrmSeatDetail 프레임 탐색
+├── HasNolLegacySelectSeatSpansAsync()    -- SelectSeat span 존재 여부
+├── WaitForNolLegacySelectSeatSpansAsync() -- 구역 선택 대기
+├── SelectNolLegacySeatAsync()            -- span[onclick*=SelectSeat] 클릭
+└── ClickNolLegacySeatCompleteAsync()     -- fnSelect()/NextStepImage 호출
+```
 
 ---
 
-## 6. 개발 플랜
+## 6. 향후 개발 플랜
 
-### Phase 1: 시스템 분기 감지
-
-**파일**: `NolAutomationService.cs` — `ClickNolBookingAsync` 수정
-
-```
-예매 클릭 후 URL 패턴 감지:
-- /onestop → NEW 플로우 실행
-- poticket.interpark.com → OLD 플로우 실행 (기존 코드)
-```
-
-### Phase 2: 카카오 로그인 자동화
+### Phase 1: 카카오 로그인 자동화 (미구현)
 
 **파일**: `NolAutomationService.cs`
 
@@ -249,69 +213,17 @@ GetBlockSeatList() 호출 후 로드되는 UI 추가 조사 필요
 └── RetryBookingAsync()                  -- 로그인 후 예매하기 재클릭
 ```
 
-### Phase 3: NEW 원스탑 CAPTCHA 처리
-
-**파일**: `NolAutomationService.cs`
-
-```
-추가 메서드:
-├── SolveOnestopCaptchaAsync()
-│   ├── CAPTCHA 이미지: .ModalCaptchaText_captchaImage__* img → screenshot → OCR
-│   ├── 입력: .ModalCaptchaText_captchaInput__* → fill
-│   ├── 새로고침: .ModalCaptchaText_buttonRefresh__* → click (실패 시)
-│   └── 제출: button "입력완료" → click
-```
-
-기존 `SolveNolCaptchaAsync`와 공통 OCR 로직 재사용 가능 (ddddocr + Vision API).
-셀렉터만 NEW 방식으로 교체.
-
-### Phase 4: NEW 원스탑 좌석 선택
-
-**파일**: `NolAutomationService.cs`
-
-```
-추가 메서드:
-├── SelectOnestopSeatAsync()
-│   ├── WaitForSeatMapLoadAsync()        -- SVG + 2926 circles 로드 대기
-│   ├── IdentifyAvailableSeatsAsync()    -- circle 요소에서 빈 좌석 식별
-│   │   (fill color, class, opacity 등으로 선택가능/불가 구분)
-│   ├── FilterByGradeAsync()             -- 선호 등급 필터링 (R/S/A)
-│   ├── ClickSeatCircleAsync()           -- circle 요소 클릭
-│   └── VerifySeatSelectedAsync()        -- .InfoSelected_* 영역에서 선택 확인
-├── ClickOnestopCompleteAsync()
-│   └── button "선택 완료" (.EntButton_*) → disabled 해제 확인 후 클릭
-└── HandleSeatConflictAsync()            -- 중복/충돌 좌석 재시도
-```
-
-**Melon 코드 참조 가능한 부분**:
-- SVG 좌석 스캔 패턴 (`SelectMelonSeatInFrameAsync`의 rect 스캔 → circle 스캔으로 변환)
-- 중복 좌석 제외 목록 (`excludedSeats`)
-- 재시도 로직 (최대 10회)
-
-### Phase 5: OLD 레거시 좌석 선택 (선택적)
-
-OLD 시스템이 점차 사라질 가능성이 있으므로, NEW 우선 구현 후 필요 시 추가.
-
-```
-추가 메서드:
-├── SelectLegacyBlockAsync()             -- image map area 클릭
-├── SelectLegacySeatAsync()              -- 블록 내 좌석 선택
-└── SubmitLegacyBookingAsync()           -- formBook 제출
-```
-
-### Phase 6: Mock 서버 확장
+### Phase 2: Mock 서버 확장
 
 **파일**: `tools/mock-ticket-server/Pages/NolPages.cs`
 
 - NEW 원스탑 좌석 선택 페이지 Mock 추가
 - SVG circle 좌석맵 + CAPTCHA 모달
-- `ifrmSeat` + 이미지맵 OLD 시스템 Mock은 선택적
 
-### Phase 7: UI 확장
+### Phase 3: UI 확장
 
 - `TicketingJobRequest`에 `PreferredGrade` (선호 등급: R/S/A) 추가
 - 카카오 로그인 정보 설정 (환경변수 또는 설정 파일)
-- OLD/NEW 시스템 수동 선택 옵션 (자동 감지가 기본)
 
 ---
 
@@ -329,16 +241,16 @@ OLD 시스템이 점차 사라질 가능성이 있으므로, NEW 우선 구현 �
 
 ## 8. 우선순위 요약
 
-| 순위 | 항목 | 대상 | 난이도 | 선행 조건 |
-|------|------|------|--------|----------|
-| 1 | 시스템 분기 감지 | 공통 | 하 | 없음 |
-| 2 | 카카오 로그인 | 공통 | 중 | 없음 |
-| 3 | NEW CAPTCHA 처리 | NEW | 중 | Phase 1 |
-| 4 | NEW SVG 좌석 선택 | NEW | 상 | Phase 3 + circle 속성 조사 |
-| 5 | NEW "선택 완료" 클릭 | NEW | 하 | Phase 4 |
-| 6 | OLD 구역/좌석 선택 | OLD | 중 | Phase 1 (선택적) |
-| 7 | Mock 서버 확장 | 테스트 | 중 | Phase 3~5 |
-| 8 | UI 확장 | 앱 | 하 | Phase 4 |
+| 순위 | 항목 | 대상 | 상태 | 난이도 |
+|------|------|------|------|--------|
+| ~~1~~ | ~~시스템 분기 감지~~ | 공통 | ✅ 완료 | 하 |
+| 2 | 카카오 로그인 | 공통 | 미구현 | 중 |
+| ~~3~~ | ~~NEW CAPTCHA 처리~~ | NEW | ✅ 완료 | 중 |
+| ~~4~~ | ~~NEW SVG 좌석 선택~~ | NEW | ✅ 완료 | 상 |
+| ~~5~~ | ~~NEW "선택 완료" 클릭~~ | NEW | ✅ 완료 | 하 |
+| ~~6~~ | ~~OLD 구역/좌석 선택~~ | OLD | ✅ 완료 | 중 |
+| 7 | Mock 서버 확장 | 테스트 | 미구현 | 중 |
+| 8 | UI 확장 | 앱 | 미구현 | 하 |
 
 ---
 
@@ -353,19 +265,19 @@ OLD 시스템이 점차 사라질 가능성이 있으므로, NEW 우선 구현 �
 ├── 회차 선택              ✅ (DOM + Screen)
 ├── 예매 클릭 + 대기열     ✅
 │
-├── 카카오 로그인          ❌ 미구현
+├── 카카오 로그인          ⚠️ 기존 세션 활용 (자동 로그인 미구현)
 │
-├── [OLD] CAPTCHA          ✅ (셀렉터 일치, iframe 접근 검증 필요)
-├── [OLD] 구역 선택        ❌ 미구현 (image map + GetBlockSeatList)
-├── [OLD] 좌석 선택        ❌ 미구현
+├── [OLD] CAPTCHA          ✅ (OLD iframe + NEW 모달 모두 대응)
+├── [OLD] 구역 선택        ✅ (사용자 대기 후 SelectSeat span 감지)
+├── [OLD] 좌석 선택        ✅ (span[onclick*=SelectSeat] 클릭)
 │
-├── [NEW] CAPTCHA          ❌ 미구현 (셀렉터 완전 불일치, React 모달)
-├── [NEW] 좌석 선택        ❌ 미구현 (SVG 2926 circles)
-└── [NEW] 선택 완료        ❌ 미구현 (EntButton "선택 완료")
+├── [NEW] CAPTCHA          ✅ (React 모달 셀렉터 대응)
+├── [NEW] 좌석 선택        ✅ (SVG circle 스캔 + 클릭)
+└── [NEW] 선택 완료        ✅ (Playwright trusted click + 페이지 전환 검증)
 ```
 
 **핵심 발견**: NEW와 OLD는 상품 페이지는 동일하지만, **예매 시스템이 완전히 다르다**.
 - OLD: `poticket.interpark.com` 레거시 iframe 시스템
 - NEW: `tickets.interpark.com/onestop` Next.js React SPA
 
-**우선 개발 대상**: NEW 원스탑 시스템 (최신 시스템이며, 향후 모든 공연이 이 시스템으로 전환될 가능성 높음). OLD는 기존 CAPTCHA 코드가 호환되므로 구역/좌석 선택만 추가하면 됨.
+**현재 상태**: NEW 원스탑 + OLD 레거시 모두 좌석 선택 및 완료까지 자동화 구현 완료. 카카오 로그인 자동화만 미구현 (기존 브라우저 세션 활용으로 대체).

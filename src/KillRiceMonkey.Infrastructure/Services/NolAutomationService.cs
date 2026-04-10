@@ -16,6 +16,7 @@ namespace KillRiceMonkey.Infrastructure.Services;
 public sealed class NolAutomationService : INolAutomationService, IAsyncDisposable
 {
     private const string NolOnestopSeatCircleSelector = "[class*=\"SeatMap_seatGroup\"] circle";
+    private const string NolOnestopSeatMapSelector = "[class*='SeatPlan_seatPlan'], [class*='SeatMap_seatMap'], [class*='SeatMap_blockImg'], [class*='SeatMap_placeImg'], [class*='SeatMap_seatGroup']";
     private static readonly Regex NolRoundPattern = new(@"^\D*(?<round>\d{1,2})\s*(?:회차|회|희|히|외)?\s*(?<time>\d{1,2}(?::|\.|,)?\d{2})", RegexOptions.Compiled);
     private const string NolRemoteDebugLaunchUrl = "https://tickets.interpark.com/";
     private const string NolCdpEndpoint = "http://127.0.0.1:9222/";
@@ -1709,7 +1710,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             {
                 try
                 {
-                    if (await page.Locator("[class*='SeatPlan_seatPlan'], [class*='SeatMap_seatMap'], [class*='SeatMap_blockImg'], [class*='SeatMap_placeImg'], [class*='SeatMap_seatGroup']").CountAsync() > 0)
+                    if (await page.Locator(NolOnestopSeatMapSelector).CountAsync() > 0)
                         return true;
 
                     var circleCount = await page.Locator(NolOnestopSeatCircleSelector).CountAsync();
@@ -1906,9 +1907,81 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             },
             timeout, cancellationToken, "NOL '선택 완료' 버튼이 활성화되지 않았습니다.");
 
-        try { await completeBtn.EvaluateAsync("el => el.click()"); }
-        catch (PlaywrightException) { await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1000 }); }
-        _logger.LogInformation("[OnestopSeat] '선택 완료' 버튼 클릭 완료.");
+        try { await completeBtn.ScrollIntoViewIfNeededAsync(); }
+        catch (PlaywrightException) { }
+
+        var beforeUrl = page.Url;
+
+        // Playwright ClickAsync는 CDP Input.dispatchMouseEvent 기반 trusted click을 생성한다.
+        // ClickElementAsync의 fallback은 JS dispatchEvent(untrusted)이므로 직접 ClickAsync를 사용한다.
+        try
+        {
+            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger.LogWarning(ex, "[OnestopSeat] '선택 완료' ClickAsync(Force) 실패 — ClickAsync(일반) 재시도.");
+            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+        }
+        _logger.LogInformation("[OnestopSeat] '선택 완료' 버튼 Playwright trusted click 수행.");
+
+        if (await IsOnestopSeatCompleteConfirmedAsync(page, completeBtn, beforeUrl, cancellationToken))
+        {
+            _logger.LogInformation("[OnestopSeat] '선택 완료' 클릭 확인됨 (페이지 전환 또는 좌석 페이지 이탈).");
+            return;
+        }
+
+        _logger.LogWarning("[OnestopSeat] '선택 완료' 첫 클릭 미반영 — 재시도.");
+        try
+        {
+            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+        }
+        catch (PlaywrightException)
+        {
+            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
+        }
+
+        if (await IsOnestopSeatCompleteConfirmedAsync(page, completeBtn, beforeUrl, cancellationToken))
+        {
+            _logger.LogInformation("[OnestopSeat] '선택 완료' 재시도 클릭 확인됨.");
+            return;
+        }
+
+        throw new InvalidOperationException("NOL '선택 완료' 버튼 클릭 후 페이지 전환이 확인되지 않았습니다. 좌석 선택은 완료되었으나 '선택 완료' 처리가 실패했습니다.");
+    }
+
+    private static async Task<bool> IsOnestopSeatCompleteConfirmedAsync(IPage page, ILocator completeBtn, string beforeUrl, CancellationToken cancellationToken)
+    {
+        return await PlaywrightRuntime.TryWaitForConditionAsync(
+            async () =>
+            {
+                if (page.IsClosed) return true;
+
+                var currentUrl = page.Url;
+                if (!string.Equals(currentUrl, beforeUrl, StringComparison.OrdinalIgnoreCase) &&
+                    !currentUrl.Contains("/onestop/seat", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                try
+                {
+                    if (await page.Locator(NolOnestopSeatMapSelector).CountAsync() == 0 &&
+                        await page.Locator(NolOnestopSeatCircleSelector).CountAsync() == 0)
+                        return true;
+
+                    if (await page.Locator("[class*='BookingProgress'], [class*='bookingProgress'], [class*='Payment'], [class*='payment'], [class*='Delivery'], [class*='delivery']").CountAsync() > 0)
+                        return true;
+
+                    if (await completeBtn.CountAsync() == 0)
+                        return true;
+                }
+                catch (PlaywrightException ex) when (PlaywrightRuntime.IsClosedTargetError(ex))
+                {
+                    return true;
+                }
+
+                return false;
+            },
+            TimeSpan.FromSeconds(5), cancellationToken);
     }
 
     private async Task SelectNolLegacySeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)

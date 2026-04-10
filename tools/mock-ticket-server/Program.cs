@@ -60,6 +60,22 @@ app.MapGet("/captcha", (HttpContext ctx) =>
     return Results.Content(NolPages.CaptchaPage(hasCaptcha), "text/html; charset=utf-8");
 });
 
+app.MapGet("/onestop/seat", (HttpContext ctx) =>
+{
+    if ((string)ctx.Items["SiteType"]! != "nol")
+        return Results.NotFound("NOL 전용 경로입니다.");
+    app.Logger.LogInformation("[NOL] 원스탑 좌석 선택 페이지 요청.");
+    return Results.Content(NolPages.OnestopSeatPage(), "text/html; charset=utf-8");
+});
+
+app.MapGet("/onestop/complete", (HttpContext ctx) =>
+{
+    if ((string)ctx.Items["SiteType"]! != "nol")
+        return Results.NotFound("NOL 전용 경로입니다.");
+    app.Logger.LogInformation("[NOL] 원스탑 예매 완료 페이지 요청.");
+    return Results.Content(NolPages.OnestopCompletePage(), "text/html; charset=utf-8");
+});
+
 // ──────────────── Melon Routes ────────────────
 
 app.MapGet("/performance/index.htm", (HttpContext ctx) =>
