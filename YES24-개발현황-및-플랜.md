@@ -588,8 +588,17 @@ SelectYes24SeatAndAdvanceAsync:
 - Phase 3: `DetectYes24SeatConflictAsync` 앞에 `Volatile.Read` 게이트 추가로 교착 방지
 - fbk_Alert 보완: 300ms 후 JS flag 1회 체크 (jQuery dialog 는 Dialog event 미발동, JS 비차단)
 
-**기대 성능**: 중복 좌석 감지 Phase 2B 내 ~10ms (이전 300ms+ 교착 → 10ms), 총 재시도 시간
-Phase 2 (30ms) + Phase 2B (alert 시점 ~150ms + 감지 10ms) + dismiss (20ms) ≈ **0.2s/좌석** 목표.
+**추가 수정 (2026-04-10 후반)**:
+- Phase 3 의 `TryWaitForConditionAsync` → custom while loop 교체: dialogFlag 감지 시 `TryWaitForConditionAsync`
+  는 condition 이 `false` 반환해도 30ms 후 재시도하여 confirmTimeout (1000ms) 전체 소진. custom loop 에서는
+  `Volatile.Read(ref dialogFlag[0]) == 1` 감지 즉시 `break` → ~10ms 내 탈출.
+- Phase 2B timeout 300ms → 500ms 확대: 실측 AJAX 응답 300~500ms. Phase 2B 에서 잡으면 Phase 3 진입 자체를
+  회피하여 ChoiceEnd AJAX + polling 오버헤드 제거.
+- EvaluateAsync 내부에 JS flag + DOM 조건을 통합: 한 번의 CDP round-trip 으로 충돌 감지 + DOM 상태 확인 동시 수행.
+
+**기대 성능 (최종)**:
+- Phase 2B 에서 감지 (AJAX ≤ 500ms): Phase 2 30ms + Phase 2B ~10ms after alert + dismiss 20ms ≈ **0.1~0.3s/좌석**
+- Phase 3 에서 감지 (AJAX > 500ms): Phase 3 custom loop ~10ms after alert + exception ≈ **0.55~0.6s/좌석** (이전 0.85s 대비 30% 단축)
 
 ## 12. 2026-04-09 후속 개선 로그 — 대기열 처리 + 제외 목록 리셋
 
