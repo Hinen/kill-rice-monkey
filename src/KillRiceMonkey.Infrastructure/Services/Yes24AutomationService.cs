@@ -140,18 +140,27 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         var page = await EnsurePreparedYes24ConnectedPageAsync(cancellationToken);
         if (page is null)
         {
-            throw new InvalidOperationException("준비할 YES24 공연 페이지를 찾지 못했습니다. 공연 페이지를 연 뒤 다시 시도하세요.");
+            throw new InvalidOperationException("YES24 페이지를 찾지 못했습니다. YES24 사이트(ticket.yes24.com)를 열어주세요.");
         }
 
         if (!await IsPreparedYes24PageReusableAsync(page, cancellationToken))
         {
-            throw new InvalidOperationException("YES24 로그인 상태를 확인하지 못했습니다. YES24에 로그인한 공연 페이지에서 다시 시도하세요.");
+            throw new InvalidOperationException("YES24 로그인 상태를 확인하지 못했습니다. YES24에 로그인해주세요.");
         }
 
         await page.BringToFrontAsync();
         await EnsureYes24SalePopupClosedAsync(page);
         PlaywrightRuntime.EnsureDdddOcrWarmedUp();
-        return $"YES24 준비 완료: {PlaywrightRuntime.SafePageUrl(page)}";
+
+        var pageUrl = PlaywrightRuntime.SafePageUrl(page);
+        if (IsYes24PerfPage(page))
+        {
+            return $"YES24 준비 완료: {pageUrl}";
+        }
+
+        // 공연 페이지가 아니어도 로그인만 되어 있으면 준비 완료 - 자동화 실행 시 공연 페이지로 이동 필요
+        _logger.LogInformation("[YES24] 공연 페이지가 아닌 페이지에서 준비됨. 자동화 실행 전 공연 페이지로 이동 필요. url={Url}", pageUrl);
+        return $"YES24 준비 완료 (로그인 확인됨). 자동화 실행 전 공연 페이지로 이동하세요: {pageUrl}";
     }
 
     public async Task<bool> IsPageReadyAsync(CancellationToken cancellationToken)
@@ -182,7 +191,8 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!PlaywrightRuntime.SafePageUrl(page).Contains("ticket.yes24.com/Perf/", StringComparison.OrdinalIgnoreCase))
+            // ticket.yes24.com 도메인이면 OK (공연 페이지가 아니어도 ready 상태 인정)
+            if (!PlaywrightRuntime.SafePageUrl(page).Contains("ticket.yes24.com", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -395,6 +405,10 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         }
     }
 
+    /// <summary>
+    /// YES24 페이지가 재사용 가능한지 확인한다.
+    /// 조건: ticket.yes24.com 도메인 + 로그인 상태 (공연 페이지 여부는 체크하지 않음)
+    /// </summary>
     private async Task<bool> IsPreparedYes24PageReusableAsync(IPage? page, CancellationToken cancellationToken)
     {
         if (page is null || page.IsClosed)
@@ -403,12 +417,26 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (!PlaywrightRuntime.SafePageUrl(page).Contains("ticket.yes24.com/Perf/", StringComparison.OrdinalIgnoreCase))
+        // ticket.yes24.com 도메인이면 OK (공연 페이지가 아니어도 준비 가능)
+        if (!PlaywrightRuntime.SafePageUrl(page).Contains("ticket.yes24.com", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
         return string.Equals(await TryGetYes24LoginStateAsync(page), "1", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 현재 페이지가 YES24 공연 상세 페이지인지 확인한다.
+    /// </summary>
+    private static bool IsYes24PerfPage(IPage? page)
+    {
+        if (page is null || page.IsClosed)
+        {
+            return false;
+        }
+
+        return PlaywrightRuntime.SafePageUrl(page).Contains("ticket.yes24.com/Perf/", StringComparison.OrdinalIgnoreCase);
     }
 
     private Task ReleasePreparedYes24ConnectionAsync()
