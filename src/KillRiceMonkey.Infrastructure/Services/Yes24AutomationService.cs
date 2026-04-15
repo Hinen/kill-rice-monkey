@@ -1730,11 +1730,34 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
         throw new InvalidOperationException("YES24 공연 ID(IdPerf)를 확인하지 못했습니다.");
     }
 
+    /// <summary>
+    /// YES24 로그인 상태를 확인한다.
+    /// 1) 공연 페이지의 IsLogin 전역 변수 (가장 정확)
+    /// 2) "로그아웃" 링크 존재 여부 (모든 페이지에서 작동)
+    /// 3) "마이페이지" 링크 존재 여부 (모든 페이지에서 작동)
+    /// </summary>
     private static async Task<string> TryGetYes24LoginStateAsync(IPage page)
     {
         try
         {
-            return await page.EvaluateAsync<string>("() => (typeof IsLogin !== 'undefined' ? String(IsLogin) : '')");
+            // 1) IsLogin 전역 변수 확인 (공연 페이지에서만 존재)
+            var isLoginVar = await page.EvaluateAsync<string>("() => (typeof IsLogin !== 'undefined' ? String(IsLogin) : '')");
+            if (string.Equals(isLoginVar, "1", StringComparison.Ordinal))
+            {
+                return "1";
+            }
+
+            // 2) DOM 기반 로그인 상태 확인 (모든 YES24 페이지에서 작동)
+            // "로그아웃" 또는 "마이페이지" 링크가 있으면 로그인 상태
+            var isLoggedInByDom = await page.EvaluateAsync<bool>(@"() => {
+                const links = Array.from(document.querySelectorAll('a'));
+                return links.some(a => {
+                    const text = (a.textContent || '').trim();
+                    return text === '로그아웃' || text === '마이페이지' || text === 'LOGOUT' || text === 'MY PAGE';
+                });
+            }");
+
+            return isLoggedInByDom ? "1" : "0";
         }
         catch (PlaywrightException)
         {
