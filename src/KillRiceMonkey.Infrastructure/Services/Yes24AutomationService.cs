@@ -526,23 +526,59 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             cancellationToken,
             "YES24 회차 목록을 찾지 못했습니다.");
 
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // 이미 선택된 회차 확인
         var selected = page.Locator(".rn-04-left-calist a.on").First;
         if (await selected.CountAsync() > 0)
         {
             var selectedIdTime = await selected.GetAttributeAsync("idTime");
             var selectedText = PlaywrightRuntime.NormalizeText(await selected.InnerTextAsync());
+            _logger.LogInformation("[YES24] 이미 선택된 회차 발견. text={Text}, idTime={IdTime}", selectedText, selectedIdTime);
             if (string.IsNullOrWhiteSpace(request.DesiredRound) || IsMatchingYes24Time(selectedText, request.DesiredRound))
             {
                 return selectedIdTime ?? throw new InvalidOperationException("YES24 선택된 회차의 idTime을 읽지 못했습니다.");
             }
         }
 
-        var desiredRound = PlaywrightRuntime.NormalizeText(request.DesiredRound);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // 회차가 하나뿐이면 바로 선택 (클릭 없이)
         var count = await timesLocator.CountAsync();
+        _logger.LogInformation("[YES24] 회차 목록 개수: {Count}", count);
+
+        if (count == 1)
+        {
+            var onlyItem = timesLocator.First;
+            var onlyIdTime = await onlyItem.GetAttributeAsync("idTime");
+            var onlyText = PlaywrightRuntime.NormalizeText(await onlyItem.InnerTextAsync());
+            _logger.LogInformation("[YES24] 회차가 하나뿐임. text={Text}, idTime={IdTime}", onlyText, onlyIdTime);
+
+            if (!string.IsNullOrWhiteSpace(onlyIdTime))
+            {
+                // 클릭하여 선택 상태로 만들기
+                await onlyItem.ScrollIntoViewIfNeededAsync();
+                await PlaywrightRuntime.ClickElementAsync(onlyItem);
+                // 짧은 대기 (반영 확인 - 실패해도 진행)
+                await PlaywrightRuntime.TryWaitForConditionAsync(
+                    async () => (await onlyItem.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase),
+                    TimeSpan.FromMilliseconds(500),
+                    cancellationToken);
+                return onlyIdTime;
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var desiredRound = PlaywrightRuntime.NormalizeText(request.DesiredRound);
         for (var index = 0; index < count; index++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var item = timesLocator.Nth(index);
             var timeText = PlaywrightRuntime.NormalizeText(await item.InnerTextAsync());
+            _logger.LogInformation("[YES24] 회차 검사. index={Index}, text={Text}, desired={Desired}", index, timeText, desiredRound);
+
             if (!IsMatchingYes24Time(timeText, desiredRound))
             {
                 continue;
@@ -551,17 +587,27 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             var idTime = await item.GetAttributeAsync("idTime");
             if (string.IsNullOrWhiteSpace(idTime))
             {
+                _logger.LogWarning("[YES24] 회차 idTime 없음. index={Index}, text={Text}", index, timeText);
                 continue;
             }
 
+            _logger.LogInformation("[YES24] 회차 매칭됨. index={Index}, text={Text}, idTime={IdTime}", index, timeText, idTime);
             await item.ScrollIntoViewIfNeededAsync();
             await PlaywrightRuntime.ClickElementAsync(item);
-            await PlaywrightRuntime.WaitForConditionAsync(
+
+            // 반영 확인 (짧은 timeout)
+            var reflectionTimeout = TimeSpan.FromSeconds(Math.Min(timeout.TotalSeconds, 2));
+            var reflected = await PlaywrightRuntime.TryWaitForConditionAsync(
                 async () => (await item.GetAttributeAsync("class") ?? string.Empty).Contains("on", StringComparison.OrdinalIgnoreCase)
                       || string.Equals(await page.Locator(".rn-04-left-calist a.on").First.GetAttributeAsync("idTime"), idTime, StringComparison.Ordinal),
-                timeout,
-                cancellationToken,
-                "YES24 회차 선택 반영을 확인하지 못했습니다.");
+                reflectionTimeout,
+                cancellationToken);
+
+            if (!reflected)
+            {
+                _logger.LogWarning("[YES24] 회차 선택 반영 미확인 — 계속 진행. idTime={IdTime}", idTime);
+            }
+
             return idTime;
         }
 
@@ -1535,13 +1581,16 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
                 _logger.LogInformation("[YES24] {Message}", message);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (await IsYes24BookingUiVisibleAsync(page))
             {
                 _logger.LogInformation("[YES24] 예매 UI 감지. elapsed={Elapsed}ms", (int)sw.ElapsedMilliseconds);
                 return;
             }
 
-            await Task.Delay(50, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(30, cancellationToken);  // 50ms → 30ms로 단축하여 취소 응답성 향상
         }
 
         cancellationToken.ThrowIfCancellationRequested();
