@@ -261,6 +261,13 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
 
             await page.BringToFrontAsync();
 
+            // 예매 오픈 전 대기: 달력/회차 UI가 나타날 때까지 무한 대기 (사용자 취소만 가능)
+            // 사용자 시나리오: 예매 오픈 전에 자동화 시작 → UI 감지 시 즉시 자동화 진행
+            _logger.LogInformation("[YES24] 예매 오픈 대기 시작. date={Date}", desiredDate);
+            progress?.Report(new AutomationProgress("예매 오픈 대기 중", "예매 UI가 나타날 때까지 대기 중..."));
+            await WaitForYes24BookingOpenAsync(page, progress, cancellationToken);
+            progress?.Report(new AutomationProgress("예매 오픈 감지", "예매 UI 감지 완료 — 자동화 진행"));
+
             _logger.LogInformation("[YES24] 날짜 선택 시작. date={Date}", desiredDate);
             progress?.Report(new AutomationProgress("날짜 선택 중"));
             await SelectYes24DateAsync(page, desiredDate, timeout, cancellationToken);
@@ -1460,6 +1467,76 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
 
         // TODO: future STCLAB CAPTCHA handling hook.
         return false;
+    }
+
+    /// <summary>
+    /// 예매 오픈 전 대기: 달력 또는 회차 목록 UI가 나타날 때까지 무한 대기한다.
+    /// 사용자 시나리오: 예매 오픈 전 페이지에서 자동화 시작 → 새로고침 후 UI 감지 → 즉시 자동화 진행.
+    /// CancellationToken 으로만 취소 가능. 10초마다 progress 보고.
+    /// </summary>
+    private async Task WaitForYes24BookingOpenAsync(IPage page, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    {
+        var sw = Stopwatch.StartNew();
+        var lastReportBucket = -1L;
+
+        // 빠른 경로: 이미 UI가 존재하면 즉시 반환
+        if (await IsYes24BookingUiVisibleAsync(page))
+        {
+            _logger.LogInformation("[YES24] 예매 UI 이미 존재 — 즉시 진행. elapsed=0ms");
+            return;
+        }
+
+        _logger.LogInformation("[YES24] 예매 UI 대기 시작 (무한 대기, CancellationToken 으로만 취소 가능)");
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (page.IsClosed)
+            {
+                throw new InvalidOperationException("YES24 공연 페이지가 닫혔습니다.");
+            }
+
+            // 10초마다 progress 보고
+            var currentBucket = (long)(sw.Elapsed.TotalSeconds / 10);
+            if (currentBucket > lastReportBucket)
+            {
+                lastReportBucket = currentBucket;
+                var message = $"예매 오픈 대기 중... ({(int)sw.Elapsed.TotalSeconds}초)";
+                progress?.Report(new AutomationProgress(message, "예매 UI가 나타날 때까지 대기 중. 새로고침(F5) 후 자동화가 진행됩니다."));
+                _logger.LogInformation("[YES24] {Message}", message);
+            }
+
+            if (await IsYes24BookingUiVisibleAsync(page))
+            {
+                _logger.LogInformation("[YES24] 예매 UI 감지. elapsed={Elapsed}ms", (int)sw.ElapsedMilliseconds);
+                return;
+            }
+
+            await Task.Delay(50, cancellationToken);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// YES24 예매 UI(달력 또는 회차 목록)가 현재 페이지에 존재하는지 확인한다.
+    /// </summary>
+    private static async Task<bool> IsYes24BookingUiVisibleAsync(IPage page)
+    {
+        try
+        {
+            // 달력 UI (#rncalendar) 또는 회차 목록 UI (.rn-04-left-calist a) 중 하나라도 존재하면 예매 오픈 상태
+            return await page.EvaluateAsync<bool>(@"() => {
+                const calendar = document.querySelector('#rncalendar');
+                const timeList = document.querySelectorAll('.rn-04-left-calist a');
+                return (calendar !== null) || (timeList.length > 0);
+            }");
+        }
+        catch (PlaywrightException)
+        {
+            return false;
+        }
     }
 
     private static async Task EnsureYes24SalePopupClosedAsync(IPage mainPage)

@@ -671,9 +671,62 @@ progress?.Report(new AutomationProgress("좌석 재선택 중", "제외 목록 �
 3. 최초 1회: 사용자가 yes24 로그인. 세션 유지됨.
 4. 공연 페이지로 이동 (`https://ticket.yes24.com/Perf/XXXXX`).
 5. **"자동화 준비"** 클릭 → 백그라운드로 페이지 캐시 + 로그인 상태 검증 (약 10분 유효).
+   - **예매 오픈 전에도 준비 가능** (URL + 로그인 상태만 확인, 예매 UI 존재 여부 무관)
 6. 앱에서 날짜/회차 입력 (선택적으로 IdTime 직접 지정, 선호 구역/등급 입력).
 7. **F8** 또는 "시작" 버튼 → 자동화 트리거:
+   - **예매 오픈 전**: "예매 오픈 대기 중..." 상태로 UI 감지 대기 (무한 대기, 10초마다 상태 보고)
+   - **사용자 새로고침(F5)**: 예매 UI 로드 → 자동화 즉시 감지 → 진행
    - 시간 선택 → 예매 팝업 열림 → 좌석 iframe → 구역 분기 → 좌석 클릭 → "다음단계" 진입 → 완료.
 8. 완료 후 사용자가 결제 진행(본 자동화는 결제까지 관여하지 않음 - 과제 범위 외).
+
+---
+
+## 14. 2026-04-10 예매 오픈 전 대기 기능 추가
+
+### 배경 문제
+
+기존 구현에서는 예매 UI(달력, 회차 목록)가 이미 로드된 상태에서만 자동화가 작동했다. 예매 오픈 전에는 UI가 없어서 `SelectYes24DateAsync`/`SelectYes24TimeAsync` 단계에서 timeout이 발생했다. 이는 "티켓팅은 속도가 생명"이라는 핵심 요건에 맞지 않았다.
+
+### 사용자 시나리오 (개선 후)
+
+1. 예매 오픈 전에 공연 페이지에서 대기
+2. 예매 UI 없어도 자동화 준비 가능 (URL + 로그인 상태만 확인)
+3. **자동화 시작 버튼(F8) 누르면 "예매 오픈 대기 중..." 상태로 진입**
+4. 사용자가 예매 오픈 시간에 맞춰 새로고침(F5) 수행
+5. UI 감지 즉시 자동화 진행 (날짜 선택 → 시간 선택 → 예매 → 좌석 선택)
+
+### 구현 내용
+
+**신규 메서드: `WaitForYes24BookingOpenAsync`**
+
+```csharp
+/// <summary>
+/// 예매 오픈 전 대기: 달력 또는 회차 목록 UI가 나타날 때까지 무한 대기한다.
+/// CancellationToken 으로만 취소 가능. 10초마다 progress 보고.
+/// </summary>
+private async Task WaitForYes24BookingOpenAsync(IPage page, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+```
+
+**대기 조건:**
+- `#rncalendar` (달력 UI) 또는 `.rn-04-left-calist a` (회차 목록) 중 하나라도 존재하면 예매 오픈 상태로 판정
+- 50ms 간격으로 폴링, 10초마다 progress 보고
+
+**동작 플로우:**
+```
+RunYes24AutomationAsync:
+  ├─ BringToFrontAsync
+  ├─ WaitForYes24BookingOpenAsync ← [NEW] 예매 UI 대기 (무한 대기)
+  │     ├─ 이미 UI 존재 → 즉시 반환 (0ms)
+  │     └─ UI 미존재 → 50ms 폴링, 10초마다 progress 보고
+  ├─ SelectYes24DateAsync
+  ├─ SelectYes24TimeAsync
+  └─ ... (이후 기존 플로우)
+```
+
+### 검증
+
+- **빌드**: `dotnet build` 0 errors (기존 warning 2개 유지)
+- **테스트**: `dotnet test` 8/8 통과
+- **예상 시나리오**: 예매 오픈 전 자동화 시작 → "예매 오픈 대기 중... (10초)" → 새로고침 → UI 감지 → 즉시 날짜 선택 진행
 
 ---
