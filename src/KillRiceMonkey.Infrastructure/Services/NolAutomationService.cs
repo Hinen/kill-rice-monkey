@@ -290,6 +290,15 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             await SolveNolCaptchaAsync(captchaPage, timeout, cancellationToken);
             progress?.Report(new AutomationProgress("캡차 입력 완료", "캡차 처리 완료"));
 
+            if (request.PauseBeforeSeatSelection && request.PauseGate is { } gate)
+            {
+                _logger.LogInformation("[NOL] 좌석 선택 전 일시정지 — 사용자 재개 대기 중.");
+                progress?.Report(new AutomationProgress("좌석 선택 대기 — 일시정지", "좌석 선택 전 일시정지됨. 재개 버튼을 눌러주세요."));
+                await Task.Run(() => gate.Wait(cancellationToken), cancellationToken);
+                _logger.LogInformation("[NOL] 일시정지 해제 — 좌석 선택 진행.");
+                progress?.Report(new AutomationProgress("좌석 선택 중", "일시정지 해제 — 좌석 선택 진행"));
+            }
+
             progress?.Report(new AutomationProgress("좌석 선택 중"));
             await SelectNolSeatAndCompleteAsync(captchaPage, timeout, progress, request.PauseGate, cancellationToken);
             progress?.Report(new AutomationProgress("좌석 선택 완료", "좌석 선택 및 완료 버튼 클릭"));
@@ -1169,7 +1178,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 try
                 {
-                    await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 500 });
+                    await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 300 });
                 }
                 catch (TimeoutException)
                 {
@@ -1195,12 +1204,12 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}", attempt);
 
                 var captchaPassed = false;
-                var resultDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(800);
+                var resultDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(250);
 
                 while (!captchaPassed && DateTimeOffset.UtcNow < resultDeadline)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    await Task.Delay(50, cancellationToken);
+                    await Task.Delay(15, cancellationToken);
 
                     if (!string.IsNullOrEmpty(dialogMessage))
                     {
@@ -1237,7 +1246,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     return;
 
                 if (DateTimeOffset.UtcNow >= resultDeadline)
-                    _logger.LogWarning("[CAPTCHA] CAPTCHA 결과 판단 타임아웃 (0.8초) — 실패로 간주. attempt={Attempt}", attempt);
+                    _logger.LogWarning("[CAPTCHA] CAPTCHA 결과 판단 타임아웃 (0.25초) — 실패로 간주. attempt={Attempt}", attempt);
 
                 if (attempt < maxAttempts)
                     await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
@@ -1373,7 +1382,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
             if (jsResult)
             {
-                await Task.Delay(20, cancellationToken);
+                await Task.Delay(5, cancellationToken);
                 return;
             }
         }
@@ -1390,7 +1399,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             if (count > 0)
             {
                 await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
-                await Task.Delay(20, cancellationToken);
+                await Task.Delay(5, cancellationToken);
                 return;
             }
         }
@@ -1406,7 +1415,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
                 return true;
             }");
-            await Task.Delay(20, cancellationToken);
+            await Task.Delay(5, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -1695,7 +1704,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
         stepSw.Restart();
         progress?.Report(new AutomationProgress("좌석 선택 중"));
-        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, cancellationToken);
+        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료. seatId={SeatId}, selectMs={Ms}", selectedSeatId, stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
@@ -1772,7 +1781,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, CancellationToken cancellationToken)
+    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
         for (var retry = 0; retry < maxRetries; retry++)
@@ -1875,8 +1884,20 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 if (!selectionConfirmed)
                 {
-                    _logger.LogWarning("[OnestopSeat] 좌석 선택 미반영. seatId={SeatId}, retry={Retry}", seatId, retry);
                     excludedSeats.Add(seatId);
+                    _logger.LogWarning("[OnestopSeat] 좌석 선택 미반영 (중복 추정). seatId={SeatId}, retry={Retry}, excludedCount={ExcludedCount}",
+                        seatId, retry, excludedSeats.Count);
+
+                    if (pauseGate is not null)
+                    {
+                        pauseGate.Reset();
+                        _logger.LogInformation("[NOL] 중복 좌석 감지 후 일시정지 — 사용자 재개 대기 중. excluded={SeatId}", seatId);
+                        progress?.Report(new AutomationProgress("중복 감지 — 일시정지", $"중복 좌석 감지됨 ({seatId}). 재개 버튼을 눌러주세요."));
+                        await Task.Run(() => pauseGate.Wait(cancellationToken), cancellationToken);
+                        _logger.LogInformation("[NOL] 중복 감지 일시정지 해제 — 다른 좌석 선택 진행.");
+                        progress?.Report(new AutomationProgress("좌석 재선택 중", "일시정지 해제 — 다른 좌석 선택 진행"));
+                    }
+
                     continue;
                 }
 
@@ -2011,7 +2032,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
         stepSw.Restart();
         progress?.Report(new AutomationProgress("좌석 선택 중"));
-        await SelectNolLegacySeatAsync(workFrame, excludedSeats, cancellationToken);
+        await SelectNolLegacySeatAsync(workFrame, excludedSeats, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[LegacySeat] 좌석 선택 완료. selectMs={Ms}", stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
@@ -2073,7 +2094,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private async Task SelectNolLegacySeatAsync(IFrame workFrame, HashSet<string> excludedSeats, CancellationToken cancellationToken)
+    private async Task SelectNolLegacySeatAsync(IFrame workFrame, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
         for (var retry = 0; retry < maxRetries; retry++)
@@ -2105,8 +2126,26 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 if (status == "empty" || status == "no_seats")
                 {
-                    if (excludedSeats.Count > 0) { excludedSeats.Clear(); }
-                    _logger.LogWarning("[LegacySeat] 선택 가능 좌석 없음. count={Count}, retry={Retry}", count, retry);
+                    var hadExcluded = excludedSeats.Count > 0;
+                    if (hadExcluded)
+                    {
+                        _logger.LogWarning("[LegacySeat] 제외 좌석 {ExcludedCount}개 빼면 선택 가능 좌석 없음 — 초기화. retry={Retry}", excludedSeats.Count, retry);
+                        excludedSeats.Clear();
+
+                        if (pauseGate is not null)
+                        {
+                            pauseGate.Reset();
+                            _logger.LogInformation("[NOL] 모든 시도 좌석 중복 — 일시정지 — 사용자 재개 대기 중.");
+                            progress?.Report(new AutomationProgress("중복 감지 — 일시정지", "시도한 좌석 모두 중복. 재개 버튼을 눌러주세요."));
+                            await Task.Run(() => pauseGate.Wait(cancellationToken), cancellationToken);
+                            _logger.LogInformation("[NOL] 일시정지 해제 — 좌석 재선택 진행.");
+                            progress?.Report(new AutomationProgress("좌석 재선택 중", "일시정지 해제 — 좌석 재선택 진행"));
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("[LegacySeat] 선택 가능 좌석 없음. count={Count}, retry={Retry}", count, retry);
+                    }
                     await Task.Delay(100, cancellationToken);
                     continue;
                 }
@@ -2114,9 +2153,45 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (status == "clicked")
                 {
                     var seatId = doc.RootElement.GetProperty("id").GetString()!;
-                    _logger.LogInformation("[LegacySeat] 좌석 클릭 완료. count={Count}, seatId={SeatId}", count, seatId);
                     await Task.Delay(200, cancellationToken);
-                    return;
+
+                    // 좌석 선택 확인: 선택된 좌석 정보가 나타났는지 검증
+                    var selectionConfirmed = await PlaywrightRuntime.TryWaitForConditionAsync(
+                        async () =>
+                        {
+                            try
+                            {
+                                var selectedCount = await workFrame.EvaluateAsync<int>(@"() => {
+                                    var selected = document.querySelectorAll('#SelectedSeat li, .selected_seat li, [id*=""selSeat""] li');
+                                    return selected.length;
+                                }");
+                                return selectedCount > 0;
+                            }
+                            catch { return true; } // 에러 시 통과로 간주
+                        },
+                        TimeSpan.FromMilliseconds(500), cancellationToken);
+
+                    if (selectionConfirmed)
+                    {
+                        _logger.LogInformation("[LegacySeat] 좌석 클릭+선택 확인 완료. count={Count}, seatId={SeatId}", count, seatId);
+                        return;
+                    }
+
+                    // 선택 미확인 — 중복 추정, 제외 후 일시정지
+                    excludedSeats.Add(seatId);
+                    _logger.LogWarning("[LegacySeat] 좌석 선택 미반영 (중복 추정). seatId={SeatId}, retry={Retry}, excludedCount={ExcludedCount}",
+                        seatId, retry, excludedSeats.Count);
+
+                    if (pauseGate is not null)
+                    {
+                        pauseGate.Reset();
+                        _logger.LogInformation("[NOL] 중복 좌석 감지 후 일시정지 — 사용자 재개 대기 중. excluded={SeatId}", seatId);
+                        progress?.Report(new AutomationProgress("중복 감지 — 일시정지", $"중복 좌석 감지됨 ({seatId}). 재개 버튼을 눌러주세요."));
+                        await Task.Run(() => pauseGate.Wait(cancellationToken), cancellationToken);
+                        _logger.LogInformation("[NOL] 중복 감지 일시정지 해제 — 다른 좌석 선택 진행.");
+                        progress?.Report(new AutomationProgress("좌석 재선택 중", "일시정지 해제 — 다른 좌석 선택 진행"));
+                    }
+                    continue;
                 }
             }
             catch (PlaywrightException ex)
