@@ -1093,7 +1093,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     }
     private async Task SolveNolCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        const int maxAttempts = 20;
+        const int maxAttempts = 8;  // MELON은 5회, 여유분 확보
         const int nolCaptchaLength = 6;
 
         var captchaSearchSw = Stopwatch.StartNew();
@@ -1203,53 +1203,27 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 await ClickNolCaptchaSubmitAsync(page, captchaFrame, inputLocator, submitSelector);
                 _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}", attempt);
 
-                var captchaPassed = false;
-                var resultDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(250);
+                // MELON 방식: 짧은 대기 후 dialog/에러 체크 (폴링 루프 제거)
+                await Task.Delay(30, cancellationToken);
 
-                while (!captchaPassed && DateTimeOffset.UtcNow < resultDeadline)
+                if (!string.IsNullOrEmpty(dialogMessage))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    await Task.Delay(15, cancellationToken);
-
-                    if (!string.IsNullOrEmpty(dialogMessage))
-                    {
-                        _logger.LogInformation("[CAPTCHA] dialog 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, msg={Msg}", attempt, dialogMessage);
-                        break;
-                    }
-
-                    if (await HasCaptchaInlineErrorAsync(page, captchaFrame))
-                    {
-                        _logger.LogInformation("[CAPTCHA] 인라인 에러 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
-                        break;
-                    }
-
-                    if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
-                    {
-                        _logger.LogInformation("[CAPTCHA] CAPTCHA 통과 확인! (input/모달 사라짐). attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
-                        captchaPassed = true;
-                        break;
-                    }
-
-                    try
-                    {
-                        var currentValue = await inputLocator.First.EvaluateAsync<string>("el => el.value");
-                        if (string.IsNullOrEmpty(currentValue))
-                        {
-                            _logger.LogInformation("[CAPTCHA] input 값 초기화 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
-                            break;
-                        }
-                    }
-                    catch { }
+                    _logger.LogInformation("[CAPTCHA] dialog 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, msg={Msg}", attempt, dialogMessage);
+                    if (attempt < maxAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
                 }
 
-                if (captchaPassed)
-                    return;
+                if (await HasCaptchaInlineErrorAsync(page, captchaFrame))
+                {
+                    _logger.LogInformation("[CAPTCHA] 인라인 에러 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
+                    if (attempt < maxAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
+                }
 
-                if (DateTimeOffset.UtcNow >= resultDeadline)
-                    _logger.LogWarning("[CAPTCHA] CAPTCHA 결과 판단 타임아웃 (0.25초) — 실패로 간주. attempt={Attempt}", attempt);
-
-                if (attempt < maxAttempts)
-                    await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료 (오류 없음). 좌석 진행. attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
+                return;
             }
         }
         finally
