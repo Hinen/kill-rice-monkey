@@ -1382,7 +1382,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
             if (jsResult)
             {
-                await Task.Delay(5, cancellationToken);
+                await Task.Delay(50, cancellationToken);
                 return;
             }
         }
@@ -1399,7 +1399,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             if (count > 0)
             {
                 await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
-                await Task.Delay(5, cancellationToken);
+                await Task.Delay(50, cancellationToken);
                 return;
             }
         }
@@ -1415,7 +1415,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
                 return true;
             }");
-            await Task.Delay(5, cancellationToken);
+            await Task.Delay(50, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -2009,7 +2009,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     {
         var stepSw = Stopwatch.StartNew();
 
-        var seatFrame = await FindNolLegacyFrameAsync(page, "ifrmSeat", timeout, cancellationToken);
+        var seatFrame = await FindNolLegacyFrameAsync(page, "ifrmSeat", timeout, cancellationToken)
+            ?? throw new TimeoutException("NOL 레거시 프레임(ifrmSeat)을 찾지 못했습니다.");
         _logger.LogInformation("[LegacySeat] ifrmSeat 프레임 발견. frameUrl={Url}, findMs={Ms}", seatFrame.Url, stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
