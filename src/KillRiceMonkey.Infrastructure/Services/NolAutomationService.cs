@@ -6,6 +6,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml;
+using System.Xml.Linq;
 using KillRiceMonkey.Application.Abstractions;
 using KillRiceMonkey.Application.Models;
 using StepTemplate = KillRiceMonkey.Infrastructure.Services.PlaywrightRuntime.StepTemplate;
@@ -23,6 +25,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     private const string NolOnestopSeatCircleSelector = "[class*=\"SeatMap_seatGroup\"] circle";
     private const string NolOnestopSeatMapSelector = "[class*='SeatPlan_seatPlan'], [class*='SeatMap_seatMap'], [class*='SeatMap_blockImg'], [class*='SeatMap_placeImg'], [class*='SeatMap_seatGroup']";
     private static readonly Regex NolRoundPattern = new(@"^\D*(?<round>\d{1,2})\s*(?:회차|회|희|히|외)?\s*(?<time>\d{1,2}(?::|\.|,)?\d{2})", RegexOptions.Compiled);
+    private static readonly Regex NolSvgNumberPattern = new(@"-?\d+(?:\.\d+)?", RegexOptions.Compiled);
     private const string NolRemoteDebugLaunchUrl = "https://tickets.interpark.com/";
     private const string NolCdpEndpoint = "http://127.0.0.1:9225/";
     private const string NolTemplateResourcePrefix = PlaywrightRuntime.EmbeddedTemplatePrefix + "Nol.";
@@ -57,7 +60,21 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     private const double NolRoundRowHeight = 45;
     private const int NolRoundMaxRows = 8;
     private const int NolMonthNavigationLimit = 24;
+    private static readonly IReadOnlyDictionary<char, char[]> NolCaptchaAlternativeCharMap = new Dictionary<char, char[]>
+    {
+        ['O'] = ['Q', '0'],
+        ['Q'] = ['O', '0'],
+        ['0'] = ['O', 'Q'],
+        ['I'] = ['L', '1'],
+        ['L'] = ['I', '1'],
+        ['1'] = ['I', 'L'],
+        ['S'] = ['5'],
+        ['5'] = ['S'],
+        ['B'] = ['8'],
+        ['8'] = ['B']
+    };
     private readonly ILogger<NolAutomationService> _logger;
+    private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(5) };
     private readonly PlaywrightRuntime _runtime;
     private readonly ResiliencePipeline _pipeline;
     private readonly SemaphoreSlim _nolBrowserLock = new(1, 1);
@@ -305,7 +322,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             }
 
             progress?.Report(new AutomationProgress("좌석 선택 중"));
-            await SelectNolSeatAndCompleteAsync(captchaPage, timeout, progress, request.PauseGate, cancellationToken);
+            await SelectNolSeatAndCompleteAsync(captchaPage, timeout, progress, request.DesiredBlock, request.PauseGate, cancellationToken);
             progress?.Report(new AutomationProgress("좌석 선택 완료", "좌석 선택 및 완료 버튼 클릭"));
             return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
         }
@@ -1098,6 +1115,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     }
     private async Task SolveNolCaptchaAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        var excludedCaptchaTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var captchaSearchSw = Stopwatch.StartNew();
         _logger.LogInformation("CAPTCHA 입력창 대기 시작 (최대 {Timeout}). url={Url}", timeout, PlaywrightRuntime.SafePageUrl(page));
         var (inputLocator, captchaFrame, foundPage) = await FindNolCaptchaInputAsync(page, timeout, cancellationToken);
@@ -1178,54 +1196,65 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     continue;
                 }
 
-                try
+                var candidates = BuildNolCaptchaCandidates(text, excludedCaptchaTexts).ToArray();
+                if (candidates.Length == 0)
                 {
-                    await inputLocator.First.FillAsync(text, new LocatorFillOptions { Timeout = 300 });
+                    _logger.LogInformation("[CAPTCHA] 재시도 가능한 후보 없음 — 새로고침 후 다음 OCR 시도. attempt={Attempt}", attempt);
+                    if (attempt < MaxCaptchaAttempts)
+                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
+                    continue;
                 }
-                catch (TimeoutException)
+
+                var solved = false;
+                foreach (var candidate in candidates)
                 {
                     try
                     {
-                        await inputLocator.First.EvaluateAsync(@"(el, val) => {
-                            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                            if (setter) { setter.call(el, val); } else { el.value = val; }
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                            if (typeof jQuery !== 'undefined') { jQuery(el).val(val).trigger('input').trigger('change'); }
-                        }", text);
+                        await inputLocator.First.FillAsync(candidate, new LocatorFillOptions { Timeout = 300 });
                     }
-                    catch (PlaywrightException ex)
+                    catch (TimeoutException)
                     {
-                        _logger.LogWarning(ex, "CAPTCHA 입력 실패");
-                        continue;
+                        try
+                        {
+                            await inputLocator.First.EvaluateAsync(@"(el, val) => {
+                                var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                                if (setter) { setter.call(el, val); } else { el.value = val; }
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                if (typeof jQuery !== 'undefined') { jQuery(el).val(val).trigger('input').trigger('change'); }
+                            }", candidate);
+                        }
+                        catch (PlaywrightException ex)
+                        {
+                            _logger.LogWarning(ex, "CAPTCHA 입력 실패");
+                            excludedCaptchaTexts.Add(candidate);
+                            continue;
+                        }
                     }
+
+                    const string submitSelector = "button:text-is('입력완료'), a:has-text('입력완료'), a[onclick*='fnCheck']";
+                    await ClickNolCaptchaSubmitAsync(page, captchaFrame, inputLocator, submitSelector);
+                    _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}, candidate={Candidate}", attempt, candidate);
+
+                    var submissionStatus = await GetNolCaptchaSubmissionStatusAsync(page, captchaFrame, inputLocator, cancellationToken);
+                    if (!string.IsNullOrEmpty(dialogMessage))
+                    {
+                        submissionStatus = NolCaptchaSubmissionStatus.Failure;
+                        _logger.LogInformation("[CAPTCHA] dialog 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, msg={Msg}", attempt, dialogMessage);
+                    }
+
+                    if (submissionStatus == NolCaptchaSubmissionStatus.Success)
+                    {
+                        _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료. attempt={Attempt}, candidate={Candidate}, totalMs={Ms}", attempt, candidate, attemptSw.ElapsedMilliseconds);
+                        return;
+                    }
+
+                    excludedCaptchaTexts.Add(candidate);
+                    _logger.LogInformation("[CAPTCHA] CAPTCHA 실패 감지 — 재시도 대상 제외 추가. attempt={Attempt}, candidate={Candidate}, excluded={Count}", attempt, candidate, excludedCaptchaTexts.Count);
                 }
 
-                const string submitSelector = "button:text-is('입력완료'), a:has-text('입력완료'), a[onclick*='fnCheck']";
-                await ClickNolCaptchaSubmitAsync(page, captchaFrame, inputLocator, submitSelector);
-                _logger.LogInformation("[CAPTCHA] submit 완료. 결과 확인 시작. attempt={Attempt}", attempt);
-
-                // MELON 방식: 짧은 대기 후 dialog/에러 체크 (폴링 루프 제거)
-                await Task.Delay(30, cancellationToken);
-
-                if (!string.IsNullOrEmpty(dialogMessage))
-                {
-                    _logger.LogInformation("[CAPTCHA] dialog 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}, msg={Msg}", attempt, dialogMessage);
-                    if (attempt < MaxCaptchaAttempts)
-                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                    continue;
-                }
-
-                if (await HasCaptchaInlineErrorAsync(page, captchaFrame))
-                {
-                    _logger.LogInformation("[CAPTCHA] 인라인 에러 감지 — 틀린 CAPTCHA, 재시도. attempt={Attempt}", attempt);
-                    if (attempt < MaxCaptchaAttempts)
-                        await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
-                    continue;
-                }
-
-                _logger.LogInformation("[CAPTCHA] CAPTCHA 제출 완료 (오류 없음). 좌석 진행. attempt={Attempt}, totalMs={Ms}", attempt, attemptSw.ElapsedMilliseconds);
-                return;
+                if (!solved && attempt < MaxCaptchaAttempts)
+                    await TryRefreshNolCaptchaImageAsync(page, captchaFrame, cancellationToken);
             }
         }
         finally
@@ -1239,8 +1268,99 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         _logger.LogWarning("[CAPTCHA] CAPTCHA 자동 인식 {Max}회 모두 실패했지만 CAPTCHA 영역은 사라졌습니다. 다음 단계로 진행합니다.", MaxCaptchaAttempts);
     }
 
+    private enum NolCaptchaSubmissionStatus
+    {
+        Success,
+        Failure
+    }
+
+    private static IEnumerable<string> BuildNolCaptchaCandidates(string recognizedText, HashSet<string> excludedCaptchaTexts)
+    {
+        var ordered = new List<string>();
+        void AddCandidate(string candidate)
+        {
+            if (candidate.Length != NolCaptchaLength)
+                return;
+
+            candidate = candidate.ToUpperInvariant();
+            if (excludedCaptchaTexts.Contains(candidate) || ordered.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+                return;
+
+            ordered.Add(candidate);
+        }
+
+        AddCandidate(recognizedText);
+        foreach (var variant in EnumerateNolCaptchaVariants(recognizedText.ToUpperInvariant(), 0, 0))
+            AddCandidate(variant);
+
+        return ordered;
+    }
+
+    private static IEnumerable<string> EnumerateNolCaptchaVariants(string text, int index, int substitutions)
+    {
+        if (index >= text.Length || substitutions >= 2)
+            yield break;
+
+        for (var i = index; i < text.Length; i++)
+        {
+            if (!NolCaptchaAlternativeCharMap.TryGetValue(text[i], out var alternatives))
+                continue;
+
+            foreach (var alternative in alternatives)
+            {
+                var chars = text.ToCharArray();
+                chars[i] = alternative;
+                var variant = new string(chars);
+                yield return variant;
+
+                foreach (var child in EnumerateNolCaptchaVariants(variant, i + 1, substitutions + 1))
+                    yield return child;
+            }
+        }
+    }
+
+    private async Task<NolCaptchaSubmissionStatus> GetNolCaptchaSubmissionStatusAsync(IPage page, IFrame? captchaFrame, ILocator inputLocator, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(900);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
+                return NolCaptchaSubmissionStatus.Success;
+
+            if (await HasCaptchaInlineErrorAsync(page, captchaFrame))
+                return NolCaptchaSubmissionStatus.Failure;
+
+            await Task.Delay(100, cancellationToken);
+        }
+
+        return await IsCaptchaGoneAsync(inputLocator, page, captchaFrame)
+            ? NolCaptchaSubmissionStatus.Success
+            : NolCaptchaSubmissionStatus.Failure;
+    }
+
     private static async Task ClickNolCaptchaSubmitAsync(IPage page, IFrame? captchaFrame, ILocator inputLocator, string submitSelector)
     {
+        const string directClickScript = @"() => {
+            const button = Array.from(document.querySelectorAll('button, a')).find(el => (el.innerText || '').trim() === '입력완료');
+            if (!button) return false;
+            if ('disabled' in button) button.disabled = false;
+            if (typeof button.click === 'function') button.click();
+            else button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            return true;
+        }";
+
+        try
+        {
+            var clicked = captchaFrame is not null
+                ? await captchaFrame.EvaluateAsync<bool>(directClickScript)
+                : await page.EvaluateAsync<bool>(directClickScript);
+            if (clicked)
+                return;
+        }
+        catch (PlaywrightException) { }
+
         ILocator? submitLocator = null;
 
         if (captchaFrame is not null)
@@ -1319,9 +1439,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             const containers = document.querySelectorAll('[class*=""ModalCaptchaText""], [class*=""captchaModal""], [class*=""Captcha""], #divCaptchaWrap, #divCaptcha_R, .captcha_area, .wrap_captcha');
             for (const c of containers) {
                 const t = c.innerText || '';
-                if (t.includes('다시 확인') || t.includes('일치하지') || t.includes('올바른 문자') || t.includes('정확하게 입력'))
+                if (t.includes('입력한 문자') || t.includes('다시 확인') || t.includes('일치하지') || t.includes('올바른 문자') || t.includes('정확하게 입력'))
                     return true;
             }
+            if (document.querySelector('[class*=""ModalCaptchaText_captchaError""], [class*=""captchaError""], [class*=""ModalCaptchaText_invalid""]'))
+                return true;
             return false;
         }";
 
@@ -1338,6 +1460,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     {
         if (page.IsClosed)
             return;
+
+        var previousSrc = await TryGetCurrentNolCaptchaImageSourceAsync(page, captchaFrame);
 
         ILocator FrameOrPage(string selector) =>
             captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
@@ -1361,7 +1485,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
             if (jsResult)
             {
-                await Task.Delay(50, cancellationToken);
+                await WaitForNolCaptchaImageRefreshAsync(page, captchaFrame, previousSrc, cancellationToken);
                 return;
             }
         }
@@ -1378,7 +1502,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             if (count > 0)
             {
                 await refreshLocator.First.ClickAsync(new LocatorClickOptions { Timeout = 500, Force = true });
-                await Task.Delay(50, cancellationToken);
+                await WaitForNolCaptchaImageRefreshAsync(page, captchaFrame, previousSrc, cancellationToken);
                 return;
             }
         }
@@ -1394,11 +1518,40 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 for (var img of imgs) { img.src = img.src.split('?')[0] + '?t=' + Date.now(); }
                 return true;
             }");
-            await Task.Delay(50, cancellationToken);
+            await WaitForNolCaptchaImageRefreshAsync(page, captchaFrame, previousSrc, cancellationToken);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "CAPTCHA 새로고침 모든 방법 실패");
+        }
+    }
+
+    private static async Task<string?> TryGetCurrentNolCaptchaImageSourceAsync(IPage page, IFrame? captchaFrame)
+    {
+        const string script = @"() => document.querySelector('img[alt=""캡챠 이미지""], #imgCaptcha, #captchaImg, img[src*=""captcha"" i], img[src*=""cap_img"" i]')?.getAttribute('src') ?? null";
+        try
+        {
+            return captchaFrame is not null
+                ? await captchaFrame.EvaluateAsync<string?>(script)
+                : await page.EvaluateAsync<string?>(script);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task WaitForNolCaptchaImageRefreshAsync(IPage page, IFrame? captchaFrame, string? previousSrc, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(500);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var currentSrc = await TryGetCurrentNolCaptchaImageSourceAsync(page, captchaFrame);
+            if (!string.IsNullOrWhiteSpace(currentSrc) && !string.Equals(currentSrc, previousSrc, StringComparison.Ordinal))
+                return;
+
+            await Task.Delay(50, cancellationToken);
         }
     }
 
@@ -1606,7 +1759,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private async Task SelectNolSeatAndCompleteAsync(IPage captchaPage, TimeSpan timeout, IProgress<AutomationProgress>? progress, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
+    private async Task SelectNolSeatAndCompleteAsync(IPage captchaPage, TimeSpan timeout, IProgress<AutomationProgress>? progress, string? desiredBlock, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
     {
         var totalSw = Stopwatch.StartNew();
         var (seatPage, isOnestop) = await FindNolSeatPageAsync(captchaPage, timeout, cancellationToken);
@@ -1621,7 +1774,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             try
             {
                 if (isOnestop)
-                    await SelectNolOnestopSeatAndCompleteAsync(seatPage, timeout, progress, excludedSeats, pauseGate, cancellationToken);
+                    await SelectNolOnestopSeatAndCompleteAsync(seatPage, timeout, progress, desiredBlock, excludedSeats, pauseGate, cancellationToken);
                 else
                     await SelectNolLegacySeatAndCompleteAsync(seatPage, timeout, progress, excludedSeats, pauseGate, cancellationToken);
 
@@ -1668,7 +1821,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             f.Url.Contains("poticket", StringComparison.OrdinalIgnoreCase)));
     }
 
-    private async Task SelectNolOnestopSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
+    private async Task SelectNolOnestopSeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, string? desiredBlock, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
     {
         var stepSw = Stopwatch.StartNew();
 
@@ -1683,7 +1836,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         {
             stepSw.Restart();
             progress?.Report(new AutomationProgress("구역 선택 중", "구역 자동 선택 시도 중"));
-            await EnsureNolOnestopZoneSelectedAsync(page, progress, cancellationToken);
+            await EnsureNolOnestopZoneSelectedAsync(page, desiredBlock, progress, cancellationToken);
             _logger.LogInformation("[OnestopSeat] 구역 선택 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
         }
 
@@ -1736,9 +1889,12 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         catch (PlaywrightException) { return false; }
     }
 
-    private async Task EnsureNolOnestopZoneSelectedAsync(IPage page, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private sealed record NolOnestopZoneCandidate(string Key, double ClientX, double ClientY, string Fill, double Area);
+
+    private async Task EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         _logger.LogInformation("[OnestopSeat] 구역 자동 선택 시작.");
+        var attemptedZones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1760,11 +1916,22 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     return;
                 }
 
-                if (await TrySelectNolOnestopZoneAsync(page))
+                var zoneCandidate = await TryFindNolOnestopZoneCandidateAsync(page, desiredBlock, attemptedZones);
+                if (zoneCandidate is not null)
                 {
-                    _logger.LogInformation("[OnestopSeat] 구역 후보 클릭 완료 — 좌석 로드 대기.");
-                    await Task.Delay(200, cancellationToken);
+                    attemptedZones.Add(zoneCandidate.Key);
+                    await page.Mouse.MoveAsync((float)zoneCandidate.ClientX, (float)zoneCandidate.ClientY);
+                    await page.Mouse.DownAsync();
+                    await page.Mouse.UpAsync();
+                    _logger.LogInformation("[OnestopSeat] 구역 후보 클릭 완료 — key={Key}, fill={Fill}, area={Area}, x={X}, y={Y}", zoneCandidate.Key, zoneCandidate.Fill, zoneCandidate.Area, zoneCandidate.ClientX, zoneCandidate.ClientY);
+                    await Task.Delay(300, cancellationToken);
                     continue;
+                }
+
+                if (attemptedZones.Count > 0)
+                {
+                    _logger.LogInformation("[OnestopSeat] 시도한 구역이 모두 소진되어 제외 목록 초기화 후 재탐색.");
+                    attemptedZones.Clear();
                 }
             }
             catch (PlaywrightException) { }
@@ -1772,57 +1939,182 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private static async Task<bool> TrySelectNolOnestopZoneAsync(IPage page)
+    private async Task<NolOnestopZoneCandidate?> TryFindNolOnestopZoneCandidateAsync(IPage page, string? desiredBlock, HashSet<string> attemptedZones)
     {
         const string script = @"() => {
-            const areaCandidates = Array.from(document.querySelectorAll('img[usemap] + map area[href], map area[href]'));
-            for (const area of areaCandidates) {
-                const href = area.getAttribute('href') || '';
-                if (!href || href === '#' || href.startsWith('javascript:void')) continue;
-                if (typeof area.click === 'function') {
-                    area.click();
-                    return true;
-                }
-            }
+            const wrapper = document.querySelector('[class*=""SeatMap_blockImg_""]');
+            const img = wrapper?.querySelector('img');
+            if (!wrapper || !img || !img.src)
+                return null;
 
-            const svgSelectors = [
-                '[class*=""SeatMap_blockImg""] path',
-                '[class*=""SeatMap_blockImg""] polygon',
-                '[class*=""SeatMap_blockImg""] rect',
-                '[class*=""SeatMap_placeImg""] path',
-                '[class*=""SeatMap_placeImg""] polygon',
-                '[class*=""SeatMap_placeImg""] rect',
-                '[class*=""SeatPlan_svgWrap""] path',
-                '[class*=""SeatPlan_svgWrap""] polygon',
-                '[class*=""SeatPlan_svgWrap""] rect'
-            ];
+            const rect = img.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0)
+                return null;
 
-            for (const selector of svgSelectors) {
-                const nodes = Array.from(document.querySelectorAll(selector));
-                for (const node of nodes) {
-                    const cls = (node.getAttribute('class') || '').toLowerCase();
-                    if (cls.includes('seatgroup') || cls.includes('disabled') || cls.includes('soldout')) continue;
-                    const style = window.getComputedStyle(node);
-                    if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') continue;
-                    const rect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
-                    if (!rect || rect.width <= 0 || rect.height <= 0) continue;
-                    node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                    if (typeof node.click === 'function') node.click();
-                    return true;
-                }
-            }
-
-            return false;
+            return {
+                src: img.getAttribute('src') || '',
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                naturalWidth: img.naturalWidth || 0,
+                naturalHeight: img.naturalHeight || 0
+            };
         }";
 
         try
         {
-            return await page.EvaluateAsync<bool>(script);
+            var imageInfo = await page.EvaluateAsync<JsonElement?>(script);
+            if (imageInfo is null || imageInfo.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                return null;
+
+            var image = imageInfo.Value;
+            var src = image.GetProperty("src").GetString();
+            if (string.IsNullOrWhiteSpace(src))
+                return null;
+
+            var left = image.GetProperty("left").GetDouble();
+            var top = image.GetProperty("top").GetDouble();
+            var width = image.GetProperty("width").GetDouble();
+            var height = image.GetProperty("height").GetDouble();
+
+            var svgText = await _httpClient.GetStringAsync(src);
+            var candidates = BuildNolOnestopZoneCandidatesFromSvg(svgText).Where(x => !attemptedZones.Contains(x.Key)).ToList();
+            if (candidates.Count == 0)
+                return null;
+
+            var picked = candidates
+                .OrderByDescending(x => MatchesDesiredBlock(x, desiredBlock))
+                .ThenBy(x => x.CenterY)
+                .ThenBy(x => x.CenterX)
+                .First();
+
+            return new NolOnestopZoneCandidate(
+                picked.Key,
+                left + (picked.CenterX / picked.ViewWidth) * width,
+                top + (picked.CenterY / picked.ViewHeight) * height,
+                picked.Fill,
+                picked.Area);
         }
-        catch (PlaywrightException)
+        catch (Exception ex) when (ex is PlaywrightException or HttpRequestException or TaskCanceledException or XmlException)
         {
-            return false;
+            _logger.LogWarning(ex, "[OnestopSeat] 구역 후보 계산 실패");
+            return null;
         }
+    }
+
+    private sealed record NolZoneSvgCandidate(string Key, string Fill, double Area, double CenterX, double CenterY, double ViewWidth, double ViewHeight);
+
+    private static IEnumerable<NolZoneSvgCandidate> BuildNolOnestopZoneCandidatesFromSvg(string svgText)
+    {
+        var document = XDocument.Parse(svgText);
+        var root = document.Root;
+        if (root is null)
+            yield break;
+
+        var (viewWidth, viewHeight) = ParseSvgViewBox(root);
+        foreach (var element in root.Descendants())
+        {
+            var fill = (element.Attribute("fill")?.Value ?? string.Empty).Trim();
+            if (!IsSelectableNolZoneFill(fill))
+                continue;
+
+            var bbox = element.Name.LocalName switch
+            {
+                "rect" => TryParseRectBounds(element),
+                "polygon" => TryParsePolygonBounds(element),
+                "path" => TryParsePathBounds(element),
+                _ => null
+            };
+
+            if (bbox is null)
+                continue;
+
+            var (x, y, width, height) = bbox.Value;
+            var area = width * height;
+            if (area < 200)
+                continue;
+
+            var key = string.Create(CultureInfo.InvariantCulture, $"{fill}:{x:F2}:{y:F2}:{width:F2}:{height:F2}");
+            yield return new NolZoneSvgCandidate(key, fill, area, x + (width / 2), y + (height / 2), viewWidth, viewHeight);
+        }
+    }
+
+    private static bool MatchesDesiredBlock(NolZoneSvgCandidate candidate, string? desiredBlock)
+        => !string.IsNullOrWhiteSpace(desiredBlock) && candidate.Key.Contains(desiredBlock, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSelectableNolZoneFill(string fill)
+    {
+        if (string.IsNullOrWhiteSpace(fill))
+            return false;
+
+        return fill.Trim().ToLowerInvariant() switch
+        {
+            "#edeff3" or "#cacfda" or "#616161" or "#ffffff" or "#fff" or "#000000" or "none" => false,
+            _ => true
+        };
+    }
+
+    private static (double ViewWidth, double ViewHeight) ParseSvgViewBox(XElement root)
+    {
+        var viewBox = root.Attribute("viewBox")?.Value;
+        if (!string.IsNullOrWhiteSpace(viewBox))
+        {
+            var parts = viewBox.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 4 &&
+                double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var width) &&
+                double.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out var height))
+                return (width, height);
+        }
+
+        return (
+            double.TryParse(root.Attribute("width")?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var w) ? w : 421,
+            double.TryParse(root.Attribute("height")?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : 290);
+    }
+
+    private static (double X, double Y, double Width, double Height)? TryParseRectBounds(XElement element)
+    {
+        if (!double.TryParse(element.Attribute("x")?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var x)) return null;
+        if (!double.TryParse(element.Attribute("y")?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var y)) y = 0;
+        if (!double.TryParse(element.Attribute("width")?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var width)) return null;
+        if (!double.TryParse(element.Attribute("height")?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var height)) return null;
+        return (x, y, width, height);
+    }
+
+    private static (double X, double Y, double Width, double Height)? TryParsePolygonBounds(XElement element)
+    {
+        var points = element.Attribute("points")?.Value;
+        if (string.IsNullOrWhiteSpace(points)) return null;
+        var matches = NolSvgNumberPattern.Matches(points);
+        if (matches.Count < 4) return null;
+
+        var xs = new List<double>();
+        var ys = new List<double>();
+        for (var i = 0; i + 1 < matches.Count; i += 2)
+        {
+            xs.Add(double.Parse(matches[i].Value, CultureInfo.InvariantCulture));
+            ys.Add(double.Parse(matches[i + 1].Value, CultureInfo.InvariantCulture));
+        }
+
+        return (xs.Min(), ys.Min(), xs.Max() - xs.Min(), ys.Max() - ys.Min());
+    }
+
+    private static (double X, double Y, double Width, double Height)? TryParsePathBounds(XElement element)
+    {
+        var d = element.Attribute("d")?.Value;
+        if (string.IsNullOrWhiteSpace(d)) return null;
+        var matches = NolSvgNumberPattern.Matches(d);
+        if (matches.Count < 4) return null;
+
+        var xs = new List<double>();
+        var ys = new List<double>();
+        for (var i = 0; i + 1 < matches.Count; i += 2)
+        {
+            xs.Add(double.Parse(matches[i].Value, CultureInfo.InvariantCulture));
+            ys.Add(double.Parse(matches[i + 1].Value, CultureInfo.InvariantCulture));
+        }
+
+        return (xs.Min(), ys.Min(), xs.Max() - xs.Min(), ys.Max() - ys.Min());
     }
 
     private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
@@ -1889,15 +2181,21 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var seatId = doc.RootElement.GetProperty("id").GetString()!;
                 var seatIndex = doc.RootElement.GetProperty("idx").GetInt32();
                 var circleLocator = page.Locator(NolOnestopSeatCircleSelector).Nth(seatIndex);
-                try
+                try { await circleLocator.ScrollIntoViewIfNeededAsync(); } catch (PlaywrightException) { }
+
+                var box = await circleLocator.BoundingBoxAsync();
+                if (box is null)
                 {
-                    await circleLocator.ScrollIntoViewIfNeededAsync();
-                }
-                catch (PlaywrightException)
-                {
+                    excludedSeats.Add(seatId);
+                    _logger.LogWarning("[OnestopSeat] 좌석 bounding box 조회 실패 — 제외 후 재시도. seatId={SeatId}", seatId);
+                    continue;
                 }
 
-                await PlaywrightRuntime.ClickElementAsync(circleLocator);
+                var seatX = (float)(box.X + (box.Width / 2));
+                var seatY = (float)(box.Y + (box.Height / 2));
+                await page.Mouse.MoveAsync(seatX, seatY);
+                await page.Mouse.DownAsync();
+                await page.Mouse.UpAsync();
                 _logger.LogInformation("[OnestopSeat] 좌석 후보 실제 클릭 완료. available={Count}, seatId={SeatId}, idx={Index}", count, seatId, seatIndex);
                 await Task.Delay(100, cancellationToken);
 
