@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\KillRiceMonkey.Application\KillRiceMonkey.Application.csproj" />
@@ -21,9 +21,6 @@
   <ItemGroup>
     <EmbeddedResource Include="..\..\button-images\booth\*.png">
       <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Booth.%(Filename)%(Extension)</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="..\..\button-images\nol\*.png">
-      <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Nol.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="..\..\button-images\melon\*.png">
       <LogicalName>KillRiceMonkey.Infrastructure.TemplateImages.Melon.%(Filename)%(Extension)</LogicalName>

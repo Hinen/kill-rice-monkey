@@ -306,33 +306,6 @@
                         </Grid>
 
                         <Grid Grid.Row="4">
-                            <Border
-                                    Style="{StaticResource SoftCardStyle}"
-                                    Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="1.25*" />
-                                        <ColumnDefinition Width="12" />
-                                        <ColumnDefinition Width="0.75*" />
-                                    </Grid.ColumnDefinitions>
-
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                   Text="관람일" />
-                                        <DatePicker Style="{StaticResource InputDatePickerStyle}"
-                                                    SelectedDate="{Binding DesiredDate, UpdateSourceTrigger=PropertyChanged}"
-                                                    SelectedDateFormat="Short" />
-                                    </StackPanel>
-
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
-                                                   Text="회차" />
-                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
-                                                 Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-
                              <Border
                                      Style="{StaticResource SoftCardStyle}"
                                      Visibility="{Binding IsMelonTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
@@ -444,21 +417,6 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
 
-                            <Button Grid.Column="0"
-                                    Style="{StaticResource SecondaryActionButtonStyle}"
-                                    Command="{Binding LaunchNolRemoteDebugCommand}"
-                                    Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
-                                        <Canvas Width="24" Height="24">
-                                            <Path Style="{StaticResource ActionIconPathStyle}"
-                                                  Data="{StaticResource ExternalLinkIcon}" />
-                                        </Canvas>
-                                    </Viewbox>
-                                    <TextBlock VerticalAlignment="Center" Text="OPEN" />
-                                </StackPanel>
-                            </Button>
-
                              <Button Grid.Column="0"
                                      Style="{StaticResource SecondaryActionButtonStyle}"
                                      Command="{Binding LaunchMelonRemoteDebugCommand}"
@@ -486,21 +444,6 @@
                                         </Canvas>
                                     </Viewbox>
                                     <TextBlock VerticalAlignment="Center" Text="OPEN" />
-                                </StackPanel>
-                            </Button>
-
-                            <Button Grid.Column="2"
-                                    Style="{StaticResource ReadyActionButtonStyle}"
-                                    Command="{Binding PrepareNolAutomationCommand}"
-                                    Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                    <Viewbox Width="15" Height="15" Margin="0,0,8,0">
-                                        <Canvas Width="24" Height="24">
-                                            <Path Style="{StaticResource ActionIconPathStyle}"
-                                                  Data="{StaticResource ShieldCheckIcon}" />
-                                        </Canvas>
-                                    </Viewbox>
-                                    <TextBlock VerticalAlignment="Center" Text="READY" />
                                 </StackPanel>
                             </Button>
 

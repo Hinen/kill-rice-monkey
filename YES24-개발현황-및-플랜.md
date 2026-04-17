@@ -137,14 +137,14 @@
 
 ## 3. 로그인 전략 (Melon UX 동일)
 
-Melon / NOL 과 동일하게 **사용자 수동 로그인 + 프로필 영속화**:
+Melon 과 동일하게 **사용자 수동 로그인 + 프로필 영속화**:
 
 1. `LaunchRemoteDebugBrowserAsync()` 가 Chrome 을 `--remote-debugging-port=9224 --user-data-dir=%LOCALAPPDATA%\KillRiceMonkey\Yes24RemoteDebugProfile` 로 실행.
 2. 사용자가 yes24 로그인(최초 1회). 세션 쿠키는 프로필 디렉토리에 저장되므로 이후 자동 유지.
 3. `PrepareAutomationAsync()` 는 공연 페이지(`ticket.yes24.com/Perf/{IdPerf}*`)를 찾고, `IsLogin === '1'` 을 검증 후 캐시.
 4. 검증 실패 시 명확한 한국어 에러로 사용자에게 재로그인 요구.
 
-> **비고**: CDP JS eval 만으로 `document.LoginSub.submit()` 기반 자동 로그인도 조사 중 성공했지만, 해시/토큰 기반 무결성 체크(`FBLoginSub_hdfLoginHash = btoa(jQuery.now()+"|"+token)`)와 다중 시도 시 토큰 소모가 존재하므로 **자동화 프로덕션 코드에는 포함하지 않는다**(Melon/NOL 동일 UX). 본 탐색 과정에서는 사용했지만 구현에는 포함하지 않음.
+> **비고**: CDP JS eval 만으로 `document.LoginSub.submit()` 기반 자동 로그인도 조사 중 성공했지만, 해시/토큰 기반 무결성 체크(`FBLoginSub_hdfLoginHash = btoa(jQuery.now()+"|"+token)`)와 다중 시도 시 토큰 소모가 존재하므로 **자동화 프로덕션 코드에는 포함하지 않는다**(Melon 동일 UX). 본 탐색 과정에서는 사용했지만 구현에는 포함하지 않음.
 
 ---
 
@@ -154,7 +154,7 @@ Melon / NOL 과 동일하게 **사용자 수동 로그인 + 프로필 영속화*
 
 | 경로 | 역할 | 비고 |
 |---|---|---|
-| `src/KillRiceMonkey.Application/Models/TicketingTemplateType.cs` | `Yes24` enum 추가 | 기존 Booth/Nol/Melon/Custom 뒤에 추가 |
+| `src/KillRiceMonkey.Application/Models/TicketingTemplateType.cs` | `Yes24` enum 추가 | 기존 Booth/Melon/Custom 뒤에 추가 |
 | `src/KillRiceMonkey.Application/Abstractions/IYes24AutomationService.cs` | 신규 인터페이스 | `IMelonAutomationService` 와 시그니처 동일 |
 | `src/KillRiceMonkey.Infrastructure/Services/Yes24AutomationService.cs` | 메인 오케스트레이터 | `MelonAutomationService` 구조 그대로 복사 후 셀렉터·플로우 교체 |
 | `src/KillRiceMonkey.Infrastructure/DependencyInjection.cs` | `AddSingleton<IYes24AutomationService, Yes24AutomationService>()` 등록 | |
@@ -167,7 +167,6 @@ Melon / NOL 과 동일하게 **사용자 수동 로그인 + 프로필 영속화*
 
 ### 4.2 포트 할당
 
-- NOL: **9222**
 - Melon: **9223**
 - **YES24: 9224** (신규)
 
@@ -187,7 +186,7 @@ Melon / NOL 과 동일하게 **사용자 수동 로그인 + 프로필 영속화*
   - `string? DesiredGrade` (예: `"지정석 VIP석"`, `"일반석"`) — 부분 일치로 필터
   - `string? DesiredBlock` (구역 사이트에서 우선 구역, 예: `"2"`)
   - `int DesiredSeatIndex` (`1`-base, 정렬 후 몇 번째 좌석)
-- 새 필드는 optional 로 도입해 기존 Melon/NOL 호출부 영향 없음.
+- 새 필드는 optional 로 도입해 기존 Melon 호출부 영향 없음.
 
 ---
 
@@ -282,7 +281,7 @@ private readonly SemaphoreSlim _yes24BrowserLock = new(1, 1);
 - **Polly `MaxRetryAttempts = 2`** 외부 감싸기 (Melon 동일)
 - **ExcludedSeats HashSet<string>**: 실패(중복·alert) 시 다음 시도에서 제외
 - **좌석 재스캔 최대 10회**: Melon 의 `maxSeatRetries` 와 동일
-- **제외 목록 리셋 fallback**: `ClickYes24SeatAsync` 가 `'not_found'` (필터링된 좌석은 존재하지만 전부 `excludedSeats` 에 포함) 를 반환하면 Melon/NOL 과 동일하게 `excludedSeats.Clear()` 후 재시도한다. 그 사이 다른 고객이 결제 포기해 풀린 좌석을 재시도할 기회를 주기 위함.
+- **제외 목록 리셋 fallback**: `ClickYes24SeatAsync` 가 `'not_found'` (필터링된 좌석은 존재하지만 전부 `excludedSeats` 에 포함) 를 반환하면 Melon 과 동일하게 `excludedSeats.Clear()` 후 재시도한다. 그 사이 다른 고객이 결제 포기해 풀린 좌석을 재시도할 기회를 주기 위함.
 - **frame detached 감지**: `PlaywrightException` 감지 시 seat iframe 재탐색
 - **팝업 닫힘 감지**: `salePopup.IsClosed === true` 면 외부 재시도로 통째 다시 트리거
 - **dialog/alert 감지 (이중 경로)**:
@@ -317,7 +316,7 @@ return await page.EvaluateAsync<bool>(@"() => {
    - `PerfSaleProcess.aspx` 팝업 발견 시 즉시 반환
    - NetFunnel `#NetFunnel_Skin_Top` 감지 시 Phase 2 진입
 2. Phase 1.5 — 타임아웃 직후 한 번 더 NetFunnel 재확인 (늦게 뜨는 경우 안전망)
-3. Phase 2 — **무한 대기 루프** (Melon `ClickMelonBookingAsync` / NOL `ClickNolBookingAsync` 와 동일 패턴):
+3. Phase 2 — **무한 대기 루프** (Melon `ClickMelonBookingAsync` 와 동일 패턴):
    - `while (!cancellationToken.IsCancellationRequested)` 로 100ms 폴링
    - `PerfSaleProcess.aspx` 팝업 감지 시 `"대기열 통과 ({초}초)"` 진행 보고 후 반환
    - 10초마다 `"대기열 대기 중... ({초}초)"` 진행 보고 (사용자 UX)
@@ -602,7 +601,7 @@ SelectYes24SeatAndAdvanceAsync:
 
 ## 12. 2026-04-09 후속 개선 로그 — 대기열 처리 + 제외 목록 리셋
 
-초기 플랜에 "YES24 는 대기열 없음" 이라고 기재했으나, 재검토 결과 `jsf_base_ShowPerfSaleProcess` 가 일부 perf 에 대해 `NetFunnel_Action` 으로 대기열을 사용함을 발견. Melon/NOL 과 달리 YES24 는 대기열을 **별도 페이지가 아닌 메인 페이지에 inline 모달** (`#NetFunnel_Skin_Top`) 로 표시하기 때문에 기존 코드의 "새 팝업 URL 매칭" 로직으로는 감지 불가능했다. 또한 `SelectYes24SeatAndAdvanceAsync` 의 `excludedSeats` 는 한 번 채워지면 시도 종료까지 비워지지 않아 Melon/NOL 의 fallback 리셋 로직이 빠져있었다.
+초기 플랜에 "YES24 는 대기열 없음" 이라고 기재했으나, 재검토 결과 `jsf_base_ShowPerfSaleProcess` 가 일부 perf 에 대해 `NetFunnel_Action` 으로 대기열을 사용함을 발견. Melon 과 달리 YES24 는 대기열을 **별도 페이지가 아닌 메인 페이지에 inline 모달** (`#NetFunnel_Skin_Top`) 로 표시하기 때문에 기존 코드의 "새 팝업 URL 매칭" 로직으로는 감지 불가능했다. 또한 `SelectYes24SeatAndAdvanceAsync` 의 `excludedSeats` 는 한 번 채워지면 시도 종료까지 비워지지 않아 Melon 의 fallback 리셋 로직이 빠져있었다.
 
 ### 증상
 1. **대기열 처리 누락** — 경쟁이 많은 공연에서 NetFunnel 대기열이 뜨면 `TryWaitForYes24SalePopupAsync` 가 `PerfSaleProcess.aspx` 만 기다리므로 `StepTimeoutSeconds` 후 `TimeoutException` 으로 실패.
@@ -636,7 +635,7 @@ TriggerYes24BookingPopupAsync(page, idTime, timeout, progress, ct)
 - `'empty'`: 가용 좌석 없음 (원본 카운트 0)
 - `'not_found'`: 가용 좌석은 존재하나 전부 `excludedSeats` 에 포함
 
-`'not_found'` 이고 `excludedSeats.Count > 0` 이면 Melon/NOL 과 동일하게 다음을 수행:
+`'not_found'` 이고 `excludedSeats.Count > 0` 이면 Melon 과 동일하게 다음을 수행:
 ```csharp
 _logger.LogWarning("[YES24] 제외 좌석 {Count}개를 빼면 선택 가능한 좌석 없음 — 제외 목록 초기화 후 재시도. ...");
 excludedSeats.Clear();

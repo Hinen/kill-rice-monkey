@@ -27,53 +27,10 @@ app.Use(async (context, next) =>
     var host = context.Request.Host.Host;
     context.Items["SiteType"] = host switch
     {
-        var h when h.Contains("interpark", StringComparison.OrdinalIgnoreCase) => "nol",
         var h when h.Contains("melon", StringComparison.OrdinalIgnoreCase) => "melon",
         _ => "unknown"
     };
     await next();
-});
-
-// ──────────────── NOL Routes ────────────────
-
-app.MapGet("/goods/{id}", (string id, HttpContext ctx) =>
-{
-    if ((string)ctx.Items["SiteType"]! != "nol")
-        return Results.NotFound("NOL 전용 경로입니다.");
-    app.Logger.LogInformation("[NOL] 상품 페이지 요청. id={Id}", id);
-    return Results.Content(NolPages.GoodsPage(queueSeconds), "text/html; charset=utf-8");
-});
-
-app.MapGet("/queue", (HttpContext ctx) =>
-{
-    if ((string)ctx.Items["SiteType"]! != "nol")
-        return Results.NotFound("NOL 전용 경로입니다.");
-    app.Logger.LogInformation("[NOL] 대기열 페이지 요청. duration={Seconds}s", queueSeconds);
-    return Results.Content(NolPages.QueuePage(queueSeconds), "text/html; charset=utf-8");
-});
-
-app.MapGet("/captcha", (HttpContext ctx) =>
-{
-    if ((string)ctx.Items["SiteType"]! != "nol")
-        return Results.NotFound("NOL 전용 경로입니다.");
-    app.Logger.LogInformation("[NOL] 캡차 페이지 요청.");
-    return Results.Content(NolPages.CaptchaPage(hasCaptcha), "text/html; charset=utf-8");
-});
-
-app.MapGet("/onestop/seat", (HttpContext ctx) =>
-{
-    if ((string)ctx.Items["SiteType"]! != "nol")
-        return Results.NotFound("NOL 전용 경로입니다.");
-    app.Logger.LogInformation("[NOL] 원스탑 좌석 선택 페이지 요청.");
-    return Results.Content(NolPages.OnestopSeatPage(), "text/html; charset=utf-8");
-});
-
-app.MapGet("/onestop/complete", (HttpContext ctx) =>
-{
-    if ((string)ctx.Items["SiteType"]! != "nol")
-        return Results.NotFound("NOL 전용 경로입니다.");
-    app.Logger.LogInformation("[NOL] 원스탑 예매 완료 페이지 요청.");
-    return Results.Content(NolPages.OnestopCompletePage(), "text/html; charset=utf-8");
 });
 
 // ──────────────── Melon Routes ────────────────
@@ -117,14 +74,12 @@ app.MapGet("/", (HttpContext ctx) =>
     var siteType = (string)ctx.Items["SiteType"]!;
     return siteType switch
     {
-        "nol" => Results.Redirect("/goods/12345"),
         "melon" => Results.Redirect("/performance/index.htm"),
         _ => Results.Content("""
             <html><body style="font-family:sans-serif;text-align:center;padding:50px;">
             <h1>Mock Ticket Server</h1>
             <p>Host 헤더로 사이트를 구분합니다.</p>
             <ul style="list-style:none;">
-            <li><a href="http://tickets.interpark.com/goods/12345">NOL (인터파크)</a></li>
             <li><a href="http://ticket.melon.com/performance/index.htm">Melon (멜론)</a></li>
             </ul>
             </body></html>

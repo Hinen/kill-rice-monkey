@@ -3,23 +3,17 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
-const string NolCdpEndpoint = "http://localhost:9222";
 const string MelonCdpEndpoint = "http://localhost:9223";
 const string ImageSelector = "#imgCaptcha, #captchaImg, [class*='captchaImage'] img, img[src*='captcha' i], img[src*='cap_img' i]";
 const string RefreshSelector = "#divRecaptcha .capchaBtns a:last-of-type, #btnReload, .refreshBtn, [class*='buttonRefresh'], button[aria-label*='새 문자']";
 
 var targetCount = args.Length > 0 && int.TryParse(args[0], out var c) ? c : 1000;
-var captchaType = args.Length > 1 ? args[1].ToLowerInvariant() : "new";
-var isMelon = captchaType == "melon";
-var cdpEndpoint = isMelon ? MelonCdpEndpoint : NolCdpEndpoint;
-var performanceUrl = isMelon && args.Length > 2 ? args[2] : null;
+var performanceUrl = args.Length > 1 ? args[1] : null;
 var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
 
 var projectDir = AppDomain.CurrentDomain.BaseDirectory;
 var repoRoot = Path.GetFullPath(Path.Combine(projectDir, "..", "..", "..", "..", ".."));
-var samplesDir = isMelon
-    ? Path.Combine(repoRoot, "captcha-samples", "melon")
-    : Path.Combine(repoRoot, "captcha-samples", "nol", captchaType);
+var samplesDir = Path.Combine(repoRoot, "captcha-samples", "melon");
 Directory.CreateDirectory(samplesDir);
 
 var groundTruthPath = Path.Combine(samplesDir, "ground_truth.csv");
@@ -35,10 +29,10 @@ if (File.Exists(groundTruthPath))
 }
 
 var existingCount = Directory.GetFiles(samplesDir, "captcha_*.png").Length;
-Console.WriteLine($"CAPTCHA Collector: type={captchaType.ToUpperInvariant()}, target={targetCount}, existing={existingCount}");
+Console.WriteLine($"CAPTCHA Collector: type=MELON, target={targetCount}, existing={existingCount}");
 Console.WriteLine($"Output: {samplesDir}");
 Console.WriteLine($"Vision API: {(string.IsNullOrWhiteSpace(apiKey) ? "OFF (no ANTHROPIC_API_KEY)" : "ON")}");
-if (isMelon && performanceUrl is not null)
+if (performanceUrl is not null)
     Console.WriteLine($"Performance URL: {performanceUrl}");
 Console.WriteLine();
 
@@ -52,13 +46,12 @@ using var playwright = await Playwright.CreateAsync();
 IBrowser browser;
 try
 {
-    browser = await playwright.Chromium.ConnectOverCDPAsync(cdpEndpoint);
+    browser = await playwright.Chromium.ConnectOverCDPAsync(MelonCdpEndpoint);
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"CDP 연결 실패: {ex.Message}");
-    var buttonName = isMelon ? "Melon Remote Debug 열기" : "NOL Remote Debug 열기";
-    Console.Error.WriteLine($"remote-debug 브라우저를 먼저 실행하세요 (앱에서 '{buttonName}' 버튼).");
+    Console.Error.WriteLine("remote-debug 브라우저를 먼저 실행하세요 (앱에서 'Melon Remote Debug 열기' 버튼).");
     return 1;
 }
 
@@ -71,45 +64,41 @@ if (context is null)
     return 1;
 }
 
-IPage? melonPerformancePage = null;
-if (isMelon)
+Console.WriteLine("=== Melon CAPTCHA 자동 수집 모드 ===");
+Console.WriteLine("멜론에 로그인해주세요. 완료 후 Enter를 누르세요.");
+Console.ReadLine();
+
+var melonPerformancePage = context.Pages.FirstOrDefault(p =>
+    p.Url.Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase));
+
+if (melonPerformancePage is null && performanceUrl is not null)
 {
-    Console.WriteLine("=== Melon CAPTCHA 자동 수집 모드 ===");
-    Console.WriteLine("멜론에 로그인해주세요. 완료 후 Enter를 누르세요.");
-    Console.ReadLine();
+    melonPerformancePage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
+    Console.WriteLine($"공연 페이지로 이동: {performanceUrl}");
+    await melonPerformancePage.GotoAsync(performanceUrl,
+        new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30000 });
+    await Task.Delay(2000);
+}
 
-    melonPerformancePage = context.Pages.FirstOrDefault(p =>
-        p.Url.Contains("ticket.melon.com/performance/index.htm", StringComparison.OrdinalIgnoreCase));
+if (melonPerformancePage is null)
+{
+    Console.Error.WriteLine("공연 페이지를 찾을 수 없습니다.");
+    Console.Error.WriteLine("사용법: dotnet run --project tools/CaptchaCollector -- <수량> <공연URL>");
+    Console.Error.WriteLine("예시: dotnet run --project tools/CaptchaCollector -- 5000 https://ticket.melon.com/performance/index.htm?prodId=212444");
+    return 1;
+}
 
-    if (melonPerformancePage is null && performanceUrl is not null)
-    {
-        melonPerformancePage = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
-        Console.WriteLine($"공연 페이지로 이동: {performanceUrl}");
-        await melonPerformancePage.GotoAsync(performanceUrl,
-            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30000 });
-        await Task.Delay(2000);
-    }
+Console.WriteLine($"공연 페이지 확인: {SafeUrl(melonPerformancePage)}");
 
-    if (melonPerformancePage is null)
-    {
-        Console.Error.WriteLine("공연 페이지를 찾을 수 없습니다.");
-        Console.Error.WriteLine("사용법: dotnet run --project tools/CaptchaCollector -- <수량> melon <공연URL>");
-        Console.Error.WriteLine("예시: dotnet run --project tools/CaptchaCollector -- 5000 melon https://ticket.melon.com/performance/index.htm?prodId=212444");
-        return 1;
-    }
-
-    Console.WriteLine($"공연 페이지 확인: {SafeUrl(melonPerformancePage)}");
-
-    var popupPage = await OpenMelonBookingPopupAsync(melonPerformancePage, default);
-    if (popupPage is not null)
-    {
-        Console.WriteLine("예매 팝업에서 CAPTCHA 로딩 대기...");
-        await Task.Delay(3000);
-    }
-    else
-    {
-        Console.Error.WriteLine("예매 팝업 자동 오픈 실패. 이미 열린 CAPTCHA 페이지를 탐색합니다...");
-    }
+var popupPage = await OpenMelonBookingPopupAsync(melonPerformancePage, default);
+if (popupPage is not null)
+{
+    Console.WriteLine("예매 팝업에서 CAPTCHA 로딩 대기...");
+    await Task.Delay(3000);
+}
+else
+{
+    Console.Error.WriteLine("예매 팝업 자동 오픈 실패. 이미 열린 CAPTCHA 페이지를 탐색합니다...");
 }
 
 IPage? captchaPage = null;
@@ -119,7 +108,6 @@ IFrame? captchaFrame = null;
 foreach (var pg in context.Pages)
 {
     if (pg.IsClosed) continue;
-    if (!IsPageMatchForCaptchaType(pg, captchaType, isMelon)) continue;
 
     var imgLoc = pg.Locator(ImageSelector);
     try
@@ -168,10 +156,7 @@ if (captchaPage is null || imageLocator is null)
         }
     }
     Console.Error.WriteLine($"사용 셀렉터: {ImageSelector}");
-    if (isMelon)
-        Console.Error.WriteLine("예매 팝업을 수동으로 열고 다시 시도하세요.");
-    else
-        Console.Error.WriteLine("CAPTCHA가 표시된 페이지에서 다시 시도하세요.");
+    Console.Error.WriteLine("예매 팝업을 수동으로 열고 다시 시도하세요.");
     return 1;
 }
 
@@ -207,70 +192,50 @@ while (collected < targetCount && !cts.IsCancellationRequested)
 
         if (imgCount == 0)
         {
-            if (isMelon && melonPerformancePage is not null)
+            Console.WriteLine("  CAPTCHA 팝업이 닫혔습니다. 예매 팝업 재오픈 중...");
+            var reopenedPopup = await OpenMelonBookingPopupAsync(melonPerformancePage, cts.Token);
+            if (reopenedPopup is not null)
             {
-                Console.WriteLine("  CAPTCHA 팝업이 닫혔습니다. 예매 팝업 재오픈 중...");
-                var popupPage = await OpenMelonBookingPopupAsync(melonPerformancePage, cts.Token);
-                if (popupPage is not null)
+                captchaPage = reopenedPopup;
+                captchaFrame = null;
+                Console.WriteLine("  CAPTCHA 로딩 대기...");
+                await Task.Delay(3000, cts.Token);
+                imageLocator = reopenedPopup.Locator(ImageSelector);
+                try
                 {
-                    captchaPage = popupPage;
-                    captchaFrame = null;
-                    Console.WriteLine("  CAPTCHA 로딩 대기...");
-                    await Task.Delay(3000, cts.Token);
-                    imageLocator = popupPage.Locator(ImageSelector);
+                    if (await imageLocator.CountAsync() > 0)
+                    {
+                        Console.WriteLine("  CAPTCHA 재발견. 수집 계속...");
+                        consecutiveDuplicates = 0;
+                        lastImageHash = null;
+                        continue;
+                    }
+                }
+                catch (PlaywrightException) { }
+
+                foreach (var frame in reopenedPopup.Frames)
+                {
+                    if (frame == reopenedPopup.MainFrame) continue;
+                    var frameLoc = frame.Locator(ImageSelector);
                     try
                     {
-                        if (await imageLocator.CountAsync() > 0)
+                        if (await frameLoc.CountAsync() > 0)
                         {
-                            Console.WriteLine("  CAPTCHA 재발견. 수집 계속...");
+                            imageLocator = frameLoc;
+                            captchaFrame = frame;
+                            Console.WriteLine("  CAPTCHA 재발견 (frame). 수집 계속...");
                             consecutiveDuplicates = 0;
                             lastImageHash = null;
-                            continue;
+                            break;
                         }
                     }
-                    catch (PlaywrightException) { }
-
-                    foreach (var frame in popupPage.Frames)
-                    {
-                        if (frame == popupPage.MainFrame) continue;
-                        var frameLoc = frame.Locator(ImageSelector);
-                        try
-                        {
-                            if (await frameLoc.CountAsync() > 0)
-                            {
-                                imageLocator = frameLoc;
-                                captchaFrame = frame;
-                                Console.WriteLine("  CAPTCHA 재발견 (frame). 수집 계속...");
-                                consecutiveDuplicates = 0;
-                                lastImageHash = null;
-                                break;
-                            }
-                        }
-                        catch { }
-                    }
+                    catch { }
                 }
-                else
-                {
-                    Console.Error.WriteLine("  예매 팝업 재오픈 실패. 3초 후 재시도...");
-                    await Task.Delay(3000, cts.Token);
-                }
-                continue;
-            }
-            Console.WriteLine("  CAPTCHA 이미지가 사라졌습니다. NOL 재탐색 중...");
-            var (nolPage, nolLocator, nolFrame) = await FindOrNavigateNolCaptchaAsync(context, captchaType, cts.Token);
-            if (nolPage is not null && nolLocator is not null)
-            {
-                captchaPage = nolPage;
-                imageLocator = nolLocator;
-                captchaFrame = nolFrame;
-                consecutiveDuplicates = 0;
-                lastImageHash = null;
-                Console.WriteLine("  CAPTCHA 재발견. 수집 계속...");
             }
             else
             {
-                Console.Error.WriteLine("  CAPTCHA 재탐색 실패. 5초 후 재시도...");
-                await Task.Delay(5000, cts.Token);
+                Console.Error.WriteLine("  예매 팝업 재오픈 실패. 3초 후 재시도...");
+                await Task.Delay(3000, cts.Token);
             }
             continue;
         }
@@ -466,8 +431,6 @@ static async Task<IPage?> OpenMelonBookingPopupAsync(IPage performancePage, Canc
 
 static async Task TryRefreshAsync(IPage page, IFrame? frame, CancellationToken ct)
 {
-    var jsTarget = frame as object ?? page;
-
     try
     {
         bool jsResult;
@@ -590,103 +553,4 @@ static async Task<string> CallVisionApiAsync(HttpClient httpClient, string apiKe
     }
     catch { }
     return string.Empty;
-}
-
-static bool IsPageMatchForCaptchaType(IPage page, string captchaType, bool isMelon)
-{
-    if (isMelon) return true;
-    var url = page.Url;
-    return captchaType switch
-    {
-        "new" => url.Contains("onestop", StringComparison.OrdinalIgnoreCase)
-              || url.Contains("tickets.interpark.com", StringComparison.OrdinalIgnoreCase),
-        "old" => url.Contains("poticket.interpark.com", StringComparison.OrdinalIgnoreCase)
-              || url.Contains("Book", StringComparison.OrdinalIgnoreCase),
-        _ => true,
-    };
-}
-
-static async Task<(IPage? page, ILocator? locator, IFrame? frame)> FindOrNavigateNolCaptchaAsync(
-    IBrowserContext context, string captchaType, CancellationToken ct)
-{
-    foreach (var pg in context.Pages.Where(p => !p.IsClosed && IsPageMatchForCaptchaType(p, captchaType, false)))
-    {
-        var imgLoc = pg.Locator(ImageSelector);
-        try { if (await imgLoc.CountAsync() > 0) return (pg, imgLoc, null); } catch { }
-
-        foreach (var frame in pg.Frames)
-        {
-            if (frame == pg.MainFrame) continue;
-            var frameLoc = frame.Locator(ImageSelector);
-            try { if (await frameLoc.CountAsync() > 0) return (pg, frameLoc, frame); } catch { }
-        }
-    }
-
-    var productPage = context.Pages.FirstOrDefault(p =>
-        !p.IsClosed && p.Url.Contains("tickets.interpark.com/goods/", StringComparison.OrdinalIgnoreCase));
-
-    if (productPage is null)
-    {
-        Console.Error.WriteLine("  CAPTCHA 및 상품 페이지를 찾을 수 없습니다.");
-        return (null, null, null);
-    }
-
-    Console.WriteLine($"  상품 페이지에서 예매 재시도: {SafeUrl(productPage)}");
-
-    try { await productPage.EvaluateAsync("() => document.querySelectorAll('.popup.is-visible .popupCloseBtn').forEach(b => b.click())"); }
-    catch { }
-    await Task.Delay(300, ct);
-
-    var beforePages = context.Pages.ToHashSet();
-    try
-    {
-        var btn = productPage.Locator("#productSide a.sideBtn.is-primary").First;
-        await btn.ScrollIntoViewIfNeededAsync();
-        await btn.ClickAsync(new LocatorClickOptions { Timeout = 5000, Force = true });
-        Console.WriteLine("  예매 버튼 클릭");
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"  예매 버튼 클릭 실패: {ex.Message}");
-        return (null, null, null);
-    }
-
-    for (var i = 0; i < 240; i++)
-    {
-        ct.ThrowIfCancellationRequested();
-        await Task.Delay(500, ct);
-
-        foreach (var pg in context.Pages.Where(p => !p.IsClosed))
-        {
-            var imgLoc = pg.Locator(ImageSelector);
-            try
-            {
-                if (await imgLoc.CountAsync() > 0)
-                {
-                    Console.WriteLine($"  CAPTCHA 발견: {SafeUrl(pg)}");
-                    return (pg, imgLoc, null);
-                }
-            }
-            catch { }
-
-            foreach (var frame in pg.Frames.Where(f => f != pg.MainFrame))
-            {
-                var frameLoc = frame.Locator(ImageSelector);
-                try
-                {
-                    if (await frameLoc.CountAsync() > 0)
-                    {
-                        Console.WriteLine($"  CAPTCHA 발견 (frame): {SafeUrl(pg)}");
-                        return (pg, frameLoc, frame);
-                    }
-                }
-                catch { }
-            }
-        }
-
-        if (i % 20 == 0 && i > 0) Console.WriteLine($"  대기 중... ({i / 2}초)");
-    }
-
-    Console.Error.WriteLine("  CAPTCHA 페이지 진입 실패 (120초 초과).");
-    return (null, null, null);
 }

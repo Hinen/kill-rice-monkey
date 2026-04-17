@@ -20,7 +20,7 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
 {
     internal const string EmbeddedTemplatePrefix = "KillRiceMonkey.Infrastructure.TemplateImages.";
     internal const int PollDelayMilliseconds = 30;
-    internal const int NolOcrScaleFactor = 3;
+    internal const int OcrScaleFactor = 3;
     private const int SmXvirtualscreen = 76;
     private const int SmYvirtualscreen = 77;
     private const int SmCxvirtualscreen = 78;
@@ -306,7 +306,7 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
     {
         using var gray = ToGray(source);
         var resized = new Mat();
-        Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * NolOcrScaleFactor, gray.Height * NolOcrScaleFactor), interpolation: InterpolationFlags.Linear);
+        Cv2.Resize(gray, resized, new OpenCvSharp.Size(gray.Width * OcrScaleFactor, gray.Height * OcrScaleFactor), interpolation: InterpolationFlags.Linear);
         if (!applyThreshold) return resized;
         var binary = new Mat();
         Cv2.GaussianBlur(resized, resized, new OpenCvSharp.Size(3, 3), 0);

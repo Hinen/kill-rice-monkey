@@ -714,7 +714,7 @@ public sealed class Yes24AutomationService : IYes24AutomationService, IAsyncDisp
             return null;
         }
 
-        // Phase 2: 대기열 감지 — PerfSaleProcess.aspx 팝업 전환까지 무한 대기 (Melon/NOL 동일 패턴).
+        // Phase 2: 대기열 감지 — PerfSaleProcess.aspx 팝업 전환까지 무한 대기 (Melon 동일 패턴).
         _logger.LogInformation("[YES24] 대기열 감지 (#NetFunnel_Skin_Top) — PerfSaleProcess.aspx 전환까지 무한 대기");
         var queueSw = Stopwatch.StartNew();
         var lastQueueReportBucket = 0L;

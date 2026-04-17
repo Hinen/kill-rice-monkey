@@ -22,7 +22,7 @@ Python 3.7(cp949)에서 유니코드 출력 에러를 방지한다. 모든 pytho
 ## 1. Chrome remote-debugging 실행
 
 ```bash
-PROFILE_DIR="$LOCALAPPDATA/KillRiceMonkey/NolRemoteDebugProfile"
+PROFILE_DIR="$LOCALAPPDATA/KillRiceMonkey/MelonRemoteDebugProfile"
 mkdir -p "$PROFILE_DIR"
 CHROME_PATH="/c/Program Files (x86)/Google/Chrome/Application/chrome.exe"
 if [ ! -f "$CHROME_PATH" ]; then
@@ -282,7 +282,7 @@ while asyncio.get_event_loop().time() < deadline:
 ## 8. 카카오 로그인 전체 예시
 
 ```python
-# 1. NOL 로그인 페이지에서 "카카오로 시작하기" 클릭 (CDP trusted click)
+# 1. 로그인 페이지에서 "카카오로 시작하기" 클릭 (CDP trusted click)
 pos_str = await eval_js('''
     var btns = [...document.querySelectorAll('button')];
     var kakaoBtn = btns.find(b => b.innerText.includes('카카오'));
