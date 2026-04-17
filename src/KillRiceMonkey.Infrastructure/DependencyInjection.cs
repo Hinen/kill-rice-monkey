@@ -10,6 +10,7 @@ public static class DependencyInjection
     {
         services.AddSingleton<PlaywrightRuntime>();
         services.AddSingleton<IImageAutomationService, ImageAutomationService>();
+        services.AddSingleton<INolAutomationService, NolAutomationService>();
         services.AddSingleton<IMelonAutomationService, MelonAutomationService>();
         services.AddSingleton<IYes24AutomationService, Yes24AutomationService>();
         return services;

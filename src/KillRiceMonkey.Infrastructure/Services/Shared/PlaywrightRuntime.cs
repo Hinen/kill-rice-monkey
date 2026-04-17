@@ -334,12 +334,52 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
         if (page.IsClosed) return string.Empty;
         var imgLocator = await FindCaptchaImageAsync(inputLocator, page, captchaFrame);
         if (imgLocator is null) return string.Empty;
+
+        var directBytes = await TryGetCaptchaImageBytesFromDataUrlAsync(imgLocator);
+        if (directBytes is not null && directBytes.Length > 0)
+        {
+            var directLocal = RunLocalCaptchaOcr(directBytes);
+            if (directLocal.Length == 6)
+            {
+                _ = RecognizeCaptchaWithVisionApiAsync(directBytes, cancellationToken);
+                return directLocal;
+            }
+
+            var directVision = await RecognizeCaptchaWithVisionApiAsync(directBytes, cancellationToken);
+            if (directVision.Length == 6)
+                return directVision;
+        }
+
         byte[] screenshotBytes;
         try { screenshotBytes = await imgLocator.ScreenshotAsync(new LocatorScreenshotOptions { Timeout = 500 }); }
-        catch (PlaywrightException) { return string.Empty; }
+        catch (PlaywrightException)
+        {
+            return string.Empty;
+        }
         var local = RunLocalCaptchaOcr(screenshotBytes);
         if (local.Length == 6) { _ = RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken); return local; }
         return await RecognizeCaptchaWithVisionApiAsync(screenshotBytes, cancellationToken);
+    }
+
+    private static async Task<byte[]?> TryGetCaptchaImageBytesFromDataUrlAsync(ILocator imageLocator)
+    {
+        try
+        {
+            var src = await imageLocator.GetAttributeAsync("src");
+            if (string.IsNullOrWhiteSpace(src) || !src.StartsWith("data:image", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var commaIndex = src.IndexOf(',');
+            if (commaIndex < 0 || commaIndex == src.Length - 1)
+                return null;
+
+            var base64 = src[(commaIndex + 1)..];
+            return Convert.FromBase64String(base64);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     internal string RunLocalCaptchaOcr(byte[] screenshotBytes)
@@ -572,11 +612,11 @@ public sealed class PlaywrightRuntime : IAsyncDisposable
         for (var level = 1; level <= 2; level++)
         {
             var container = inputLocator.Locator($"xpath={string.Join("/", Enumerable.Repeat("..", level))}");
-            var hinted = container.Locator("#imgCaptcha, #captchaImg, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
+            var hinted = container.Locator("#imgCaptcha, #captchaImg, img[alt='캡챠 이미지'], img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
             try { if (await hinted.CountAsync() > 0) return hinted.First; } catch { }
         }
         ILocator fp(string selector) => captchaFrame is not null ? captchaFrame.Locator(selector) : page.Locator(selector);
-        var frameHinted = fp("#imgCaptcha, #captchaImg, img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
+        var frameHinted = fp("#imgCaptcha, #captchaImg, img[alt='캡챠 이미지'], img[src*='captcha' i], img[src*='cap_img' i], [class*='captchaImage'] img");
         try { if (await frameHinted.CountAsync() > 0) return frameHinted.First; } catch { }
         return null;
     }
