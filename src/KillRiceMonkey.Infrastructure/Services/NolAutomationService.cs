@@ -1321,19 +1321,27 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private async Task<NolCaptchaSubmissionStatus> GetNolCaptchaSubmissionStatusAsync(IPage page, IFrame? captchaFrame, ILocator inputLocator, CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(900);
+        // DOM 업데이트를 기다리기 위한 초기 지연 (서버 응답 후 에러 표시까지 150ms 정도 필요)
+        await Task.Delay(150, cancellationToken);
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(1500);
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
-                return NolCaptchaSubmissionStatus.Success;
-
+            // Failure 신호가 우선. gone 체크가 오탐(잠깐 숨겨진 에러 div 등)하는 현상 방지.
             if (await HasCaptchaInlineErrorAsync(page, captchaFrame))
                 return NolCaptchaSubmissionStatus.Failure;
 
-            await Task.Delay(100, cancellationToken);
+            if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
+                return NolCaptchaSubmissionStatus.Success;
+
+            await Task.Delay(50, cancellationToken);
         }
+
+        // 최종: 에러가 확정되면 Failure, 그 외에 모달이 사라져 있으면 Success
+        if (await HasCaptchaInlineErrorAsync(page, captchaFrame))
+            return NolCaptchaSubmissionStatus.Failure;
 
         return await IsCaptchaGoneAsync(inputLocator, page, captchaFrame)
             ? NolCaptchaSubmissionStatus.Success
@@ -1421,7 +1429,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
                   }")
                 : await page.EvaluateAsync<bool>(@"() => {
-                    const modal = document.querySelector('[class*=""ModalCaptchaText""], [class*=""captchaModal""], .captcha_area');
+                    // NOL NEW 기준: 실제 모달 컨테이너(ModalCaptchaText_layerWrap)만 판정.
+                    // [class*='ModalCaptchaText']로만 잡으면 ModalCaptchaText_captchaError 같은
+                    // 항상 존재하는 내부 요소가 매칭되어 gone 오탐이 발생한다.
+                    const modal = document.querySelector('[class*=""ModalCaptchaText_layerWrap""], [class*=""captchaModal""], .captcha_area, .wrap_captcha, #divCaptchaWrap, #divCaptcha_R');
                     if (!modal) return true;
                     const s = window.getComputedStyle(modal);
                     return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
@@ -1435,15 +1446,31 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private static async Task<bool> HasCaptchaInlineErrorAsync(IPage page, IFrame? captchaFrame)
     {
+        // 실측 결과 실패 시 DOM 상태:
+        //   1) <div class="ModalCaptchaText_captchaError__...">입력한 문자를 다시 확인해주세요</div>
+        //   2) <input class="ModalCaptchaText_captchaInput__... ModalCaptchaText_invalid__..."> (invalid 클래스 부착)
+        //   3) ModalCaptchaText_captchaContent 내부 innerText에 오류 문구 포함
+        // 주의: captchaError/invalid 클래스가 빈 상태로 DOM에 미리 존재할 수 있으므로
+        //       클래스 존재 + innerText 비어있지 않음 조합으로 검증한다.
         const string script = @"() => {
-            const containers = document.querySelectorAll('[class*=""ModalCaptchaText""], [class*=""captchaModal""], [class*=""Captcha""], #divCaptchaWrap, #divCaptcha_R, .captcha_area, .wrap_captcha');
+            // 1) captchaError 요소의 텍스트가 실제로 채워진 경우
+            const errDiv = document.querySelector('[class*=""ModalCaptchaText_captchaError""], [class*=""captchaError""]');
+            if (errDiv) {
+                const t = (errDiv.innerText || errDiv.textContent || '').trim();
+                if (t.length > 0) return true;
+            }
+
+            // 2) 입력창에 invalid 클래스가 붙은 경우
+            if (document.querySelector('input[class*=""ModalCaptchaText_invalid""], input[class*=""captchaInput""][class*=""invalid""]'))
+                return true;
+
+            // 3) 모달/컨테이너 innerText에 구체적 에러 문구가 포함된 경우
+            const containers = document.querySelectorAll('[class*=""ModalCaptchaText_layerWrap""], [class*=""ModalCaptchaText_captchaContent""], [class*=""captchaModal""], #divCaptchaWrap, #divCaptcha_R, .captcha_area, .wrap_captcha');
             for (const c of containers) {
                 const t = c.innerText || '';
                 if (t.includes('입력한 문자') || t.includes('다시 확인') || t.includes('일치하지') || t.includes('올바른 문자') || t.includes('정확하게 입력'))
                     return true;
             }
-            if (document.querySelector('[class*=""ModalCaptchaText_captchaError""], [class*=""captchaError""], [class*=""ModalCaptchaText_invalid""]'))
-                return true;
             return false;
         }";
 
