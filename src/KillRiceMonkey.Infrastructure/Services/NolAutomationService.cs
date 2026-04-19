@@ -1869,6 +1869,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
         stepSw.Restart();
         progress?.Report(new AutomationProgress("좌석 선택 중"));
+        // 구역 선택 직후 zoom이 확대되어 좌석 좌표가 viewport 밖으로 나갈 수 있으므로
+        // 좌석도 전체보기(줌 리셋)를 1회 수행해 안정적인 화면 상태에서 좌석을 탐색한다.
+        await TryResetNolSeatPlanZoomAsync(page, cancellationToken);
+        await Task.Delay(250, cancellationToken);
         var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료. seatId={SeatId}, selectMs={Ms}", selectedSeatId, stepSw.ElapsedMilliseconds);
 
@@ -2365,7 +2369,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 try { await circleLocator.ScrollIntoViewIfNeededAsync(); } catch (PlaywrightException) { }
 
                 var box = await circleLocator.BoundingBoxAsync();
-                if (box is null)
+                if (box is null || box.Width <= 0 || box.Height <= 0)
                 {
                     excludedSeats.Add(seatId);
                     _logger.LogWarning("[OnestopSeat] 좌석 bounding box 조회 실패 — 제외 후 재시도. seatId={SeatId}", seatId);
@@ -2374,6 +2378,15 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 var seatX = (float)(box.X + (box.Width / 2));
                 var seatY = (float)(box.Y + (box.Height / 2));
+                var viewport = await GetNolViewportSizeAsync(page);
+                if (!IsViewportPoint(seatX, seatY, viewport))
+                {
+                    _logger.LogInformation("[OnestopSeat] 좌석 좌표가 viewport 밖 — 줌 리셋 후 재시도. seatId={SeatId}, point=({X:F1},{Y:F1}), viewport=({VW},{VH})",
+                        seatId, seatX, seatY, viewport.width, viewport.height);
+                    await TryResetNolSeatPlanZoomAsync(page, cancellationToken);
+                    await Task.Delay(200, cancellationToken);
+                    continue;
+                }
                 await page.Mouse.MoveAsync(seatX, seatY);
                 await page.Mouse.DownAsync();
                 await page.Mouse.UpAsync();
