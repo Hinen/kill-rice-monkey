@@ -1920,23 +1920,19 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private async Task EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("[OnestopSeat] 구역 자동 선택 시작.");
+        _logger.LogInformation("[OnestopSeat] 구역 자동 선택 시작. desiredBlock={Desired}", desiredBlock ?? "<auto>");
+
         var attemptedZones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        while (true)
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
+        var clearCount = 0;
+        const int MaxClearCount = 3;
+
+        while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var available = await page.EvaluateAsync<int>($@"() => {{
-                    const circles = document.querySelectorAll('{NolOnestopSeatCircleSelector}');
-                    let count = 0;
-                    for (const c of circles) {{
-                        const cls = c.getAttribute('class') || '';
-                        if (cls.includes('disabled')) continue;
-                        count++;
-                    }}
-                    return count;
-                }}");
+                var available = await CountAvailableNolOnestopSeatsAsync(page);
                 if (available >= 10)
                 {
                     _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지.", available);
@@ -1947,23 +1943,138 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (zoneCandidate is not null)
                 {
                     attemptedZones.Add(zoneCandidate.Key);
+
+                    var viewport = await GetNolViewportSizeAsync(page);
+                    if (!IsViewportPoint(zoneCandidate.ClientX, zoneCandidate.ClientY, viewport))
+                    {
+                        _logger.LogInformation("[OnestopSeat] 후보 좌표가 viewport 밖 — 줌 리셋 후 재시도. key={Key}, point=({X:F1},{Y:F1}), viewport=({VW},{VH})",
+                            zoneCandidate.Key, zoneCandidate.ClientX, zoneCandidate.ClientY, viewport.width, viewport.height);
+                        await TryResetNolSeatPlanZoomAsync(page, cancellationToken);
+                        continue;
+                    }
+
                     await page.Mouse.MoveAsync((float)zoneCandidate.ClientX, (float)zoneCandidate.ClientY);
                     await page.Mouse.DownAsync();
                     await page.Mouse.UpAsync();
-                    _logger.LogInformation("[OnestopSeat] 구역 후보 클릭 완료 — key={Key}, fill={Fill}, area={Area}, x={X}, y={Y}", zoneCandidate.Key, zoneCandidate.Fill, zoneCandidate.Area, zoneCandidate.ClientX, zoneCandidate.ClientY);
-                    await Task.Delay(300, cancellationToken);
+                    _logger.LogInformation("[OnestopSeat] 구역 후보 클릭 — key={Key}, fill={Fill}, area={Area:F0}, x={X:F1}, y={Y:F1}",
+                        zoneCandidate.Key, zoneCandidate.Fill, zoneCandidate.Area, zoneCandidate.ClientX, zoneCandidate.ClientY);
+
+                    var loaded = await WaitForNolOnestopSeatsLoadedAsync(page, TimeSpan.FromMilliseconds(1500), cancellationToken);
+                    if (loaded)
+                    {
+                        _logger.LogInformation("[OnestopSeat] 구역 클릭 후 좌석 로드 확인.");
+                        return;
+                    }
                     continue;
                 }
 
                 if (attemptedZones.Count > 0)
                 {
-                    _logger.LogInformation("[OnestopSeat] 시도한 구역이 모두 소진되어 제외 목록 초기화 후 재탐색.");
+                    clearCount++;
+                    if (clearCount >= MaxClearCount)
+                    {
+                        throw new InvalidOperationException($"NOL 구역 자동 선택 실패 — 후보 {attemptedZones.Count}개 시도 모두 좌석 없음 (clear {MaxClearCount}회).");
+                    }
+
+                    _logger.LogInformation("[OnestopSeat] 시도한 구역({Count})이 모두 소진 — 초기화 후 재탐색 ({Clear}/{Max}).",
+                        attemptedZones.Count, clearCount, MaxClearCount);
                     attemptedZones.Clear();
                 }
             }
-            catch (PlaywrightException) { }
-            await Task.Delay(50, cancellationToken);
+            catch (PlaywrightException ex)
+            {
+                _logger.LogDebug(ex, "[OnestopSeat] 구역 선택 루프 중 일시 오류 — 재시도.");
+            }
+
+            await Task.Delay(80, cancellationToken);
         }
+
+        throw new TimeoutException("NOL 구역 자동 선택 시간 초과 (15초).");
+    }
+
+    private static async Task<int> CountAvailableNolOnestopSeatsAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<int>($@"() => {{
+                const circles = document.querySelectorAll('{NolOnestopSeatCircleSelector}');
+                let count = 0;
+                for (const c of circles) {{
+                    const cls = c.getAttribute('class') || '';
+                    if (cls.includes('disabled')) continue;
+                    const r = parseFloat(c.getAttribute('r') || '0');
+                    if (r <= 0) continue;
+                    const cx = parseFloat(c.getAttribute('cx') || '0');
+                    const cy = parseFloat(c.getAttribute('cy') || '0');
+                    if (cx === 0 && cy === 0 && r <= 1) continue; // dummy helper circle 제외
+                    const s = window.getComputedStyle(c);
+                    if (s.pointerEvents === 'none' || s.display === 'none' || s.visibility === 'hidden') continue;
+                    const opacity = Number(s.opacity || '1');
+                    if (opacity <= 0) continue;
+                    count++;
+                }}
+                return count;
+            }}");
+        }
+        catch (PlaywrightException) { return 0; }
+    }
+
+    private static async Task<(double width, double height)> GetNolViewportSizeAsync(IPage page)
+    {
+        try
+        {
+            var json = await page.EvaluateAsync<string>("() => JSON.stringify({w: window.innerWidth, h: window.innerHeight})");
+            using var doc = JsonDocument.Parse(json);
+            return (doc.RootElement.GetProperty("w").GetDouble(), doc.RootElement.GetProperty("h").GetDouble());
+        }
+        catch (PlaywrightException) { return (1920, 1080); }
+    }
+
+    private static bool IsViewportPoint(double x, double y, (double width, double height) viewport)
+    {
+        if (double.IsNaN(x) || double.IsNaN(y)) return false;
+        if (x < 0 || y < 0) return false;
+        if (x > viewport.width || y > viewport.height) return false;
+        return true;
+    }
+
+    private async Task TryResetNolSeatPlanZoomAsync(IPage page, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resetBtn = page.Locator("button[class*='SeatPlan_zoomButtonRefresh']");
+            if (await resetBtn.CountAsync() > 0)
+            {
+                await resetBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 800, Force = true });
+                _logger.LogDebug("[OnestopSeat] 좌석도 전체보기(줌 리셋) 클릭.");
+                await Task.Delay(250, cancellationToken);
+                return;
+            }
+        }
+        catch (PlaywrightException ex) { _logger.LogDebug(ex, "[OnestopSeat] 줌 리셋 버튼 클릭 실패."); }
+
+        try
+        {
+            await page.EvaluateAsync(@"() => {
+                const btn = document.querySelector('button[class*=""SeatPlan_zoomButtonRefresh""]');
+                if (btn) btn.click();
+            }");
+            await Task.Delay(250, cancellationToken);
+        }
+        catch (PlaywrightException) { }
+    }
+
+    private static async Task<bool> WaitForNolOnestopSeatsLoadedAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await CountAvailableNolOnestopSeatsAsync(page) >= 10)
+                return true;
+            await Task.Delay(80, cancellationToken);
+        }
+        return false;
     }
 
     private async Task<NolOnestopZoneCandidate?> TryFindNolOnestopZoneCandidateAsync(IPage page, string? desiredBlock, HashSet<string> attemptedZones)
@@ -2006,27 +2117,66 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             var height = image.GetProperty("height").GetDouble();
 
             var svgText = await _httpClient.GetStringAsync(src);
-            var candidates = BuildNolOnestopZoneCandidatesFromSvg(svgText).Where(x => !attemptedZones.Contains(x.Key)).ToList();
-            if (candidates.Count == 0)
+            var ordered = BuildNolOnestopZoneCandidatesFromSvg(svgText)
+                .OrderBy(x => x.CenterY)
+                .ThenBy(x => x.CenterX)
+                .ToList();
+
+            if (ordered.Count == 0)
                 return null;
 
-            var picked = candidates
-                .OrderByDescending(x => MatchesDesiredBlock(x, desiredBlock))
-                .ThenBy(x => x.CenterY)
-                .ThenBy(x => x.CenterX)
-                .First();
+            // DesiredBlock이 "1","2"…처럼 1-based 정수 문자열이면 해당 후보를 최우선 시도.
+            // 실측 기준 SVG에는 블록 이름(A1,B2 등) 메타데이터가 없어 텍스트 매칭은 불가능하다.
+            var preferred = TryResolveNolZonePreferredIndex(desiredBlock, ordered.Count);
 
-            return new NolOnestopZoneCandidate(
-                picked.Key,
-                left + (picked.CenterX / picked.ViewWidth) * width,
-                top + (picked.CenterY / picked.ViewHeight) * height,
-                picked.Fill,
-                picked.Area);
+            foreach (var idx in EnumerateNolZoneTryOrder(preferred, ordered.Count))
+            {
+                var cand = ordered[idx];
+                if (attemptedZones.Contains(cand.Key))
+                    continue;
+
+                var clientX = left + (cand.CenterX / cand.ViewWidth) * width;
+                var clientY = top + (cand.CenterY / cand.ViewHeight) * height;
+                return new NolOnestopZoneCandidate(cand.Key, clientX, clientY, cand.Fill, cand.Area);
+            }
+
+            return null;
         }
         catch (Exception ex) when (ex is PlaywrightException or HttpRequestException or TaskCanceledException or XmlException)
         {
             _logger.LogWarning(ex, "[OnestopSeat] 구역 후보 계산 실패");
             return null;
+        }
+    }
+
+    private static int? TryResolveNolZonePreferredIndex(string? desiredBlock, int total)
+    {
+        if (total <= 0 || string.IsNullOrWhiteSpace(desiredBlock))
+            return null;
+
+        var trimmed = desiredBlock.Trim();
+        if (int.TryParse(trimmed, NumberStyles.None, CultureInfo.InvariantCulture, out var oneBased) &&
+            oneBased >= 1 && oneBased <= total)
+        {
+            return oneBased - 1;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<int> EnumerateNolZoneTryOrder(int? preferredIndex, int total)
+    {
+        if (preferredIndex is int p && p >= 0 && p < total)
+        {
+            yield return p;
+            for (var i = 0; i < total; i++)
+            {
+                if (i != p) yield return i;
+            }
+        }
+        else
+        {
+            for (var i = 0; i < total; i++) yield return i;
         }
     }
 
@@ -2067,17 +2217,21 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private static bool MatchesDesiredBlock(NolZoneSvgCandidate candidate, string? desiredBlock)
-        => !string.IsNullOrWhiteSpace(desiredBlock) && candidate.Key.Contains(desiredBlock, StringComparison.OrdinalIgnoreCase);
-
     private static bool IsSelectableNolZoneFill(string fill)
     {
         if (string.IsNullOrWhiteSpace(fill))
             return false;
 
+        // 실측 기준(코다라인 26004589):
+        //  - 선택 가능: #FB7E4E(주황 A/B), #17B3FF(파랑 C), #1CA814(초록 스탠딩), #7C68EE(보라 스탠딩 상단)
+        //  - 선택 불가: 배경/경계선/텍스트 (white, black, #616161 등)
+        // 단, 다른 공연 대응을 위해 블랙리스트 형태로 유지한다.
         return fill.Trim().ToLowerInvariant() switch
         {
-            "#edeff3" or "#cacfda" or "#616161" or "#ffffff" or "#fff" or "#000000" or "none" => false,
+            "#edeff3" or "#cacfda" or "#616161" or
+            "#ffffff" or "#fff" or "white" or
+            "#000000" or "#000" or "black" or
+            "none" or "transparent" => false,
             _ => true
         };
     }
