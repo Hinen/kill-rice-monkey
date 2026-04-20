@@ -418,7 +418,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 PauseBeforeSeatSelection && IsSeatPauseSupported,
                 _pauseGate,
                 IsYes24Template ? DesiredGrade : null,
-                IsYes24Template ? DesiredBlock : null);
+                (IsNolTemplate || IsYes24Template) ? DesiredBlock : null);
 
             var progress = new Progress<AutomationProgress>(automationProgress =>
             {

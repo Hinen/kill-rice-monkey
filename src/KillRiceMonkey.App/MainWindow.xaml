@@ -310,13 +310,18 @@
                                     Style="{StaticResource SoftCardStyle}"
                                     Visibility="{Binding IsNolTemplate, Converter={StaticResource BooleanToVisibilityConverter}}">
                                 <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="10" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="1.25*" />
                                         <ColumnDefinition Width="12" />
                                         <ColumnDefinition Width="0.75*" />
                                     </Grid.ColumnDefinitions>
 
-                                    <StackPanel Grid.Column="0">
+                                    <StackPanel Grid.Row="0" Grid.Column="0">
                                         <TextBlock Style="{StaticResource SectionLabelTextStyle}"
                                                    Text="관람일" />
                                         <DatePicker Style="{StaticResource InputDatePickerStyle}"
@@ -324,11 +329,18 @@
                                                     SelectedDateFormat="Short" />
                                     </StackPanel>
 
-                                    <StackPanel Grid.Column="2">
+                                    <StackPanel Grid.Row="0" Grid.Column="2">
                                         <TextBlock Style="{StaticResource SectionLabelTextStyle}"
                                                    Text="회차" />
                                         <TextBox Style="{StaticResource InputTextBoxStyle}"
                                                  Text="{Binding DesiredRound, UpdateSourceTrigger=PropertyChanged}" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3">
+                                        <TextBlock Style="{StaticResource SectionLabelTextStyle}"
+                                                   Text="구역(옵션, 비우면 수동 선택 대기)" />
+                                        <TextBox Style="{StaticResource InputTextBoxStyle}"
+                                                 Text="{Binding DesiredBlock, UpdateSourceTrigger=PropertyChanged}" />
                                     </StackPanel>
                                 </Grid>
                             </Border>
