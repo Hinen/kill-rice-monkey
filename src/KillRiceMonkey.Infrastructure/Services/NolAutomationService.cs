@@ -2805,9 +2805,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var circleLocator = page.Locator(NolOnestopSeatCircleSelector).Nth(seatIndex);
                 try { await circleLocator.ScrollIntoViewIfNeededAsync(); } catch (PlaywrightException) { }
 
-                // zoom 확대 상태에서 좌석이 viewport 밖이면 scrollIntoView(center)로 viewport 중심에 가져온다.
-                // EntZoomableWrapper 같은 transform container에서는 일반 scrollTo가 안 통해도
-                // element.scrollIntoView({block:'center'})는 브라우저가 적절히 처리.
+                // 좌석이 viewport 밖이면 EntZoomableWrapper_content 의 CSS transform을 identity로 강제 override 하여
+                // zoom을 effectively 해제(visual로만)한다. NOL 내부 React state 변경은 아니므로 '구역 선택'은 유지된다.
+                // 이후 scrollIntoView로 보정.
                 try
                 {
                     await page.EvaluateAsync(@"(idx) => {
@@ -2816,9 +2816,18 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                         if (!c) return;
                         const r = c.getBoundingClientRect();
                         if (r.left < 0 || r.top < 0 || r.right > window.innerWidth || r.bottom > window.innerHeight) {
+                            // 1) zoom wrapper transform identity로 override
+                            const wrapper = document.querySelector('[class*=""EntZoomableWrapper_content""]');
+                            if (wrapper) {
+                                wrapper.style.setProperty('transform', 'none', 'important');
+                                wrapper.style.setProperty('transform-origin', '0 0', 'important');
+                            }
+                            // 2) scrollIntoView with center
                             c.scrollIntoView({ block: 'center', inline: 'center' });
                         }
                     }".Replace("__SEAT_SELECTOR__", NolOnestopSeatCircleSelector.Replace("'", "\\'")), seatIndex);
+                    // transform 변경 후 렌더 반영을 위한 약간의 대기
+                    await Task.Delay(50, cancellationToken);
                 }
                 catch (PlaywrightException) { }
 
