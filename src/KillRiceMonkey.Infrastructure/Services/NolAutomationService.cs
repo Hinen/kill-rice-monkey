@@ -1946,7 +1946,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     return;
                 }
 
-                await Task.Delay(80, cancellationToken);
+                // 25ms 폴링: 사람 반응속도(~150ms) 대비 6배 빠르게 감지. CPU 부담 미미.
+                await Task.Delay(25, cancellationToken);
             }
         }
 
@@ -2018,7 +2019,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 _logger.LogDebug(ex, "[OnestopSeat] 구역 선택 루프 중 일시 오류 — 재시도.");
             }
 
-            await Task.Delay(80, cancellationToken);
+            // 자동 구역 재시도 폴링 (빠르게 다음 iteration)
+            await Task.Delay(30, cancellationToken);
         }
 
         throw new TimeoutException("NOL 구역 자동 선택 시간 초과 (15초).");
@@ -2078,7 +2080,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             cancellationToken.ThrowIfCancellationRequested();
             if (await CountAvailableNolOnestopSeatsAsync(page) >= 10)
                 return true;
-            await Task.Delay(80, cancellationToken);
+            // 30ms 폴링: 실측 구역 클릭→좌석 렌더 ~300ms. 30ms면 1~2 iteration 내 감지.
+            await Task.Delay(30, cancellationToken);
         }
         return false;
     }
@@ -2374,9 +2377,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 // viewport 밖 좌표에 대해 Mouse.MoveAsync로 클릭하는 것보다 견고하다.
                 // "좌석도 전체보기" 버튼(zoom reset)을 눌러 상태를 초기화하는 기존 방식은
                 // 구역 선택까지 해제시키는 부작용이 있어 사용하지 않는다.
+                // ClickAsync Timeout 1500ms: auto-wait + scroll 수행. 1.5초면 일반 상황 대응 충분.
                 try
                 {
-                    await circleLocator.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
+                    await circleLocator.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
                     _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(Locator). available={Count}, seatId={SeatId}, idx={Index}", count, seatId, seatIndex);
                 }
                 catch (PlaywrightException ex)
@@ -2396,8 +2400,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     await page.Mouse.UpAsync();
                     _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(Mouse fallback). available={Count}, seatId={SeatId}, idx={Index}, pt=({X:F1},{Y:F1})", count, seatId, seatIndex, seatX, seatY);
                 }
-                await Task.Delay(100, cancellationToken);
+                // 좌석 클릭 후 DOM 상태 업데이트 최소 대기. 너무 짧으면 완료 버튼 아직 active 안 됨.
+                await Task.Delay(30, cancellationToken);
 
+                // selectionConfirmed 500ms: React state 반영 시간. 성공은 보통 100~200ms, 500ms면 2배 여유.
                 var selectionConfirmed = await PlaywrightRuntime.TryWaitForConditionAsync(
                     async () =>
                     {
@@ -2421,7 +2427,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                         }
                         catch { return false; }
                     },
-                    TimeSpan.FromMilliseconds(1200), cancellationToken);
+                    TimeSpan.FromMilliseconds(500), cancellationToken);
 
                 if (!selectionConfirmed)
                 {
@@ -2475,15 +2481,15 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         var beforeUrl = page.Url;
 
         // Playwright ClickAsync는 CDP Input.dispatchMouseEvent 기반 trusted click을 생성한다.
-        // ClickElementAsync의 fallback은 JS dispatchEvent(untrusted)이므로 직접 ClickAsync를 사용한다.
+        // Timeout 1500ms: 일반 버튼 클릭은 100~300ms 내 완료. 1.5초면 로딩 상태도 대응.
         try
         {
-            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
+            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
         }
         catch (PlaywrightException ex)
         {
             _logger.LogWarning(ex, "[OnestopSeat] '선택 완료' ClickAsync(Force) 실패 — ClickAsync(일반) 재시도.");
-            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 1500 });
         }
         _logger.LogInformation("[OnestopSeat] '선택 완료' 버튼 Playwright trusted click 수행.");
 
@@ -2496,11 +2502,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         _logger.LogWarning("[OnestopSeat] '선택 완료' 첫 클릭 미반영 — 재시도.");
         try
         {
-            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 1500 });
         }
         catch (PlaywrightException)
         {
-            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
+            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
         }
 
         if (await IsOnestopSeatCompleteConfirmedAsync(page, completeBtn, beforeUrl, cancellationToken))
@@ -2543,7 +2549,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 return false;
             },
-            TimeSpan.FromSeconds(5), cancellationToken);
+            // 2500ms: 서버 응답 포함 페이지 전환은 1~2초. 2.5초면 여유 확보.
+            TimeSpan.FromMilliseconds(2500), cancellationToken);
     }
 
     private async Task SelectNolLegacySeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, string? desiredBlock, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
@@ -2638,7 +2645,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     }
                 }
                 catch (PlaywrightException) { }
-                await Task.Delay(80, cancellationToken);
+                // 25ms 폴링: 사용자 구역 클릭 즉시 감지. NEW 경로와 동일 기준.
+                await Task.Delay(25, cancellationToken);
             }
         }
 
@@ -2660,12 +2668,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (await TrySelectNolLegacyZoneAsync(frame))
                 {
                     _logger.LogInformation("[LegacySeat] 구역 후보 클릭 완료 — 좌석 로드 대기.");
-                    await Task.Delay(200, cancellationToken);
+                    // 구역 클릭 후 서버 응답(SelectSeat span 렌더)까지 시간 필요. 80ms 최소 대기.
+                    await Task.Delay(80, cancellationToken);
                     continue;
                 }
             }
             catch (PlaywrightException) { }
-            await Task.Delay(50, cancellationToken);
+            await Task.Delay(25, cancellationToken);
         }
     }
 
@@ -2769,7 +2778,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (status == "clicked")
                 {
                     var seatId = doc.RootElement.GetProperty("id").GetString()!;
-                    await Task.Delay(150, cancellationToken);
+                    // 좌석 클릭 후 DOM 업데이트 최소 대기. 50ms면 상태 반영 충분.
+                    await Task.Delay(50, cancellationToken);
 
                     // 좌석 선택 확인: poticket DOM은 공연/플레이스별로 selector 구조가 다르므로
                     // 포괄적 selector 집합 + SelectSeat span 자체의 상태 클래스까지 종합 검사한다.
@@ -2807,7 +2817,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                             }
                             catch { return false; }
                         },
-                        TimeSpan.FromMilliseconds(600), cancellationToken);
+                        // 400ms: 일반 poticket 좌석 선택 DOM 반영 ~200ms. 400ms면 여유.
+                        TimeSpan.FromMilliseconds(400), cancellationToken);
 
                     // selector가 실제 DOM과 다를 수 있으므로 미확인 상태여도 완료 단계로 진행한다.
                     // 진짜 실패였다면 ClickNolLegacySeatCompleteAsync가 페이지 이동을 감지 못해 예외를 던지고
@@ -2872,7 +2883,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         // 좌석 선택 완료가 실제로 처리되었는지 페이지(iframe) 전환으로 확인.
         // 구체적으로: ifrmSeat URL이 loading.html 또는 다른 단계로 바뀌거나,
         // 부모 페이지의 다른 단계 iframe(ifrmBookCertify/ifrmBookEnd 등)이 유효한 URL로 바뀜.
-        var transitioned = await WaitForNolLegacyCompleteTransitionAsync(seatFrame, startUrl, TimeSpan.FromMilliseconds(3500), cancellationToken);
+        // 1800ms: iframe 전환 일반 1초 내, 1.8초면 서버 지연 포함해도 충분.
+        var transitioned = await WaitForNolLegacyCompleteTransitionAsync(seatFrame, startUrl, TimeSpan.FromMilliseconds(1800), cancellationToken);
         if (!transitioned)
         {
             throw new InvalidOperationException($"레거시 '좌석 선택 완료' 클릭({clickedMethod}) 후 페이지 전환이 감지되지 않음 — 좌석 선택이 반영되지 않았을 가능성이 높음.");
@@ -2912,7 +2924,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             }
             catch (PlaywrightException) { }
 
-            await Task.Delay(80, cancellationToken);
+            // 30ms 폴링: iframe URL/프레임 변화 빠르게 감지.
+            await Task.Delay(30, cancellationToken);
         }
         return false;
     }
