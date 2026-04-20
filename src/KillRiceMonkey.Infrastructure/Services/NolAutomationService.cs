@@ -2805,32 +2805,92 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var circleLocator = page.Locator(NolOnestopSeatCircleSelector).Nth(seatIndex);
                 try { await circleLocator.ScrollIntoViewIfNeededAsync(); } catch (PlaywrightException) { }
 
-                // Playwright의 ClickAsync는 auto-scroll + auto-wait + retry를 수행하므로
-                // viewport 밖 좌표에 대해 Mouse.MoveAsync로 클릭하는 것보다 견고하다.
-                // "좌석도 전체보기" 버튼(zoom reset)을 눌러 상태를 초기화하는 기존 방식은
-                // 구역 선택까지 해제시키는 부작용이 있어 사용하지 않는다.
-                // ClickAsync Timeout 1500ms: auto-wait + scroll 수행. 1.5초면 일반 상황 대응 충분.
+                // zoom 확대 상태에서 좌석이 viewport 밖이면 scrollIntoView(center)로 viewport 중심에 가져온다.
+                // EntZoomableWrapper 같은 transform container에서는 일반 scrollTo가 안 통해도
+                // element.scrollIntoView({block:'center'})는 브라우저가 적절히 처리.
+                try
+                {
+                    await page.EvaluateAsync(@"(idx) => {
+                        const circles = document.querySelectorAll('__SEAT_SELECTOR__');
+                        const c = circles[idx];
+                        if (!c) return;
+                        const r = c.getBoundingClientRect();
+                        if (r.left < 0 || r.top < 0 || r.right > window.innerWidth || r.bottom > window.innerHeight) {
+                            c.scrollIntoView({ block: 'center', inline: 'center' });
+                        }
+                    }".Replace("__SEAT_SELECTOR__", NolOnestopSeatCircleSelector.Replace("'", "\\'")), seatIndex);
+                }
+                catch (PlaywrightException) { }
+
+                // 3단계 클릭 전략: Locator.ClickAsync(Force) → Mouse fallback → JS dispatchEvent
+                var clicked = false;
                 try
                 {
                     await circleLocator.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
                     _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(Locator). available={Count}, seatId={SeatId}, idx={Index}", count, seatId, seatIndex);
+                    clicked = true;
                 }
                 catch (PlaywrightException ex)
                 {
-                    // Fallback: bounding box 기반 마우스 클릭
+                    _logger.LogDebug(ex, "[OnestopSeat] Locator.ClickAsync 실패 — Mouse fallback 시도.");
+                }
+
+                if (!clicked)
+                {
                     var box = await circleLocator.BoundingBoxAsync();
-                    if (box is null || box.Width <= 0 || box.Height <= 0)
+                    if (box is not null && box.Width > 0 && box.Height > 0)
                     {
-                        excludedSeats.Add(seatId);
-                        _logger.LogWarning(ex, "[OnestopSeat] 좌석 클릭 실패 + bounding box 조회 실패 — 제외 후 재시도. seatId={SeatId}", seatId);
-                        continue;
+                        var seatX = (float)(box.X + (box.Width / 2));
+                        var seatY = (float)(box.Y + (box.Height / 2));
+                        if (seatX >= 0 && seatY >= 0)
+                        {
+                            try
+                            {
+                                await page.Mouse.MoveAsync(seatX, seatY);
+                                await page.Mouse.DownAsync();
+                                await page.Mouse.UpAsync();
+                                _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(Mouse fallback). available={Count}, seatId={SeatId}, idx={Index}, pt=({X:F1},{Y:F1})", count, seatId, seatIndex, seatX, seatY);
+                                clicked = true;
+                            }
+                            catch (PlaywrightException) { }
+                        }
                     }
-                    var seatX = (float)(box.X + (box.Width / 2));
-                    var seatY = (float)(box.Y + (box.Height / 2));
-                    await page.Mouse.MoveAsync(seatX, seatY);
-                    await page.Mouse.DownAsync();
-                    await page.Mouse.UpAsync();
-                    _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(Mouse fallback). available={Count}, seatId={SeatId}, idx={Index}, pt=({X:F1},{Y:F1})", count, seatId, seatIndex, seatX, seatY);
+                }
+
+                if (!clicked)
+                {
+                    // 최후 수단: JS element.dispatchEvent로 synthetic MouseEvent 발사. trusted=false지만
+                    // React synthetic handler는 일반적으로 처리. viewport 밖에서도 동작.
+                    try
+                    {
+                        var jsClicked = await page.EvaluateAsync<bool>(@"(idx) => {
+                            const circles = document.querySelectorAll('__SEAT_SELECTOR__');
+                            const c = circles[idx];
+                            if (!c) return false;
+                            const r = c.getBoundingClientRect();
+                            const x = r.left + r.width / 2;
+                            const y = r.top + r.height / 2;
+                            const ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 });
+                            c.dispatchEvent(ev);
+                            return true;
+                        }".Replace("__SEAT_SELECTOR__", NolOnestopSeatCircleSelector.Replace("'", "\\'")), seatIndex);
+                        if (jsClicked)
+                        {
+                            _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(JS dispatchEvent). available={Count}, seatId={SeatId}, idx={Index}", count, seatId, seatIndex);
+                            clicked = true;
+                        }
+                    }
+                    catch (PlaywrightException ex)
+                    {
+                        _logger.LogDebug(ex, "[OnestopSeat] JS dispatchEvent 실패.");
+                    }
+                }
+
+                if (!clicked)
+                {
+                    excludedSeats.Add(seatId);
+                    _logger.LogWarning("[OnestopSeat] 좌석 클릭 3단계 전부 실패 — 제외 후 다음 좌석. seatId={SeatId}", seatId);
+                    continue;
                 }
                 // 좌석 클릭 후 DOM 상태 업데이트 최소 대기. 너무 짧으면 완료 버튼 아직 active 안 됨.
                 await Task.Delay(30, cancellationToken);
