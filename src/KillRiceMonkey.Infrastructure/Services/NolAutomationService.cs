@@ -1924,7 +1924,29 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private async Task EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("[OnestopSeat] 구역 자동 선택 시작. desiredBlock={Desired}", desiredBlock ?? "<auto>");
+        // DesiredBlock이 비어 있으면 구역 자동 선택을 건너뛰고 사용자가 수동으로 구역을 클릭할 때까지 대기한다.
+        // 좌석(SeatMap_seatGroup)에 활성 circle이 충분히 로드되면 사용자 선택 완료로 간주.
+        if (string.IsNullOrWhiteSpace(desiredBlock))
+        {
+            _logger.LogInformation("[OnestopSeat] DesiredBlock 비어있음 — 구역 수동 선택 대기 모드.");
+            progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역을 직접 클릭해 주세요 (DesiredBlock 미지정)."));
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var available = await CountAvailableNolOnestopSeatsAsync(page);
+                if (available >= 10)
+                {
+                    _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드됨.", available);
+                    return;
+                }
+
+                await Task.Delay(80, cancellationToken);
+            }
+        }
+
+        _logger.LogInformation("[OnestopSeat] 구역 자동 선택 시작. desiredBlock={Desired}", desiredBlock);
 
         var attemptedZones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
