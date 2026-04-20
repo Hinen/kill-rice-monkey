@@ -321,7 +321,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 progress?.Report(new AutomationProgress("좌석 선택 중", "일시정지 해제 — 좌석 선택 진행"));
             }
 
-            progress?.Report(new AutomationProgress("좌석 선택 중"));
+            // 상위 단계용 stage. 하위 SelectNolOnestopSeatAndCompleteAsync/SelectNolLegacySeatAndCompleteAsync가
+            // 구역 선택 이후 "좌석 선택 중"을 별도로 report 하므로 여기서는 진입 stage를 구분한다.
+            progress?.Report(new AutomationProgress("좌석 페이지 진입", "좌석 선택 페이지로 이동"));
             await SelectNolSeatAndCompleteAsync(captchaPage, timeout, progress, request.DesiredBlock, request.PauseGate, cancellationToken);
             progress?.Report(new AutomationProgress("좌석 선택 완료", "좌석 선택 및 완료 버튼 클릭"));
             return new AutomationRunResult(true, $"NOL 기존 브라우저 DOM 자동화 완료: {desiredDate:yyyy.MM.dd} / {desiredRound} 선택, 좌석 선택 완료.", DateTimeOffset.Now);
@@ -1980,6 +1982,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             _logger.LogInformation("[OnestopSeat] DesiredBlock 비어있음 — 구역 수동 선택 대기 모드.");
             progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역을 직접 클릭해 주세요 (DesiredBlock 미지정)."));
 
+            // 사용자의 mousedown 좌표를 JS에서 캡처. 구역 선택 완료 후 blockImg이 사라지므로
+            // "클릭 당시" 좌표/이미지 rect/SVG URL 을 미리 기록한다.
+            await InstallUserZoneClickListenerAsync(page);
+
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1987,8 +1993,19 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var available = await CountAvailableNolOnestopSeatsAsync(page, null);
                 if (available >= 10)
                 {
+                    // 1) 사용자 클릭 좌표를 이용해 SVG 후보 중 포함되는 구역 찾기 → 해당 fill 반환.
+                    //    NEW 좌석맵은 선택 안 한 다른 구역 좌석도 활성 상태로 렌더되므로
+                    //    "최다 fill"로는 주황처럼 좌석이 적은 구역을 식별할 수 없다(→ 버그 재발 원인).
+                    var preciseFill = await ResolveUserClickZoneFillAsync(page);
+                    if (preciseFill is not null)
+                    {
+                        _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드, 클릭 좌표→fill={Fill}.", available, preciseFill);
+                        return preciseFill;
+                    }
+
+                    // 2) 최후 fallback: 활성 fill 분포 기준 dominant fill. 정확도 떨어지지만 none 방지.
                     var dominantFill = await DetectDominantActiveSeatFillAsync(page);
-                    _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드됨, dominantFill={Fill}.", available, dominantFill ?? "<none>");
+                    _logger.LogWarning("[OnestopSeat] 사용자 클릭 좌표 매칭 실패 — dominant fill fallback={Fill}, 좌석 {Count}개.", dominantFill ?? "<none>", available);
                     return dominantFill;
                 }
 
@@ -2074,7 +2091,125 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         throw new TimeoutException("NOL 구역 자동 선택 시간 초과 (15초).");
     }
 
+    // 수동 모드에서 구역 선택 대기 진입 시 호출한다. document 레벨 mousedown 리스너를
+    // pre-install 하여 사용자가 blockImg 영역 내부를 클릭하는 순간의 좌표/이미지 rect/SVG URL을
+    // 캡처한다. 구역 선택 완료 후 blockImg가 DOM에서 제거되어도 window.__nolUserClick이 유지되므로
+    // 좌석 로드 감지 후 좌표→SVG 후보 매칭이 가능하다.
+    private static async Task InstallUserZoneClickListenerAsync(IPage page)
+    {
+        try
+        {
+            await page.EvaluateAsync(@"() => {
+                // 이전 핸들러 제거 (재진입 대응)
+                if (window.__nolUserClickHandler) {
+                    document.removeEventListener('mousedown', window.__nolUserClickHandler, true);
+                }
+                window.__nolUserClick = null;
+                window.__nolUserClickHandler = (e) => {
+                    const wrap = document.querySelector('[class*=""SeatMap_blockImg_""]');
+                    if (!wrap) return;
+                    const img = wrap.querySelector('img');
+                    if (!img) return;
+                    const rect = img.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) return;
+                    if (e.clientX >= rect.left && e.clientX <= rect.right &&
+                        e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                        window.__nolUserClick = {
+                            x: e.clientX,
+                            y: e.clientY,
+                            imgLeft: rect.left,
+                            imgTop: rect.top,
+                            imgW: rect.width,
+                            imgH: rect.height,
+                            svgSrc: img.getAttribute('src') || '',
+                            t: Date.now(),
+                        };
+                    }
+                };
+                document.addEventListener('mousedown', window.__nolUserClickHandler, true);
+            }");
+        }
+        catch (PlaywrightException) { }
+    }
+
+    // 캡처된 사용자 클릭 좌표를 SVG 좌표계로 변환한 뒤, SVG 후보들의 bounding box 중 포함하는 것을 찾아
+    // 해당 후보의 fill(=사용자가 실제로 선택한 구역의 fill)을 반환한다. 실패 시 null.
+    private async Task<string?> ResolveUserClickZoneFillAsync(IPage page)
+    {
+        try
+        {
+            var clickJson = await page.EvaluateAsync<string?>(@"() => {
+                const c = window.__nolUserClick;
+                return c ? JSON.stringify(c) : null;
+            }");
+            if (string.IsNullOrEmpty(clickJson))
+                return null;
+
+            using var doc = JsonDocument.Parse(clickJson);
+            var root = doc.RootElement;
+            var clickX = root.GetProperty("x").GetDouble();
+            var clickY = root.GetProperty("y").GetDouble();
+            var imgLeft = root.GetProperty("imgLeft").GetDouble();
+            var imgTop = root.GetProperty("imgTop").GetDouble();
+            var imgW = root.GetProperty("imgW").GetDouble();
+            var imgH = root.GetProperty("imgH").GetDouble();
+            var svgSrc = root.GetProperty("svgSrc").GetString();
+
+            if (imgW <= 0 || imgH <= 0 || string.IsNullOrEmpty(svgSrc))
+                return null;
+
+            var svgText = await _httpClient.GetStringAsync(svgSrc);
+            var candidates = BuildNolOnestopZoneCandidatesFromSvg(svgText).ToList();
+            if (candidates.Count == 0)
+                return null;
+
+            var vw = candidates[0].ViewWidth;
+            var vh = candidates[0].ViewHeight;
+            if (vw <= 0 || vh <= 0)
+                return null;
+
+            // 클릭 좌표를 SVG viewBox 좌표로 변환
+            var svgX = (clickX - imgLeft) / imgW * vw;
+            var svgY = (clickY - imgTop) / imgH * vh;
+
+            // 1차: 포함하는 후보 (가장 작은 bbox 우선 — 중첩된 경우 가장 구체적인 블록)
+            var containing = candidates
+                .Where(c => c.ContainsSvgPoint(svgX, svgY))
+                .OrderBy(c => c.Area)
+                .FirstOrDefault();
+            if (containing is not null)
+            {
+                _logger.LogDebug("[OnestopSeat] 클릭 좌표({CX:F1},{CY:F1})→SVG({SX:F1},{SY:F1}) 매칭 후보 fill={Fill}, key={Key}.",
+                    clickX, clickY, svgX, svgY, containing.Fill, containing.Key);
+                return containing.Fill.ToLowerInvariant();
+            }
+
+            // 2차: 근처 후보 (오차 허용) — 영역 경계 바로 밖이면 8px viewport 허용
+            var tolerance = Math.Max(vw, vh) * 0.02; // viewBox 크기의 2%
+            var nearby = candidates
+                .Where(c => c.ContainsSvgPoint(svgX, svgY, tolerance))
+                .OrderBy(c => (c.CenterX - svgX) * (c.CenterX - svgX) + (c.CenterY - svgY) * (c.CenterY - svgY))
+                .FirstOrDefault();
+            if (nearby is not null)
+            {
+                _logger.LogDebug("[OnestopSeat] 클릭 좌표 근접(tol={Tol:F1}) 매칭 fill={Fill}, key={Key}.", tolerance, nearby.Fill, nearby.Key);
+                return nearby.Fill.ToLowerInvariant();
+            }
+
+            _logger.LogDebug("[OnestopSeat] 클릭 좌표({CX:F1},{CY:F1})→SVG({SX:F1},{SY:F1})에 매칭되는 후보 없음 (후보 {Count}개).",
+                clickX, clickY, svgX, svgY, candidates.Count);
+            return null;
+        }
+        catch (Exception ex) when (ex is PlaywrightException or HttpRequestException or TaskCanceledException or JsonException or XmlException)
+        {
+            _logger.LogDebug(ex, "[OnestopSeat] 사용자 클릭 좌표→fill 해석 실패.");
+            return null;
+        }
+    }
+
     // 활성 좌석 circle의 fill 분포를 분석해 지배적 fill(= 사용자가 선택한 구역 fill)을 판정한다.
+    // 사용자 클릭 좌표 캡처가 실패한 극소수 케이스 fallback 용. 다중 구역 활성 케이스에서는
+    // 좌석 수가 많은 구역이 답이 아닐 수 있어 정확도가 낮다(이전 버전의 주 버그 원인).
     // - max fill 개수가 2위보다 2배 이상이고 최소 20개 이상이어야 안정적 판정으로 간주.
     // - 판정 실패(경쟁 fill 존재 or 너무 적음)이면 null 반환 → 상위에서 fill 제한 없이 진행.
     private static async Task<string?> DetectDominantActiveSeatFillAsync(IPage page)
@@ -2285,7 +2420,26 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
     }
 
-    private sealed record NolZoneSvgCandidate(string Key, string Fill, double Area, double CenterX, double CenterY, double ViewWidth, double ViewHeight);
+    private sealed record NolZoneSvgCandidate(
+        string Key,
+        string Fill,
+        double Area,
+        double X,
+        double Y,
+        double Width,
+        double Height,
+        double ViewWidth,
+        double ViewHeight)
+    {
+        public double CenterX => X + (Width / 2);
+        public double CenterY => Y + (Height / 2);
+
+        public bool ContainsSvgPoint(double px, double py, double tolerance = 0)
+        {
+            return px >= X - tolerance && px <= X + Width + tolerance
+                && py >= Y - tolerance && py <= Y + Height + tolerance;
+        }
+    }
 
     private static IEnumerable<NolZoneSvgCandidate> BuildNolOnestopZoneCandidatesFromSvg(string svgText)
     {
@@ -2318,7 +2472,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 continue;
 
             var key = string.Create(CultureInfo.InvariantCulture, $"{fill}:{x:F2}:{y:F2}:{width:F2}:{height:F2}");
-            yield return new NolZoneSvgCandidate(key, fill, area, x + (width / 2), y + (height / 2), viewWidth, viewHeight);
+            yield return new NolZoneSvgCandidate(key, fill, area, x, y, width, height, viewWidth, viewHeight);
         }
     }
 
