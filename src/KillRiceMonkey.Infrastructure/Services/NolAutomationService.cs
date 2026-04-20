@@ -1803,7 +1803,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (isOnestop)
                     await SelectNolOnestopSeatAndCompleteAsync(seatPage, timeout, progress, desiredBlock, excludedSeats, pauseGate, cancellationToken);
                 else
-                    await SelectNolLegacySeatAndCompleteAsync(seatPage, timeout, progress, excludedSeats, pauseGate, cancellationToken);
+                    await SelectNolLegacySeatAndCompleteAsync(seatPage, timeout, progress, desiredBlock, excludedSeats, pauseGate, cancellationToken);
 
                 _logger.LogInformation("[SeatSelect] 좌석 선택 완료. totalMs={Ms}", totalSw.ElapsedMilliseconds);
                 return;
@@ -2543,7 +2543,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             TimeSpan.FromSeconds(5), cancellationToken);
     }
 
-    private async Task SelectNolLegacySeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
+    private async Task SelectNolLegacySeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, string? desiredBlock, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
     {
         var stepSw = Stopwatch.StartNew();
 
@@ -2564,9 +2564,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         if (!hasSelectSeat)
         {
             stepSw.Restart();
-            progress?.Report(new AutomationProgress("구역 선택 중", "구역 자동 선택 시도 중"));
-            await EnsureNolLegacyZoneSelectedAsync(workFrame, progress, cancellationToken);
-            _logger.LogInformation("[LegacySeat] 구역 선택 후 좌석 로드 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
+            var modeLabel = string.IsNullOrWhiteSpace(desiredBlock) ? "사용자 수동 대기" : "자동 선택";
+            progress?.Report(new AutomationProgress("구역 선택 중", $"구역 {modeLabel} 중"));
+            await EnsureNolLegacyZoneSelectedAsync(workFrame, desiredBlock, progress, cancellationToken);
+            _logger.LogInformation("[LegacySeat] 구역 선택 후 좌석 로드 완료. mode={Mode}, waitMs={Ms}", modeLabel, stepSw.ElapsedMilliseconds);
         }
 
         stepSw.Restart();
@@ -2610,9 +2611,35 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         catch (PlaywrightException) { return false; }
     }
 
-    private async Task EnsureNolLegacyZoneSelectedAsync(IFrame frame, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task EnsureNolLegacyZoneSelectedAsync(IFrame frame, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("[LegacySeat] 구역 자동 선택 시작.");
+        // DesiredBlock이 비어있으면 사용자가 직접 구역을 클릭할 때까지 대기 (자동 클릭 금지).
+        // 값이 있으면 기존처럼 자동 선택(첫 매칭 후보 클릭).
+        if (string.IsNullOrWhiteSpace(desiredBlock))
+        {
+            _logger.LogInformation("[LegacySeat] DesiredBlock 비어있음 — 구역 수동 선택 대기 모드.");
+            progress?.Report(new AutomationProgress("구역 선택 대기 중", "구역을 직접 클릭해 주세요 (DesiredBlock 미지정)."));
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var count = await frame.EvaluateAsync<int>(@"() => {
+                        return document.querySelectorAll('span[onclick*=""SelectSeat""]').length;
+                    }");
+                    if (count > 0)
+                    {
+                        _logger.LogInformation("[LegacySeat] 사용자 구역 선택 감지 — SelectSeat span {Count}개 로드.", count);
+                        return;
+                    }
+                }
+                catch (PlaywrightException) { }
+                await Task.Delay(80, cancellationToken);
+            }
+        }
+
+        _logger.LogInformation("[LegacySeat] 구역 자동 선택 시작. desiredBlock={Desired}", desiredBlock);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
