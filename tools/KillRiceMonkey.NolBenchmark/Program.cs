@@ -119,6 +119,9 @@ internal sealed class BenchmarkOptions
     public int StepTimeoutSeconds { get; init; } = 8;
     public double MatchThreshold { get; init; } = 0.86;
     public bool LaunchIfMissing { get; init; } = true;
+    // "좌석 선택 중" 스테이지 진입 즉시 CTS 취소. 구역 선택/fill 판정까지만 확인하고
+    // 좌석 클릭을 하지 않아 좌석 선점을 방지한다(반복 실측용).
+    public bool DryRunAfterZone { get; init; } = false;
 
     public static BenchmarkOptions Parse(string[] args)
     {
@@ -129,6 +132,7 @@ internal sealed class BenchmarkOptions
         string? desiredBlock = "1";
         int stepTimeoutSeconds = 8;
         double matchThreshold = 0.86;
+        bool dryRunAfterZone = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -143,11 +147,18 @@ internal sealed class BenchmarkOptions
                 case "--block" when i + 1 < args.Length:
                     desiredBlock = args[++i];
                     break;
+                case "--manual-zone":
+                    // 명시적 수동 모드: DesiredBlock을 null로 강제 (PowerShell의 빈 문자열 인자 drop 회피).
+                    desiredBlock = null;
+                    break;
                 case "--timeout" when i + 1 < args.Length:
                     stepTimeoutSeconds = int.Parse(args[++i]);
                     break;
                 case "--threshold" when i + 1 < args.Length:
                     matchThreshold = double.Parse(args[++i]);
+                    break;
+                case "--dry-run-after-zone":
+                    dryRunAfterZone = true;
                     break;
             }
         }
@@ -159,6 +170,7 @@ internal sealed class BenchmarkOptions
             DesiredBlock = desiredBlock,
             StepTimeoutSeconds = stepTimeoutSeconds,
             MatchThreshold = matchThreshold,
+            DryRunAfterZone = dryRunAfterZone,
         };
     }
 }
@@ -234,6 +246,10 @@ internal sealed class BenchmarkRunner(
         var totalSw = Stopwatch.StartNew();
         var stageSw = Stopwatch.StartNew();
         string? prevStage = null;
+        // "좌석 선택 중"은 RunNolAutomation 상위/SelectNolOnestopSeatAndCompleteAsync 하위에서 두 번 보고된다.
+        // dry-run-after-zone은 '구역 선택 대기 중' stage를 최초로 본 뒤 '좌석 선택 중'으로 전환되는 두 번째 시점에 cancel해야 한다.
+        var sawZoneManualWait = false;
+        using var runCts = new CancellationTokenSource();
 
         var progress = new Progress<AutomationProgress>(p =>
         {
@@ -247,6 +263,22 @@ internal sealed class BenchmarkRunner(
                 Console.WriteLine($"  [T+{totalSw.ElapsedMilliseconds,7:N0} ms] Stage: {stage}");
                 if (!string.IsNullOrWhiteSpace(p.LogMessage))
                     Console.WriteLine($"                 └─ {p.LogMessage}");
+
+                // '구역 선택 대기 중' (수동 모드 마커) 등장 기록
+                if (stage.Contains("구역 선택 대기"))
+                    sawZoneManualWait = true;
+
+                // '구역 선택 중'(자동 모드)도 마커로 취급
+                if (stage.Contains("구역 선택 중") || stage.Contains("구역 선택 완료"))
+                    sawZoneManualWait = true;
+
+                // --dry-run-after-zone: 구역 단계 이후 '좌석 선택' stage 진입 시 cancel
+                if (options.DryRunAfterZone && sawZoneManualWait && stage.Contains("좌석 선택") && !stage.Contains("완료"))
+                {
+                    logger.LogInformation("[dry-run-after-zone] 구역 이후 좌석 선택 stage 감지 — 취소 발사(선점 방지).");
+                    try { runCts.Cancel(); } catch { }
+                }
+
                 prevStage = stage;
                 stageSw.Restart();
             }
@@ -261,9 +293,15 @@ internal sealed class BenchmarkRunner(
         string message;
         try
         {
-            var result = await service.RunAsync(request, progress, CancellationToken.None);
+            var result = await service.RunAsync(request, progress, runCts.Token);
             success = result.IsSuccess;
             message = result.Message ?? "<no message>";
+        }
+        catch (OperationCanceledException) when (options.DryRunAfterZone)
+        {
+            success = true;
+            message = "dry-run-after-zone: 좌석 선택 직전 취소(의도적).";
+            logger.LogInformation(message);
         }
         catch (Exception ex)
         {
