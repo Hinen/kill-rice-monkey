@@ -1900,12 +1900,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         var zoneRequired = await IsNolOnestopZoneSelectionRequiredAsync(page);
         _logger.LogInformation("[OnestopSeat] 구역 선택 필요={Required}. checkMs={Ms}", zoneRequired, stepSw.ElapsedMilliseconds);
 
+        string? selectedZoneFill = null;
         if (zoneRequired)
         {
             stepSw.Restart();
             progress?.Report(new AutomationProgress("구역 선택 중", "구역 자동 선택 시도 중"));
-            await EnsureNolOnestopZoneSelectedAsync(page, desiredBlock, progress, cancellationToken);
-            _logger.LogInformation("[OnestopSeat] 구역 선택 완료. waitMs={Ms}", stepSw.ElapsedMilliseconds);
+            selectedZoneFill = await EnsureNolOnestopZoneSelectedAsync(page, desiredBlock, progress, cancellationToken);
+            _logger.LogInformation("[OnestopSeat] 구역 선택 완료. fill={Fill}, waitMs={Ms}", selectedZoneFill ?? "<unknown>", stepSw.ElapsedMilliseconds);
         }
 
         stepSw.Restart();
@@ -1915,7 +1916,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         // 사용자가 수동으로 선택한 구역이 무한 반복으로 해제되는 버그가 발생한다.
         // 좌석 클릭은 아래 SelectNolOnestopSeatAsync에서 ScrollIntoViewIfNeededAsync +
         // Locator.ClickAsync(force)로 Playwright가 자동 스크롤/대기를 처리하도록 한다.
-        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, pauseGate, progress, cancellationToken);
+        // selectedZoneFill 이 지정되면 해당 fill(=선택된 구역)의 좌석만 후보로 삼는다.
+        // NEW URL의 좌석맵은 선택하지 않은 다른 구역의 좌석도 disabled 없이 렌더링되므로
+        // fill 필터가 없으면 엉뚱한 구역 좌석을 클릭하게 된다.
+        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, selectedZoneFill, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료. seatId={SeatId}, selectMs={Ms}", selectedSeatId, stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
@@ -1964,8 +1968,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private sealed record NolOnestopZoneCandidate(string Key, double ClientX, double ClientY, string Fill, double Area);
 
-    private async Task EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<string?> EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
+        // 반환값: 선택된 구역의 fill 색상(소문자). 이 fill 좌석만 후보로 삼아야 다른 구역 좌석을 선택하는 버그를 방지한다.
+        // null 반환 시에는 fill 제한을 적용하지 않음(최다 fill 판정 실패 등).
+        //
         // DesiredBlock이 비어 있으면 구역 자동 선택을 건너뛰고 사용자가 수동으로 구역을 클릭할 때까지 대기한다.
         // 좌석(SeatMap_seatGroup)에 활성 circle이 충분히 로드되면 사용자 선택 완료로 간주.
         if (string.IsNullOrWhiteSpace(desiredBlock))
@@ -1977,11 +1984,12 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var available = await CountAvailableNolOnestopSeatsAsync(page);
+                var available = await CountAvailableNolOnestopSeatsAsync(page, null);
                 if (available >= 10)
                 {
-                    _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드됨.", available);
-                    return;
+                    var dominantFill = await DetectDominantActiveSeatFillAsync(page);
+                    _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드됨, dominantFill={Fill}.", available, dominantFill ?? "<none>");
+                    return dominantFill;
                 }
 
                 // 25ms 폴링: 사람 반응속도(~150ms) 대비 6배 빠르게 감지. CPU 부담 미미.
@@ -1995,17 +2003,18 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
         var clearCount = 0;
         const int MaxClearCount = 3;
+        string? lastClickedFill = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var available = await CountAvailableNolOnestopSeatsAsync(page);
+                var available = await CountAvailableNolOnestopSeatsAsync(page, lastClickedFill);
                 if (available >= 10)
                 {
-                    _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지.", available);
-                    return;
+                    _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지(fill={Fill}).", available, lastClickedFill ?? "<any>");
+                    return lastClickedFill ?? await DetectDominantActiveSeatFillAsync(page);
                 }
 
                 var zoneCandidate = await TryFindNolOnestopZoneCandidateAsync(page, desiredBlock, attemptedZones);
@@ -2027,14 +2036,15 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     await page.Mouse.MoveAsync((float)zoneCandidate.ClientX, (float)zoneCandidate.ClientY);
                     await page.Mouse.DownAsync();
                     await page.Mouse.UpAsync();
+                    lastClickedFill = zoneCandidate.Fill.ToLowerInvariant();
                     _logger.LogInformation("[OnestopSeat] 구역 후보 클릭 — key={Key}, fill={Fill}, area={Area:F0}, x={X:F1}, y={Y:F1}",
                         zoneCandidate.Key, zoneCandidate.Fill, zoneCandidate.Area, zoneCandidate.ClientX, zoneCandidate.ClientY);
 
-                    var loaded = await WaitForNolOnestopSeatsLoadedAsync(page, TimeSpan.FromMilliseconds(1500), cancellationToken);
+                    var loaded = await WaitForNolOnestopSeatsLoadedAsync(page, lastClickedFill, TimeSpan.FromMilliseconds(1500), cancellationToken);
                     if (loaded)
                     {
-                        _logger.LogInformation("[OnestopSeat] 구역 클릭 후 좌석 로드 확인.");
-                        return;
+                        _logger.LogInformation("[OnestopSeat] 구역 클릭 후 좌석 로드 확인(fill={Fill}).", lastClickedFill);
+                        return lastClickedFill;
                     }
                     continue;
                 }
@@ -2064,14 +2074,61 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         throw new TimeoutException("NOL 구역 자동 선택 시간 초과 (15초).");
     }
 
-    private static async Task<int> CountAvailableNolOnestopSeatsAsync(IPage page)
+    // 활성 좌석 circle의 fill 분포를 분석해 지배적 fill(= 사용자가 선택한 구역 fill)을 판정한다.
+    // - max fill 개수가 2위보다 2배 이상이고 최소 20개 이상이어야 안정적 판정으로 간주.
+    // - 판정 실패(경쟁 fill 존재 or 너무 적음)이면 null 반환 → 상위에서 fill 제한 없이 진행.
+    private static async Task<string?> DetectDominantActiveSeatFillAsync(IPage page)
     {
         try
         {
-            return await page.EvaluateAsync<int>($@"() => {{
-                const circles = document.querySelectorAll('{NolOnestopSeatCircleSelector}');
+            var json = await page.EvaluateAsync<string>(@"(() => {
+                const circles = document.querySelectorAll('[class*=""SeatMap_seatGroup""] circle');
+                const counts = {};
+                for (const c of circles) {
+                    const cls = c.getAttribute('class') || '';
+                    if (cls.includes('disabled')) continue;
+                    const r = parseFloat(c.getAttribute('r') || '0');
+                    if (r <= 0) continue;
+                    const cx = parseFloat(c.getAttribute('cx') || '0');
+                    const cy = parseFloat(c.getAttribute('cy') || '0');
+                    if (cx === 0 && cy === 0 && r <= 1) continue;
+                    const s = window.getComputedStyle(c);
+                    if (s.pointerEvents === 'none' || s.display === 'none' || s.visibility === 'hidden') continue;
+                    const opacity = Number(s.opacity || '1');
+                    if (opacity <= 0) continue;
+                    const fill = (c.getAttribute('fill') || '').toLowerCase();
+                    counts[fill] = (counts[fill] || 0) + 1;
+                }
+                return JSON.stringify(counts);
+            })()");
+            using var doc = JsonDocument.Parse(json);
+            var entries = doc.RootElement.EnumerateObject()
+                .Select(p => (Fill: p.Name, Count: p.Value.GetInt32()))
+                .OrderByDescending(x => x.Count)
+                .ToList();
+            if (entries.Count == 0) return null;
+            var top = entries[0];
+            var second = entries.Count > 1 ? entries[1].Count : 0;
+            if (top.Count >= 20 && top.Count >= second * 2)
+                return top.Fill;
+            return null;
+        }
+        catch (PlaywrightException) { return null; }
+        catch (JsonException) { return null; }
+    }
+
+    // requiredFill 이 지정되면 해당 fill(소문자, 예: "#1ca814")에 일치하는 활성 circle만 센다.
+    // 수동/자동 모드 모두에서 구역 선택 후 "선택된 구역" 좌석 수로 로드 완료를 판정하기 위해 사용한다.
+    // 전체 활성 count가 필요하면 requiredFill=null 로 호출(=수동 모드 초기 대기).
+    private static async Task<int> CountAvailableNolOnestopSeatsAsync(IPage page, string? requiredFill)
+    {
+        try
+        {
+            var fillArg = requiredFill?.ToLowerInvariant() ?? string.Empty;
+            return await page.EvaluateAsync<int>(@"(fill) => {
+                const circles = document.querySelectorAll('[class*=""SeatMap_seatGroup""] circle');
                 let count = 0;
-                for (const c of circles) {{
+                for (const c of circles) {
                     const cls = c.getAttribute('class') || '';
                     if (cls.includes('disabled')) continue;
                     const r = parseFloat(c.getAttribute('r') || '0');
@@ -2083,10 +2140,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     if (s.pointerEvents === 'none' || s.display === 'none' || s.visibility === 'hidden') continue;
                     const opacity = Number(s.opacity || '1');
                     if (opacity <= 0) continue;
+                    if (fill && (c.getAttribute('fill') || '').toLowerCase() !== fill) continue;
                     count++;
-                }}
+                }
                 return count;
-            }}");
+            }", fillArg);
         }
         catch (PlaywrightException) { return 0; }
     }
@@ -2110,13 +2168,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         return true;
     }
 
-    private static async Task<bool> WaitForNolOnestopSeatsLoadedAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
+    private static async Task<bool> WaitForNolOnestopSeatsLoadedAsync(IPage page, string? requiredFill, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (await CountAvailableNolOnestopSeatsAsync(page) >= 10)
+            if (await CountAvailableNolOnestopSeatsAsync(page, requiredFill) >= 10)
                 return true;
             // 30ms 폴링: 실측 구역 클릭→좌석 렌더 ~300ms. 30ms면 1~2 iteration 내 감지.
             await Task.Delay(30, cancellationToken);
@@ -2345,9 +2403,12 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         return (xs.Min(), ys.Min(), xs.Max() - xs.Min(), ys.Max() - ys.Min());
     }
 
-    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, string? requiredFill, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
+        // requiredFill이 지정되면 해당 fill 색의 좌석만 후보로 삼아 "사용자가 선택한 구역"에 속한 좌석만 클릭한다.
+        // NEW URL 좌석맵은 선택 안 한 다른 구역 좌석도 disabled 없이 렌더링하므로 fill 필터가 없으면 엉뚱한 구역 좌석을 선택한다(실측 확인).
+        var normalizedFill = requiredFill?.ToLowerInvariant() ?? string.Empty;
         for (var retry = 0; retry < maxRetries; retry++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2357,6 +2418,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var scanScript = @"(args) => {
                     const circles = document.querySelectorAll('__SEAT_SELECTOR__');
                     const excluded = args.excluded || [];
+                    const requiredFill = (args.requiredFill || '').toLowerCase();
                     const seats = [];
                     let i = 0;
                     for (const c of circles) {
@@ -2369,6 +2431,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                         const display = style.display || '';
                         const radius = parseFloat(c.getAttribute('r') || '0');
                         if (pointerEvents === 'none' || opacity <= 0 || visibility === 'hidden' || display === 'none' || radius <= 0) { i++; continue; }
+                        if (requiredFill && (c.getAttribute('fill') || '').toLowerCase() !== requiredFill) { i++; continue; }
                         const cx = parseFloat(c.getAttribute('cx') || '0');
                         const cy = parseFloat(c.getAttribute('cy') || '0');
                         const seatId = cx.toFixed(1) + ',' + cy.toFixed(1);
@@ -2381,7 +2444,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     const t = seats[0];
                     return JSON.stringify({ s: 'candidate', c: seats.length, id: t.id, idx: t.idx, cx: t.cx, cy: t.cy });
                 }".Replace("__SEAT_SELECTOR__", NolOnestopSeatCircleSelector.Replace("'", "\\'"));
-                var scanResult = await page.EvaluateAsync<string>(scanScript, new { excluded = excludedArray });
+                var scanResult = await page.EvaluateAsync<string>(scanScript, new { excluded = excludedArray, requiredFill = normalizedFill });
 
                 using var doc = JsonDocument.Parse(scanResult);
                 var status = doc.RootElement.GetProperty("s").GetString();
