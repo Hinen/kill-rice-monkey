@@ -2769,45 +2769,55 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (status == "clicked")
                 {
                     var seatId = doc.RootElement.GetProperty("id").GetString()!;
-                    await Task.Delay(200, cancellationToken);
+                    await Task.Delay(150, cancellationToken);
 
-                    // 좌석 선택 확인: 선택된 좌석 정보가 나타났는지 검증
+                    // 좌석 선택 확인: poticket DOM은 공연/플레이스별로 selector 구조가 다르므로
+                    // 포괄적 selector 집합 + SelectSeat span 자체의 상태 클래스까지 종합 검사한다.
                     var selectionConfirmed = await PlaywrightRuntime.TryWaitForConditionAsync(
                         async () =>
                         {
                             try
                             {
-                                var selectedCount = await workFrame.EvaluateAsync<int>(@"() => {
-                                    var selected = document.querySelectorAll('#SelectedSeat li, .selected_seat li, [id*=""selSeat""] li');
-                                    return selected.length;
+                                return await workFrame.EvaluateAsync<bool>(@"() => {
+                                    // 1) 선택된 좌석 영역 (다양한 selector 커버)
+                                    const listSel = [
+                                        '#SelectedSeat li',
+                                        '#divSelectedSeat li',
+                                        '#divSelSeat li',
+                                        '#divSelSeatDetail li',
+                                        '[id*=""SelectedSeat""] li',
+                                        '[id*=""selSeat"" i] li',
+                                        '.selected_seat li'
+                                    ].join(',');
+                                    const listCount = document.querySelectorAll(listSel).length;
+                                    if (listCount > 0) return true;
+
+                                    // 2) SelectSeat span 자체의 선택 상태 클래스
+                                    const stateSel = 'span[onclick*=""SelectSeat""].on, span[onclick*=""SelectSeat""].selected, span[onclick*=""SelectSeat""].active, span[onclick*=""SelectSeat""][class*=""selected""]';
+                                    if (document.querySelectorAll(stateSel).length > 0) return true;
+
+                                    // 3) 선택 개수 표시 input/label 등
+                                    const cntEl = document.querySelector('#iSeatCnt, #txtSeatCnt, [id*=""SeatCnt""]');
+                                    if (cntEl) {
+                                        const v = parseInt((cntEl.value || cntEl.innerText || '0').replace(/\D/g, ''), 10);
+                                        if (!isNaN(v) && v > 0) return true;
+                                    }
+                                    return false;
                                 }");
-                                return selectedCount > 0;
                             }
-                            catch { return true; } // 에러 시 통과로 간주
+                            catch { return false; }
                         },
-                        TimeSpan.FromMilliseconds(500), cancellationToken);
+                        TimeSpan.FromMilliseconds(600), cancellationToken);
 
+                    // selector가 실제 DOM과 다를 수 있으므로 미확인 상태여도 완료 단계로 진행한다.
+                    // 진짜 실패였다면 ClickNolLegacySeatCompleteAsync가 페이지 이동을 감지 못해 예외를 던지고
+                    // 상위 재시도 루프에서 다른 좌석을 시도한다. 1회 실행당 좌석은 반드시 1개만 클릭한다.
                     if (selectionConfirmed)
-                    {
                         _logger.LogInformation("[LegacySeat] 좌석 클릭+선택 확인 완료. count={Count}, seatId={SeatId}", count, seatId);
-                        return;
-                    }
+                    else
+                        _logger.LogInformation("[LegacySeat] 좌석 클릭 완료(선택 확인 미매칭) — 완료 단계로 진행. seatId={SeatId}", seatId);
 
-                    // 선택 미확인 — 중복 추정, 제외 후 일시정지
-                    excludedSeats.Add(seatId);
-                    _logger.LogWarning("[LegacySeat] 좌석 선택 미반영 (중복 추정). seatId={SeatId}, retry={Retry}, excludedCount={ExcludedCount}",
-                        seatId, retry, excludedSeats.Count);
-
-                    if (pauseGate is not null)
-                    {
-                        pauseGate.Reset();
-                        _logger.LogInformation("[NOL] 중복 좌석 감지 후 일시정지 — 사용자 재개 대기 중. excluded={SeatId}", seatId);
-                        progress?.Report(new AutomationProgress("중복 감지 — 일시정지", $"중복 좌석 감지됨 ({seatId}). 재개 버튼을 눌러주세요."));
-                        await Task.Run(() => pauseGate.Wait(cancellationToken), cancellationToken);
-                        _logger.LogInformation("[NOL] 중복 감지 일시정지 해제 — 다른 좌석 선택 진행.");
-                        progress?.Report(new AutomationProgress("좌석 재선택 중", "일시정지 해제 — 다른 좌석 선택 진행"));
-                    }
-                    continue;
+                    return;
                 }
             }
             catch (PlaywrightException ex)
@@ -2823,6 +2833,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     {
         await Task.Delay(100, cancellationToken);
 
+        var startUrl = seatFrame.Url;
+        var clickedMethod = string.Empty;
+
         try
         {
             var result = await seatFrame.EvaluateAsync<bool>(@"() => {
@@ -2830,31 +2843,78 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 return false;
             }");
             if (result)
-            {
-                _logger.LogInformation("[LegacySeat] fnSelect() 호출 완료 (좌석선택완료).");
-                return;
-            }
+                clickedMethod = "fnSelect";
         }
         catch (PlaywrightException) { }
 
-        try
+        if (string.IsNullOrEmpty(clickedMethod))
         {
-            var clicked = await seatFrame.EvaluateAsync<bool>(@"() => {
-                var img = document.querySelector('#NextStepImage');
-                if (img && img.parentElement) { img.parentElement.click(); return true; }
-                var links = document.querySelectorAll('a[href*=""fnSelect""]');
-                for (var l of links) { l.click(); return true; }
-                return false;
-            }");
-            if (clicked)
+            try
             {
-                _logger.LogInformation("[LegacySeat] NextStepImage 클릭 완료 (좌석선택완료).");
-                return;
+                var clicked = await seatFrame.EvaluateAsync<bool>(@"() => {
+                    var img = document.querySelector('#NextStepImage');
+                    if (img && img.parentElement) { img.parentElement.click(); return true; }
+                    var links = document.querySelectorAll('a[href*=""fnSelect""]');
+                    for (var l of links) { l.click(); return true; }
+                    var btns = document.querySelectorAll('a[onclick*=""fnSelect""], button[onclick*=""fnSelect""], input[onclick*=""fnSelect""]');
+                    for (var b of btns) { b.click(); return true; }
+                    return false;
+                }");
+                if (clicked)
+                    clickedMethod = "NextStepImage/link";
             }
+            catch (PlaywrightException) { }
         }
-        catch (PlaywrightException) { }
 
-        _logger.LogWarning("[LegacySeat] 좌석 선택 완료 방법을 찾지 못함 — 진행 시도.");
+        if (string.IsNullOrEmpty(clickedMethod))
+            throw new InvalidOperationException("레거시 '좌석 선택 완료' 트리거를 찾지 못함 (fnSelect/NextStepImage/링크 모두 실패).");
+
+        // 좌석 선택 완료가 실제로 처리되었는지 페이지(iframe) 전환으로 확인.
+        // 구체적으로: ifrmSeat URL이 loading.html 또는 다른 단계로 바뀌거나,
+        // 부모 페이지의 다른 단계 iframe(ifrmBookCertify/ifrmBookEnd 등)이 유효한 URL로 바뀜.
+        var transitioned = await WaitForNolLegacyCompleteTransitionAsync(seatFrame, startUrl, TimeSpan.FromMilliseconds(3500), cancellationToken);
+        if (!transitioned)
+        {
+            throw new InvalidOperationException($"레거시 '좌석 선택 완료' 클릭({clickedMethod}) 후 페이지 전환이 감지되지 않음 — 좌석 선택이 반영되지 않았을 가능성이 높음.");
+        }
+
+        _logger.LogInformation("[LegacySeat] 좌석 선택 완료({Method}) — 페이지 전환 확인.", clickedMethod);
+    }
+
+    private static async Task<bool> WaitForNolLegacyCompleteTransitionAsync(IFrame seatFrame, string startUrl, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var currentUrl = seatFrame.Url;
+                if (!string.Equals(currentUrl, startUrl, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // seatFrame URL은 그대로여도 다른 단계 iframe들이 유효한 URL로 전환됐는지 확인
+                var page = seatFrame.Page;
+                foreach (var f in page.Frames)
+                {
+                    if (f == seatFrame || f == page.MainFrame) continue;
+                    var url = f.Url ?? string.Empty;
+                    // BookCertify.asp, BookEnd.asp, Payment 등 다음 단계 URL 등장 시 전환으로 간주
+                    if (url.Contains("BookCertify", StringComparison.OrdinalIgnoreCase) &&
+                        !url.Contains("loading", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                    if (url.Contains("BookEnd", StringComparison.OrdinalIgnoreCase) &&
+                        !url.Contains("loading", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                    if (url.Contains("Payment", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+            catch (PlaywrightException) { }
+
+            await Task.Delay(80, cancellationToken);
+        }
+        return false;
     }
 
     private static string StripUrlFragment(string url)
