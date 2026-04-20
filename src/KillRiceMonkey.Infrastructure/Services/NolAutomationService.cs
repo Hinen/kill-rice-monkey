@@ -2992,66 +2992,128 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         catch (PlaywrightException) { }
 
         var beforeUrl = page.Url;
+        var beforePageCount = page.Context.Pages.Count;
 
-        // Playwright ClickAsync는 CDP Input.dispatchMouseEvent 기반 trusted click을 생성한다.
-        // Timeout 1500ms: 일반 버튼 클릭은 100~300ms 내 완료. 1.5초면 로딩 상태도 대응.
+        // Browser alert/confirm/prompt가 떠도 Playwright가 block되지 않도록 자동 accept 핸들러 등록.
+        // NOL이 '선택 완료' 후 "결제 페이지로 이동하시겠습니까?" 같은 window.confirm을 띄우는 경우가 있어
+        // 등록 없이는 자동화가 대기 상태로 멈춘다(=종료 처리 안 됨의 한 원인).
+        void OnDialog(object? _, IDialog dialog)
+        {
+            try
+            {
+                _logger.LogInformation("[OnestopSeat] Dialog 자동 accept: type={Type}, message={Msg}",
+                    dialog.Type, (dialog.Message ?? string.Empty).Substring(0, Math.Min(120, dialog.Message?.Length ?? 0)));
+                _ = dialog.AcceptAsync();
+            }
+            catch { }
+        }
+        page.Dialog += OnDialog;
+
         try
         {
-            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
-        }
-        catch (PlaywrightException ex)
-        {
-            _logger.LogWarning(ex, "[OnestopSeat] '선택 완료' ClickAsync(Force) 실패 — ClickAsync(일반) 재시도.");
-            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 1500 });
-        }
-        _logger.LogInformation("[OnestopSeat] '선택 완료' 버튼 Playwright trusted click 수행.");
+            // Playwright ClickAsync는 CDP Input.dispatchMouseEvent 기반 trusted click을 생성한다.
+            try
+            {
+                await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
+            }
+            catch (PlaywrightException ex)
+            {
+                _logger.LogWarning(ex, "[OnestopSeat] '선택 완료' ClickAsync(Force) 실패 — ClickAsync(일반) 재시도.");
+                await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 1500 });
+            }
+            _logger.LogInformation("[OnestopSeat] '선택 완료' 버튼 Playwright trusted click 수행.");
 
-        if (await IsOnestopSeatCompleteConfirmedAsync(page, completeBtn, beforeUrl, cancellationToken))
-        {
-            _logger.LogInformation("[OnestopSeat] '선택 완료' 클릭 확인됨 (페이지 전환 또는 좌석 페이지 이탈).");
-            return;
-        }
+            // NOL이 '선택 완료' 이후 커스텀 확인 모달(ModalConfirm_outerWrap)을 띄우는 케이스가 있다.
+            // Dialog(브라우저 alert)와 별개 DOM 모달이므로 별도 dismiss 필요.
+            // 최대 3회 반복해 연쇄 모달(확인 → 주의 → …)도 커버한다.
+            await DismissNolConfirmModalLoopAsync(page, maxAttempts: 3, cancellationToken);
 
-        _logger.LogWarning("[OnestopSeat] '선택 완료' 첫 클릭 미반영 — 재시도.");
-        try
-        {
-            await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 1500 });
-        }
-        catch (PlaywrightException)
-        {
-            await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
-        }
+            if (await IsOnestopSeatCompleteConfirmedAsync(page, completeBtn, beforeUrl, beforePageCount, cancellationToken))
+            {
+                _logger.LogInformation("[OnestopSeat] '선택 완료' 클릭 확인됨 (페이지 전환 또는 좌석 페이지 이탈).");
+                return;
+            }
 
-        if (await IsOnestopSeatCompleteConfirmedAsync(page, completeBtn, beforeUrl, cancellationToken))
-        {
-            _logger.LogInformation("[OnestopSeat] '선택 완료' 재시도 클릭 확인됨.");
-            return;
-        }
+            _logger.LogWarning("[OnestopSeat] '선택 완료' 첫 클릭 미반영 — 재시도.");
+            try
+            {
+                await completeBtn.ClickAsync(new LocatorClickOptions { Timeout = 1500 });
+            }
+            catch (PlaywrightException)
+            {
+                await completeBtn.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 1500 });
+            }
 
-        throw new InvalidOperationException("NOL '선택 완료' 버튼 클릭 후 페이지 전환이 확인되지 않았습니다. 좌석 선택은 완료되었으나 '선택 완료' 처리가 실패했습니다.");
+            await DismissNolConfirmModalLoopAsync(page, maxAttempts: 3, cancellationToken);
+
+            if (await IsOnestopSeatCompleteConfirmedAsync(page, completeBtn, beforeUrl, beforePageCount, cancellationToken))
+            {
+                _logger.LogInformation("[OnestopSeat] '선택 완료' 재시도 클릭 확인됨.");
+                return;
+            }
+
+            throw new InvalidOperationException("NOL '선택 완료' 버튼 클릭 후 페이지 전환이 확인되지 않았습니다. 좌석 선택은 완료되었으나 '선택 완료' 처리가 실패했습니다.");
+        }
+        finally
+        {
+            page.Dialog -= OnDialog;
+        }
     }
 
-    private static async Task<bool> IsOnestopSeatCompleteConfirmedAsync(IPage page, ILocator completeBtn, string beforeUrl, CancellationToken cancellationToken)
+    // 선택 완료 직후 연쇄로 뜨는 ModalConfirm/alertdialog DOM을 감지해 확인 버튼을 자동 클릭한다.
+    // 매 iteration 간 약간의 대기로 React 모달 mount/unmount 타이밍을 흡수한다.
+    private async Task DismissNolConfirmModalLoopAsync(IPage page, int maxAttempts, CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < maxAttempts; i++)
+        {
+            await Task.Delay(120, cancellationToken);
+            var dismissed = await DismissNolSeatConfirmModalAsync(page);
+            if (!dismissed) break;
+            _logger.LogInformation("[OnestopSeat] 선택완료 후 확인 모달 dismiss (attempt {N}).", i + 1);
+        }
+    }
+
+    private static async Task<bool> IsOnestopSeatCompleteConfirmedAsync(IPage page, ILocator completeBtn, string beforeUrl, int beforePageCount, CancellationToken cancellationToken)
     {
         return await PlaywrightRuntime.TryWaitForConditionAsync(
             async () =>
             {
                 if (page.IsClosed) return true;
 
+                // 1) 현재 페이지 URL이 좌석 단계를 벗어났는지 (정상 전환)
                 var currentUrl = page.Url;
                 if (!string.Equals(currentUrl, beforeUrl, StringComparison.OrdinalIgnoreCase) &&
                     !currentUrl.Contains("/onestop/seat", StringComparison.OrdinalIgnoreCase))
                     return true;
 
+                // 2) 결제/예매 단계로 보이는 URL 패턴(fragment 포함)이면 전환됨
+                if (currentUrl.Contains("/onestop/payment", StringComparison.OrdinalIgnoreCase) ||
+                    currentUrl.Contains("/onestop/delivery", StringComparison.OrdinalIgnoreCase) ||
+                    currentUrl.Contains("/onestop/checkout", StringComparison.OrdinalIgnoreCase) ||
+                    currentUrl.Contains("/pay", StringComparison.OrdinalIgnoreCase) ||
+                    currentUrl.Contains("/order", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // 3) 새 페이지(팝업)가 열렸으면 결제 창일 가능성이 높음
                 try
                 {
+                    if (page.Context.Pages.Count > beforePageCount)
+                        return true;
+                }
+                catch (PlaywrightException) { }
+
+                try
+                {
+                    // 4) 좌석맵 사라짐
                     if (await page.Locator(NolOnestopSeatMapSelector).CountAsync() == 0 &&
                         await page.Locator(NolOnestopSeatCircleSelector).CountAsync() == 0)
                         return true;
 
-                    if (await page.Locator("[class*='BookingProgress'], [class*='bookingProgress'], [class*='Payment'], [class*='payment'], [class*='Delivery'], [class*='delivery']").CountAsync() > 0)
+                    // 5) 다음 단계 UI 요소 등장
+                    if (await page.Locator("[class*='BookingProgress'], [class*='bookingProgress'], [class*='Payment'], [class*='payment'], [class*='Delivery'], [class*='delivery'], [class*='Checkout'], [class*='checkout'], [class*='PaymentMethod']").CountAsync() > 0)
                         return true;
 
+                    // 6) '선택 완료' 버튼 자체가 DOM에서 사라지거나 hidden 처리
                     if (await completeBtn.CountAsync() == 0)
                         return true;
                 }
@@ -3062,10 +3124,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 return false;
             },
-            // 3500ms: 실측상 정상 전환은 300~500ms지만 서버/네트워크 variance가 커서
-            // 2500ms로는 timeout 후 재시도가 자주 발생(실측 2회차 2886ms). 재시도 1회 오버헤드(~3000ms)가
-            // timeout 1000ms 추가보다 훨씬 크므로 3500ms로 상향해 재시도를 방지.
-            TimeSpan.FromMilliseconds(3500), cancellationToken);
+            // 5000ms: 네트워크 variance + 서버 응답 포함. 이전 3500ms에서 간헐 실패 제보 대응.
+            // 재시도 1회 오버헤드(~3000ms)가 timeout 1500ms 증가보다 크므로 5000ms 유지가 경제적.
+            TimeSpan.FromMilliseconds(5000), cancellationToken);
     }
 
     private async Task SelectNolLegacySeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, string? desiredBlock, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
