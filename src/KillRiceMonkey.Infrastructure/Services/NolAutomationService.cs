@@ -1903,14 +1903,16 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         _logger.LogInformation("[OnestopSeat] 구역 선택 필요={Required}. checkMs={Ms}", zoneRequired, stepSw.ElapsedMilliseconds);
 
         NolZoneSvgCandidate? selectedZone = null;
+        IReadOnlyList<NolZoneSvgCandidate>? allZones = null;
         if (zoneRequired)
         {
             stepSw.Restart();
             progress?.Report(new AutomationProgress("구역 선택 중", "구역 자동 선택 시도 중"));
-            selectedZone = await EnsureNolOnestopZoneSelectedAsync(page, desiredBlock, progress, cancellationToken);
-            _logger.LogInformation("[OnestopSeat] 구역 선택 완료. fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1}), waitMs={Ms}",
+            (selectedZone, allZones) = await EnsureNolOnestopZoneSelectedAsync(page, desiredBlock, progress, cancellationToken);
+            _logger.LogInformation("[OnestopSeat] 구역 선택 완료. fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1}), allZones={AllCount}, waitMs={Ms}",
                 selectedZone?.Fill ?? "<unknown>",
                 selectedZone?.X ?? double.NaN, selectedZone?.Y ?? double.NaN, selectedZone?.Width ?? double.NaN, selectedZone?.Height ?? double.NaN,
+                allZones?.Count ?? 0,
                 stepSw.ElapsedMilliseconds);
         }
         var selectedZoneFill = selectedZone?.Fill.ToLowerInvariant();
@@ -1925,9 +1927,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         // selectedZone이 지정되면 해당 구역의 fill(색) + bounds(좌표 범위) 둘 다로 좌석을 제한한다.
         // NEW URL의 좌석맵은 선택하지 않은 다른 구역의 좌석도 disabled 없이 렌더링되며,
         // 같은 fill(예: 주황)의 여러 지정석 구역(A/B/G/H ...)이 모두 함께 활성화된다.
-        // 따라서 fill만으로는 "주황 G석 클릭→주황 H석 선택" 버그를 막을 수 없고,
-        // SVG 구역 bounding box 내에 있는 좌석만 후보로 삼아야 정확하다(좌석 cx/cy는 SVG viewBox 좌표).
-        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, selectedZone, pauseGate, progress, cancellationToken);
+        // 추가로 큰 구역(G/H) bounds 안에 작은 구역(A1/A2/A3)이 물리적으로 포함되어 단순 bounds 검사로는
+        // 큰 구역을 선택해도 작은 구역 좌석이 후보에 남는다. "exclusive zone membership"(좌석을
+        // 포함하는 모든 candidate 중 가장 작은 bbox가 selectedZone인 경우에만 후보 허용)으로 완전 해결.
+        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, selectedZone, allZones, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료. seatId={SeatId}, selectMs={Ms}", selectedSeatId, stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
@@ -1976,11 +1979,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private sealed record NolOnestopZoneCandidate(string Key, double ClientX, double ClientY, string Fill, double Area);
 
-    private async Task<NolZoneSvgCandidate?> EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<(NolZoneSvgCandidate? Selected, IReadOnlyList<NolZoneSvgCandidate>? AllCandidates)> EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
-        // 반환값: 선택된 구역의 SVG 후보(fill + bounds). 좌석 선택 시 해당 구역 bounds 내 좌석만 후보로 삼아
-        // 같은 fill 여러 구역(주황 A/B/G/H 등)에서 엉뚱한 구역 좌석을 고르는 버그를 차단한다.
-        // null 반환 시에는 좌석 필터가 비어 dominant fill fallback 또는 미제한으로 진행.
+        // 반환값: (선택된 구역 candidate, SVG 전체 후보 목록).
+        // AllCandidates가 있으면 SelectNolOnestopSeatAsync가 "exclusive zone membership" 필터를 적용해
+        // 큰 구역(G/H) 안에 포함된 작은 구역(A1/A2/A3) 좌석이 큰 구역 후보에 섞이는 버그를 차단할 수 있다.
         //
         // DesiredBlock이 비어 있으면 구역 자동 선택을 건너뛰고 사용자가 수동으로 구역을 클릭할 때까지 대기한다.
         // 좌석(SeatMap_seatGroup)에 활성 circle이 충분히 로드되면 사용자 선택 완료로 간주.
@@ -2000,22 +2003,22 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var available = await CountAvailableNolOnestopSeatsAsync(page, null);
                 if (available >= 10)
                 {
-                    // 1) 사용자 클릭 좌표를 이용해 SVG 후보 중 포함되는 구역 찾기 → 후보 통째로 반환.
-                    //    fill만으로는 같은 색 여러 구역을 구분 못하므로 bounds 까지 가진 후보가 필요.
-                    var preciseCand = await ResolveUserClickZoneCandidateAsync(page);
+                    // 1) 사용자 클릭 좌표를 이용해 SVG 후보 중 포함되는 구역 찾기 → 후보 + 전체 목록 반환.
+                    var (preciseCand, allCands) = await ResolveUserClickZoneCandidateWithAllAsync(page);
                     if (preciseCand is not null)
                     {
-                        _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드, 클릭→fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1}).",
-                            available, preciseCand.Fill, preciseCand.X, preciseCand.Y, preciseCand.Width, preciseCand.Height);
-                        return preciseCand;
+                        _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드, 클릭→fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1}), allZones={AllCount}.",
+                            available, preciseCand.Fill, preciseCand.X, preciseCand.Y, preciseCand.Width, preciseCand.Height, allCands?.Count ?? 0);
+                        return (preciseCand, allCands);
                     }
 
                     // 2) fallback: dominant fill 만 사용(bounds 없이 fill 필터만). 정확도 하락 경고.
                     var dominantFill = await DetectDominantActiveSeatFillAsync(page);
                     _logger.LogWarning("[OnestopSeat] 사용자 클릭 좌표 매칭 실패 — dominant fill fallback={Fill}, 좌석 {Count}개. fill 필터만 적용(bounds 미지정).", dominantFill ?? "<none>", available);
-                    return dominantFill is null
+                    var fallback = dominantFill is null
                         ? null
                         : new NolZoneSvgCandidate(Key: "<fill-only>", Fill: dominantFill, Area: 0, X: double.NaN, Y: double.NaN, Width: double.NaN, Height: double.NaN, ViewWidth: 0, ViewHeight: 0);
+                    return (fallback, null);
                 }
 
                 // 25ms 폴링: 사람 반응속도(~150ms) 대비 6배 빠르게 감지. CPU 부담 미미.
@@ -2031,6 +2034,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         const int MaxClearCount = 3;
         NolOnestopZoneCandidate? lastClicked = null;
         NolZoneSvgCandidate? lastSvgCandidate = null;
+        IReadOnlyList<NolZoneSvgCandidate>? lastAllCandidates = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -2041,10 +2045,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 if (available >= 10)
                 {
                     _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지(fill={Fill}).", available, lastClicked?.Fill ?? "<any>");
-                    return lastSvgCandidate;
+                    return (lastSvgCandidate, lastAllCandidates);
                 }
 
-                var (zoneCandidate, svgCandidate) = await TryFindNolOnestopZoneCandidatePairAsync(page, desiredBlock, attemptedZones);
+                var (zoneCandidate, svgCandidate, allCandidates) = await TryFindNolOnestopZoneCandidateTripleAsync(page, desiredBlock, attemptedZones);
                 if (zoneCandidate is not null)
                 {
                     attemptedZones.Add(zoneCandidate.Key);
@@ -2062,16 +2066,18 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     await page.Mouse.UpAsync();
                     lastClicked = zoneCandidate;
                     lastSvgCandidate = svgCandidate;
+                    lastAllCandidates = allCandidates;
                     _logger.LogInformation("[OnestopSeat] 구역 후보 클릭 — key={Key}, fill={Fill}, area={Area:F0}, x={X:F1}, y={Y:F1}",
                         zoneCandidate.Key, zoneCandidate.Fill, zoneCandidate.Area, zoneCandidate.ClientX, zoneCandidate.ClientY);
 
                     var loaded = await WaitForNolOnestopSeatsLoadedAsync(page, zoneCandidate.Fill.ToLowerInvariant(), TimeSpan.FromMilliseconds(1500), cancellationToken);
                     if (loaded)
                     {
-                        _logger.LogInformation("[OnestopSeat] 구역 클릭 후 좌석 로드 확인(fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1})).",
+                        _logger.LogInformation("[OnestopSeat] 구역 클릭 후 좌석 로드 확인(fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1}), allZones={AllCount}).",
                             zoneCandidate.Fill,
-                            svgCandidate?.X ?? double.NaN, svgCandidate?.Y ?? double.NaN, svgCandidate?.Width ?? double.NaN, svgCandidate?.Height ?? double.NaN);
-                        return svgCandidate;
+                            svgCandidate?.X ?? double.NaN, svgCandidate?.Y ?? double.NaN, svgCandidate?.Width ?? double.NaN, svgCandidate?.Height ?? double.NaN,
+                            allCandidates?.Count ?? 0);
+                        return (svgCandidate, allCandidates);
                     }
                     continue;
                 }
@@ -2099,6 +2105,65 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
 
         throw new TimeoutException("NOL 구역 자동 선택 시간 초과 (15초).");
+    }
+
+    // ResolveUserClickZoneCandidateAsync의 확장판: candidate + 전체 목록 함께 반환.
+    private async Task<(NolZoneSvgCandidate? Selected, IReadOnlyList<NolZoneSvgCandidate>? All)> ResolveUserClickZoneCandidateWithAllAsync(IPage page)
+    {
+        try
+        {
+            var clickJson = await page.EvaluateAsync<string?>(@"() => {
+                const c = window.__nolUserClick;
+                return c ? JSON.stringify(c) : null;
+            }");
+            if (string.IsNullOrEmpty(clickJson))
+                return (null, null);
+
+            using var doc = JsonDocument.Parse(clickJson);
+            var root = doc.RootElement;
+            var clickX = root.GetProperty("x").GetDouble();
+            var clickY = root.GetProperty("y").GetDouble();
+            var imgLeft = root.GetProperty("imgLeft").GetDouble();
+            var imgTop = root.GetProperty("imgTop").GetDouble();
+            var imgW = root.GetProperty("imgW").GetDouble();
+            var imgH = root.GetProperty("imgH").GetDouble();
+            var svgSrc = root.GetProperty("svgSrc").GetString();
+
+            if (imgW <= 0 || imgH <= 0 || string.IsNullOrEmpty(svgSrc))
+                return (null, null);
+
+            var svgText = await _httpClient.GetStringAsync(svgSrc);
+            var all = BuildNolOnestopZoneCandidatesFromSvg(svgText).ToList();
+            if (all.Count == 0)
+                return (null, null);
+
+            var vw = all[0].ViewWidth;
+            var vh = all[0].ViewHeight;
+            if (vw <= 0 || vh <= 0)
+                return (null, null);
+
+            var svgX = (clickX - imgLeft) / imgW * vw;
+            var svgY = (clickY - imgTop) / imgH * vh;
+
+            var containing = all
+                .Where(c => c.ContainsSvgPoint(svgX, svgY))
+                .OrderBy(c => (c.CenterX - svgX) * (c.CenterX - svgX) + (c.CenterY - svgY) * (c.CenterY - svgY))
+                .ToList();
+            if (containing.Count > 0)
+                return (containing[0], all);
+
+            var tolerance = Math.Max(vw, vh) * 0.02;
+            var nearby = all
+                .Where(c => c.ContainsSvgPoint(svgX, svgY, tolerance))
+                .OrderBy(c => (c.CenterX - svgX) * (c.CenterX - svgX) + (c.CenterY - svgY) * (c.CenterY - svgY))
+                .FirstOrDefault();
+            return (nearby, all);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or HttpRequestException or TaskCanceledException or JsonException or XmlException)
+        {
+            _logger.LogDebug(ex, "[OnestopSeat] 사용자 클릭→후보+all 해석 실패.");
+            return (null, null);
+        }
     }
 
     // 수동 모드에서 구역 선택 대기 진입 시 호출한다. document 레벨 mousedown 리스너를
@@ -2183,16 +2248,28 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             var svgX = (clickX - imgLeft) / imgW * vw;
             var svgY = (clickY - imgTop) / imgH * vh;
 
-            // 1차: 포함하는 후보 (가장 작은 bbox 우선 — 중첩된 경우 가장 구체적인 블록)
+            // 매칭: bounds가 겹치는 경우(중첩 구역)가 많으므로 단순 area 우선은 오판한다.
+            // 실측(초록 스탠딩 A idx10 bounds vs 파랑 idx14 bounds가 클릭점에 모두 걸림 → area 작은 파랑이 선택되는 버그).
+            // 정확한 판정을 위해 (1) 포함하는 후보 중 center 거리가 가장 짧은 것을 우선한다.
             var containing = candidates
                 .Where(c => c.ContainsSvgPoint(svgX, svgY))
-                .OrderBy(c => c.Area)
-                .FirstOrDefault();
-            if (containing is not null)
+                .OrderBy(c => (c.CenterX - svgX) * (c.CenterX - svgX) + (c.CenterY - svgY) * (c.CenterY - svgY))
+                .ToList();
+            if (containing.Count > 0)
             {
-                _logger.LogDebug("[OnestopSeat] 클릭 좌표({CX:F1},{CY:F1})→SVG({SX:F1},{SY:F1}) 매칭 후보 fill={Fill}, key={Key}.",
-                    clickX, clickY, svgX, svgY, containing.Fill, containing.Key);
-                return containing;
+                var best = containing[0];
+                if (containing.Count > 1)
+                {
+                    // 중첩된 경우 디버깅용 top-3 기록
+                    var top = containing.Take(3).Select(c => $"{c.Fill}@({c.CenterX:F0},{c.CenterY:F0},area={c.Area:F0})").ToArray();
+                    _logger.LogInformation("[OnestopSeat] 클릭({CX:F0},{CY:F0})→SVG({SX:F0},{SY:F0}) 중첩 {Count}개 후보. 최근접 선택: {Top}",
+                        clickX, clickY, svgX, svgY, containing.Count, string.Join(" | ", top));
+                }
+                else
+                {
+                    _logger.LogDebug("[OnestopSeat] 클릭→SVG({SX:F1},{SY:F1}) 단독 매칭 fill={Fill}, key={Key}.", svgX, svgY, best.Fill, best.Key);
+                }
+                return best;
             }
 
             // 2차: 근처 후보 (오차 허용) — 영역 경계 바로 밖이면 viewBox 크기의 2% 허용
@@ -2366,9 +2443,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         return false;
     }
 
-    // 화면 좌표(ClientX/Y, fill/area)와 SVG 좌표(bounds 포함)를 pair로 반환하여
-    // 좌석 선택 시 bounds로 소속 좌석을 필터할 수 있도록 한다.
-    private async Task<(NolOnestopZoneCandidate? Zone, NolZoneSvgCandidate? Svg)> TryFindNolOnestopZoneCandidatePairAsync(IPage page, string? desiredBlock, HashSet<string> attemptedZones)
+    // 화면 좌표(ClientX/Y, fill/area) + SVG 좌표(bounds) + 모든 후보 목록을 함께 반환.
+    // 좌석 선택에서 'exclusive zone membership'(좌석을 포함하는 가장 작은 bbox가 selected zone인지) 판정에 필요.
+    private async Task<(NolOnestopZoneCandidate? Zone, NolZoneSvgCandidate? Svg, IReadOnlyList<NolZoneSvgCandidate>? All)> TryFindNolOnestopZoneCandidateTripleAsync(IPage page, string? desiredBlock, HashSet<string> attemptedZones)
     {
         const string script = @"() => {
             const wrapper = document.querySelector('[class*=""SeatMap_blockImg_""]');
@@ -2395,12 +2472,12 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         {
             var imageInfo = await page.EvaluateAsync<JsonElement?>(script);
             if (imageInfo is null || imageInfo.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-                return (null, null);
+                return (null, null, null);
 
             var image = imageInfo.Value;
             var src = image.GetProperty("src").GetString();
             if (string.IsNullOrWhiteSpace(src))
-                return (null, null);
+                return (null, null, null);
 
             var left = image.GetProperty("left").GetDouble();
             var top = image.GetProperty("top").GetDouble();
@@ -2408,13 +2485,14 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             var height = image.GetProperty("height").GetDouble();
 
             var svgText = await _httpClient.GetStringAsync(src);
-            var ordered = BuildNolOnestopZoneCandidatesFromSvg(svgText)
+            var allCandidates = BuildNolOnestopZoneCandidatesFromSvg(svgText).ToList();
+            var ordered = allCandidates
                 .OrderBy(x => x.CenterY)
                 .ThenBy(x => x.CenterX)
                 .ToList();
 
             if (ordered.Count == 0)
-                return (null, null);
+                return (null, null, null);
 
             // DesiredBlock이 "1","2"…처럼 1-based 정수 문자열이면 해당 후보를 최우선 시도.
             // 실측 기준 SVG에는 블록 이름(A1,B2 등) 메타데이터가 없어 텍스트 매칭은 불가능하다.
@@ -2429,15 +2507,15 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var clientX = left + (cand.CenterX / cand.ViewWidth) * width;
                 var clientY = top + (cand.CenterY / cand.ViewHeight) * height;
                 var zone = new NolOnestopZoneCandidate(cand.Key, clientX, clientY, cand.Fill, cand.Area);
-                return (zone, cand);
+                return (zone, cand, allCandidates);
             }
 
-            return (null, null);
+            return (null, null, allCandidates);
         }
         catch (Exception ex) when (ex is PlaywrightException or HttpRequestException or TaskCanceledException or XmlException)
         {
             _logger.LogWarning(ex, "[OnestopSeat] 구역 후보 계산 실패");
-            return (null, null);
+            return (null, null, null);
         }
     }
 
@@ -2609,14 +2687,16 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         return (xs.Min(), ys.Min(), xs.Max() - xs.Min(), ys.Max() - ys.Min());
     }
 
-    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, NolZoneSvgCandidate? zoneCandidate, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, NolZoneSvgCandidate? zoneCandidate, IReadOnlyList<NolZoneSvgCandidate>? allZones, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
-        // zoneCandidate가 지정되면 해당 구역의 fill(색) + bounds(SVG 좌표 범위)로 좌석을 제한한다.
-        // NEW URL 좌석맵은 선택 안 한 다른 구역 좌석도 disabled 없이 렌더링하며, 같은 fill(예: 주황)의 여러 구역이 함께 활성화된다.
-        // 따라서 fill만으로는 "주황 G석 선택 → 주황 H석 클릭" 버그를 막을 수 없고,
-        // 좌석 cx/cy가 구역 bounding box 안에 있는지까지 검사해야 한다.
-        // zoneCandidate가 bounds를 모르는 fallback(dummy Key="<fill-only>", bounds NaN)이면 fill만 적용.
+        // 필터 단계(중요 순):
+        // 1) requiredFill: 선택된 구역의 fill과 일치하는 좌석만.
+        // 2) hasBounds + bounds 내부: 선택 구역 SVG bbox 안의 좌석만.
+        // 3) **exclusive zone membership**: 좌석 cx/cy를 포함하는 전체 후보 중 가장 작은 bbox가 selected zone인 경우에만.
+        //    큰 구역(G/H) bbox 내에 작은 구역(A1/A2/A3) bbox가 포함되는 NEW URL 좌석맵에서 작은 구역 좌석이
+        //    큰 구역 후보에 섞이는 버그(G 선택→A1 좌석 오클릭)를 차단.
+        // zoneCandidate가 bounds를 모르는 fallback(dummy "<fill-only>")이면 (1)만 적용.
         var normalizedFill = zoneCandidate?.Fill.ToLowerInvariant() ?? string.Empty;
         var hasBounds = zoneCandidate is not null
             && !double.IsNaN(zoneCandidate.X) && !double.IsNaN(zoneCandidate.Y)
@@ -2625,6 +2705,15 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         var boundsY = hasBounds ? zoneCandidate!.Y : double.NaN;
         var boundsW = hasBounds ? zoneCandidate!.Width : double.NaN;
         var boundsH = hasBounds ? zoneCandidate!.Height : double.NaN;
+        var selectedKey = hasBounds ? zoneCandidate!.Key : string.Empty;
+        // exclusive membership용 모든 후보 배열 (같은 fill만 전달해 JS 계산량 축소)
+        var zoneArray = hasBounds && allZones is not null
+            ? allZones
+                .Where(z => !string.IsNullOrEmpty(z.Fill) && z.Fill.Equals(zoneCandidate!.Fill, StringComparison.OrdinalIgnoreCase))
+                .Where(z => !double.IsNaN(z.X) && !double.IsNaN(z.Y) && z.Width > 0 && z.Height > 0)
+                .Select(z => new { key = z.Key, x = z.X, y = z.Y, w = z.Width, h = z.Height, area = z.Area })
+                .ToArray()
+            : Array.Empty<object>();
         for (var retry = 0; retry < maxRetries; retry++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2637,6 +2726,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     const requiredFill = (args.requiredFill || '').toLowerCase();
                     const hasBounds = !!args.hasBounds;
                     const bx = args.boundsX, by = args.boundsY, bw = args.boundsW, bh = args.boundsH;
+                    const selectedKey = args.selectedKey || '';
+                    const zones = args.zones || [];
                     const seats = [];
                     let i = 0;
                     for (const c of circles) {
@@ -2652,9 +2743,17 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                         if (requiredFill && (c.getAttribute('fill') || '').toLowerCase() !== requiredFill) { i++; continue; }
                         const cx = parseFloat(c.getAttribute('cx') || '0');
                         const cy = parseFloat(c.getAttribute('cy') || '0');
-                        // bounds 필터: 좌석 cx/cy가 구역 bounding box 내부인지 (SVG viewBox 좌표 동일).
-                        // NEW 좌석맵은 같은 fill(주황)의 여러 구역이 모두 활성화되므로 bounds로 구역 단위를 엄격히 제한.
                         if (hasBounds && (cx < bx || cx > bx + bw || cy < by || cy > by + bh)) { i++; continue; }
+                        // exclusive zone membership: 좌석을 포함하는 전체 동색 구역 중 가장 작은 bbox가 selected와 같은지.
+                        if (zones.length > 0 && selectedKey) {
+                            let bestKey = null; let bestArea = Infinity;
+                            for (const z of zones) {
+                                if (cx >= z.x && cx <= z.x + z.w && cy >= z.y && cy <= z.y + z.h) {
+                                    if (z.area < bestArea) { bestArea = z.area; bestKey = z.key; }
+                                }
+                            }
+                            if (bestKey !== selectedKey) { i++; continue; }
+                        }
                         const seatId = cx.toFixed(1) + ',' + cy.toFixed(1);
                         if (excluded.includes(seatId)) { i++; continue; }
                         seats.push({ cx: cx, cy: cy, idx: i, id: seatId });
@@ -2674,6 +2773,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     boundsY,
                     boundsW,
                     boundsH,
+                    selectedKey,
+                    zones = zoneArray,
                 });
 
                 using var doc = JsonDocument.Parse(scanResult);
