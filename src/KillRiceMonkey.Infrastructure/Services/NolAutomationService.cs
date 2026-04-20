@@ -1869,10 +1869,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
         stepSw.Restart();
         progress?.Report(new AutomationProgress("좌석 선택 중"));
-        // 구역 선택 직후 zoom이 확대되어 좌석 좌표가 viewport 밖으로 나갈 수 있으므로
-        // 좌석도 전체보기(줌 리셋)를 1회 수행해 안정적인 화면 상태에서 좌석을 탐색한다.
-        await TryResetNolSeatPlanZoomAsync(page, cancellationToken);
-        await Task.Delay(250, cancellationToken);
+        // NOTE: 구역 선택 직후 TryResetNolSeatPlanZoomAsync(좌석도 전체보기)를 호출하면
+        // 해당 버튼이 구역 선택 상태를 해제하고 구역 선택 화면으로 되돌려버려
+        // 사용자가 수동으로 선택한 구역이 무한 반복으로 해제되는 버그가 발생한다.
+        // 좌석 클릭은 아래 SelectNolOnestopSeatAsync에서 ScrollIntoViewIfNeededAsync +
+        // Locator.ClickAsync(force)로 Playwright가 자동 스크롤/대기를 처리하도록 한다.
         var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료. seatId={SeatId}, selectMs={Ms}", selectedSeatId, stepSw.ElapsedMilliseconds);
 
@@ -1973,9 +1974,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     var viewport = await GetNolViewportSizeAsync(page);
                     if (!IsViewportPoint(zoneCandidate.ClientX, zoneCandidate.ClientY, viewport))
                     {
-                        _logger.LogInformation("[OnestopSeat] 후보 좌표가 viewport 밖 — 줌 리셋 후 재시도. key={Key}, point=({X:F1},{Y:F1}), viewport=({VW},{VH})",
+                        // viewport 밖 후보는 건너뛴다. 기존엔 TryResetNolSeatPlanZoomAsync(좌석도 전체보기)로
+                        // 줌을 리셋했지만 같은 버튼이 구역 선택 자체를 해제시키는 부작용이 있어
+                        // 사용하지 않는다. attemptedZones에 이미 추가되었으므로 다음 후보로 진행.
+                        _logger.LogInformation("[OnestopSeat] 후보 좌표 viewport 밖 — 다음 후보로 진행. key={Key}, point=({X:F1},{Y:F1}), viewport=({VW},{VH})",
                             zoneCandidate.Key, zoneCandidate.ClientX, zoneCandidate.ClientY, viewport.width, viewport.height);
-                        await TryResetNolSeatPlanZoomAsync(page, cancellationToken);
                         continue;
                     }
 
@@ -2062,32 +2065,6 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         if (x < 0 || y < 0) return false;
         if (x > viewport.width || y > viewport.height) return false;
         return true;
-    }
-
-    private async Task TryResetNolSeatPlanZoomAsync(IPage page, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var resetBtn = page.Locator("button[class*='SeatPlan_zoomButtonRefresh']");
-            if (await resetBtn.CountAsync() > 0)
-            {
-                await resetBtn.First.ClickAsync(new LocatorClickOptions { Timeout = 800, Force = true });
-                _logger.LogDebug("[OnestopSeat] 좌석도 전체보기(줌 리셋) 클릭.");
-                await Task.Delay(250, cancellationToken);
-                return;
-            }
-        }
-        catch (PlaywrightException ex) { _logger.LogDebug(ex, "[OnestopSeat] 줌 리셋 버튼 클릭 실패."); }
-
-        try
-        {
-            await page.EvaluateAsync(@"() => {
-                const btn = document.querySelector('button[class*=""SeatPlan_zoomButtonRefresh""]');
-                if (btn) btn.click();
-            }");
-            await Task.Delay(250, cancellationToken);
-        }
-        catch (PlaywrightException) { }
     }
 
     private static async Task<bool> WaitForNolOnestopSeatsLoadedAsync(IPage page, TimeSpan timeout, CancellationToken cancellationToken)
@@ -2390,29 +2367,32 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var circleLocator = page.Locator(NolOnestopSeatCircleSelector).Nth(seatIndex);
                 try { await circleLocator.ScrollIntoViewIfNeededAsync(); } catch (PlaywrightException) { }
 
-                var box = await circleLocator.BoundingBoxAsync();
-                if (box is null || box.Width <= 0 || box.Height <= 0)
+                // Playwright의 ClickAsync는 auto-scroll + auto-wait + retry를 수행하므로
+                // viewport 밖 좌표에 대해 Mouse.MoveAsync로 클릭하는 것보다 견고하다.
+                // "좌석도 전체보기" 버튼(zoom reset)을 눌러 상태를 초기화하는 기존 방식은
+                // 구역 선택까지 해제시키는 부작용이 있어 사용하지 않는다.
+                try
                 {
-                    excludedSeats.Add(seatId);
-                    _logger.LogWarning("[OnestopSeat] 좌석 bounding box 조회 실패 — 제외 후 재시도. seatId={SeatId}", seatId);
-                    continue;
+                    await circleLocator.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
+                    _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(Locator). available={Count}, seatId={SeatId}, idx={Index}", count, seatId, seatIndex);
                 }
-
-                var seatX = (float)(box.X + (box.Width / 2));
-                var seatY = (float)(box.Y + (box.Height / 2));
-                var viewport = await GetNolViewportSizeAsync(page);
-                if (!IsViewportPoint(seatX, seatY, viewport))
+                catch (PlaywrightException ex)
                 {
-                    _logger.LogInformation("[OnestopSeat] 좌석 좌표가 viewport 밖 — 줌 리셋 후 재시도. seatId={SeatId}, point=({X:F1},{Y:F1}), viewport=({VW},{VH})",
-                        seatId, seatX, seatY, viewport.width, viewport.height);
-                    await TryResetNolSeatPlanZoomAsync(page, cancellationToken);
-                    await Task.Delay(200, cancellationToken);
-                    continue;
+                    // Fallback: bounding box 기반 마우스 클릭
+                    var box = await circleLocator.BoundingBoxAsync();
+                    if (box is null || box.Width <= 0 || box.Height <= 0)
+                    {
+                        excludedSeats.Add(seatId);
+                        _logger.LogWarning(ex, "[OnestopSeat] 좌석 클릭 실패 + bounding box 조회 실패 — 제외 후 재시도. seatId={SeatId}", seatId);
+                        continue;
+                    }
+                    var seatX = (float)(box.X + (box.Width / 2));
+                    var seatY = (float)(box.Y + (box.Height / 2));
+                    await page.Mouse.MoveAsync(seatX, seatY);
+                    await page.Mouse.DownAsync();
+                    await page.Mouse.UpAsync();
+                    _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료(Mouse fallback). available={Count}, seatId={SeatId}, idx={Index}, pt=({X:F1},{Y:F1})", count, seatId, seatIndex, seatX, seatY);
                 }
-                await page.Mouse.MoveAsync(seatX, seatY);
-                await page.Mouse.DownAsync();
-                await page.Mouse.UpAsync();
-                _logger.LogInformation("[OnestopSeat] 좌석 후보 실제 클릭 완료. available={Count}, seatId={SeatId}, idx={Index}", count, seatId, seatIndex);
                 await Task.Delay(100, cancellationToken);
 
                 var selectionConfirmed = await PlaywrightRuntime.TryWaitForConditionAsync(
