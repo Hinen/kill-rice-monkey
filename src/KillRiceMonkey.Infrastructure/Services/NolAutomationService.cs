@@ -1321,10 +1321,13 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private async Task<NolCaptchaSubmissionStatus> GetNolCaptchaSubmissionStatusAsync(IPage page, IFrame? captchaFrame, ILocator inputLocator, CancellationToken cancellationToken)
     {
-        // DOM 업데이트를 기다리기 위한 초기 지연 (서버 응답 후 에러 표시까지 150ms 정도 필요)
-        await Task.Delay(150, cancellationToken);
+        // 티켓팅 특성상 한 번의 제출 판정이 오래 걸릴수록 전체 재시도 시간이 크게 늘어난다.
+        // 초기 지연을 최소화(50ms)하고 폴링 간격도 25ms로 좁혀 빠르게 성공/실패를 판정한다.
+        // deadline은 600ms로 단축 — 서버가 이 시간 안에 성공/실패 응답을 반영하지 못하면 이후에도
+        // 직후 단계에서 최종 판정 로직이 한 번 더 체크하므로 오탐을 높이지 않는다.
+        await Task.Delay(50, cancellationToken);
 
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(1500);
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(600);
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1336,7 +1339,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             if (await IsCaptchaGoneAsync(inputLocator, page, captchaFrame))
                 return NolCaptchaSubmissionStatus.Success;
 
-            await Task.Delay(50, cancellationToken);
+            await Task.Delay(25, cancellationToken);
         }
 
         // 최종: 에러가 확정되면 Failure, 그 외에 모달이 사라져 있으면 Success
