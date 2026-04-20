@@ -1902,14 +1902,18 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         var zoneRequired = await IsNolOnestopZoneSelectionRequiredAsync(page);
         _logger.LogInformation("[OnestopSeat] 구역 선택 필요={Required}. checkMs={Ms}", zoneRequired, stepSw.ElapsedMilliseconds);
 
-        string? selectedZoneFill = null;
+        NolZoneSvgCandidate? selectedZone = null;
         if (zoneRequired)
         {
             stepSw.Restart();
             progress?.Report(new AutomationProgress("구역 선택 중", "구역 자동 선택 시도 중"));
-            selectedZoneFill = await EnsureNolOnestopZoneSelectedAsync(page, desiredBlock, progress, cancellationToken);
-            _logger.LogInformation("[OnestopSeat] 구역 선택 완료. fill={Fill}, waitMs={Ms}", selectedZoneFill ?? "<unknown>", stepSw.ElapsedMilliseconds);
+            selectedZone = await EnsureNolOnestopZoneSelectedAsync(page, desiredBlock, progress, cancellationToken);
+            _logger.LogInformation("[OnestopSeat] 구역 선택 완료. fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1}), waitMs={Ms}",
+                selectedZone?.Fill ?? "<unknown>",
+                selectedZone?.X ?? double.NaN, selectedZone?.Y ?? double.NaN, selectedZone?.Width ?? double.NaN, selectedZone?.Height ?? double.NaN,
+                stepSw.ElapsedMilliseconds);
         }
+        var selectedZoneFill = selectedZone?.Fill.ToLowerInvariant();
 
         stepSw.Restart();
         progress?.Report(new AutomationProgress("좌석 선택 중"));
@@ -1918,10 +1922,12 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         // 사용자가 수동으로 선택한 구역이 무한 반복으로 해제되는 버그가 발생한다.
         // 좌석 클릭은 아래 SelectNolOnestopSeatAsync에서 ScrollIntoViewIfNeededAsync +
         // Locator.ClickAsync(force)로 Playwright가 자동 스크롤/대기를 처리하도록 한다.
-        // selectedZoneFill 이 지정되면 해당 fill(=선택된 구역)의 좌석만 후보로 삼는다.
-        // NEW URL의 좌석맵은 선택하지 않은 다른 구역의 좌석도 disabled 없이 렌더링되므로
-        // fill 필터가 없으면 엉뚱한 구역 좌석을 클릭하게 된다.
-        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, selectedZoneFill, pauseGate, progress, cancellationToken);
+        // selectedZone이 지정되면 해당 구역의 fill(색) + bounds(좌표 범위) 둘 다로 좌석을 제한한다.
+        // NEW URL의 좌석맵은 선택하지 않은 다른 구역의 좌석도 disabled 없이 렌더링되며,
+        // 같은 fill(예: 주황)의 여러 지정석 구역(A/B/G/H ...)이 모두 함께 활성화된다.
+        // 따라서 fill만으로는 "주황 G석 클릭→주황 H석 선택" 버그를 막을 수 없고,
+        // SVG 구역 bounding box 내에 있는 좌석만 후보로 삼아야 정확하다(좌석 cx/cy는 SVG viewBox 좌표).
+        var selectedSeatId = await SelectNolOnestopSeatAsync(page, excludedSeats, selectedZone, pauseGate, progress, cancellationToken);
         _logger.LogInformation("[OnestopSeat] 좌석 클릭 완료. seatId={SeatId}, selectMs={Ms}", selectedSeatId, stepSw.ElapsedMilliseconds);
 
         stepSw.Restart();
@@ -1970,10 +1976,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
     private sealed record NolOnestopZoneCandidate(string Key, double ClientX, double ClientY, string Fill, double Area);
 
-    private async Task<string?> EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<NolZoneSvgCandidate?> EnsureNolOnestopZoneSelectedAsync(IPage page, string? desiredBlock, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
-        // 반환값: 선택된 구역의 fill 색상(소문자). 이 fill 좌석만 후보로 삼아야 다른 구역 좌석을 선택하는 버그를 방지한다.
-        // null 반환 시에는 fill 제한을 적용하지 않음(최다 fill 판정 실패 등).
+        // 반환값: 선택된 구역의 SVG 후보(fill + bounds). 좌석 선택 시 해당 구역 bounds 내 좌석만 후보로 삼아
+        // 같은 fill 여러 구역(주황 A/B/G/H 등)에서 엉뚱한 구역 좌석을 고르는 버그를 차단한다.
+        // null 반환 시에는 좌석 필터가 비어 dominant fill fallback 또는 미제한으로 진행.
         //
         // DesiredBlock이 비어 있으면 구역 자동 선택을 건너뛰고 사용자가 수동으로 구역을 클릭할 때까지 대기한다.
         // 좌석(SeatMap_seatGroup)에 활성 circle이 충분히 로드되면 사용자 선택 완료로 간주.
@@ -1993,20 +2000,22 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 var available = await CountAvailableNolOnestopSeatsAsync(page, null);
                 if (available >= 10)
                 {
-                    // 1) 사용자 클릭 좌표를 이용해 SVG 후보 중 포함되는 구역 찾기 → 해당 fill 반환.
-                    //    NEW 좌석맵은 선택 안 한 다른 구역 좌석도 활성 상태로 렌더되므로
-                    //    "최다 fill"로는 주황처럼 좌석이 적은 구역을 식별할 수 없다(→ 버그 재발 원인).
-                    var preciseFill = await ResolveUserClickZoneFillAsync(page);
-                    if (preciseFill is not null)
+                    // 1) 사용자 클릭 좌표를 이용해 SVG 후보 중 포함되는 구역 찾기 → 후보 통째로 반환.
+                    //    fill만으로는 같은 색 여러 구역을 구분 못하므로 bounds 까지 가진 후보가 필요.
+                    var preciseCand = await ResolveUserClickZoneCandidateAsync(page);
+                    if (preciseCand is not null)
                     {
-                        _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드, 클릭 좌표→fill={Fill}.", available, preciseFill);
-                        return preciseFill;
+                        _logger.LogInformation("[OnestopSeat] 사용자 구역 선택 감지 — 좌석 {Count}개 로드, 클릭→fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1}).",
+                            available, preciseCand.Fill, preciseCand.X, preciseCand.Y, preciseCand.Width, preciseCand.Height);
+                        return preciseCand;
                     }
 
-                    // 2) 최후 fallback: 활성 fill 분포 기준 dominant fill. 정확도 떨어지지만 none 방지.
+                    // 2) fallback: dominant fill 만 사용(bounds 없이 fill 필터만). 정확도 하락 경고.
                     var dominantFill = await DetectDominantActiveSeatFillAsync(page);
-                    _logger.LogWarning("[OnestopSeat] 사용자 클릭 좌표 매칭 실패 — dominant fill fallback={Fill}, 좌석 {Count}개.", dominantFill ?? "<none>", available);
-                    return dominantFill;
+                    _logger.LogWarning("[OnestopSeat] 사용자 클릭 좌표 매칭 실패 — dominant fill fallback={Fill}, 좌석 {Count}개. fill 필터만 적용(bounds 미지정).", dominantFill ?? "<none>", available);
+                    return dominantFill is null
+                        ? null
+                        : new NolZoneSvgCandidate(Key: "<fill-only>", Fill: dominantFill, Area: 0, X: double.NaN, Y: double.NaN, Width: double.NaN, Height: double.NaN, ViewWidth: 0, ViewHeight: 0);
                 }
 
                 // 25ms 폴링: 사람 반응속도(~150ms) 대비 6배 빠르게 감지. CPU 부담 미미.
@@ -2020,21 +2029,22 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
         var clearCount = 0;
         const int MaxClearCount = 3;
-        string? lastClickedFill = null;
+        NolOnestopZoneCandidate? lastClicked = null;
+        NolZoneSvgCandidate? lastSvgCandidate = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var available = await CountAvailableNolOnestopSeatsAsync(page, lastClickedFill);
+                var available = await CountAvailableNolOnestopSeatsAsync(page, lastClicked?.Fill.ToLowerInvariant());
                 if (available >= 10)
                 {
-                    _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지(fill={Fill}).", available, lastClickedFill ?? "<any>");
-                    return lastClickedFill ?? await DetectDominantActiveSeatFillAsync(page);
+                    _logger.LogInformation("[OnestopSeat] 구역 선택 후 좌석 {Count}개 감지(fill={Fill}).", available, lastClicked?.Fill ?? "<any>");
+                    return lastSvgCandidate;
                 }
 
-                var zoneCandidate = await TryFindNolOnestopZoneCandidateAsync(page, desiredBlock, attemptedZones);
+                var (zoneCandidate, svgCandidate) = await TryFindNolOnestopZoneCandidatePairAsync(page, desiredBlock, attemptedZones);
                 if (zoneCandidate is not null)
                 {
                     attemptedZones.Add(zoneCandidate.Key);
@@ -2042,9 +2052,6 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     var viewport = await GetNolViewportSizeAsync(page);
                     if (!IsViewportPoint(zoneCandidate.ClientX, zoneCandidate.ClientY, viewport))
                     {
-                        // viewport 밖 후보는 건너뛴다. 기존엔 TryResetNolSeatPlanZoomAsync(좌석도 전체보기)로
-                        // 줌을 리셋했지만 같은 버튼이 구역 선택 자체를 해제시키는 부작용이 있어
-                        // 사용하지 않는다. attemptedZones에 이미 추가되었으므로 다음 후보로 진행.
                         _logger.LogInformation("[OnestopSeat] 후보 좌표 viewport 밖 — 다음 후보로 진행. key={Key}, point=({X:F1},{Y:F1}), viewport=({VW},{VH})",
                             zoneCandidate.Key, zoneCandidate.ClientX, zoneCandidate.ClientY, viewport.width, viewport.height);
                         continue;
@@ -2053,15 +2060,18 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     await page.Mouse.MoveAsync((float)zoneCandidate.ClientX, (float)zoneCandidate.ClientY);
                     await page.Mouse.DownAsync();
                     await page.Mouse.UpAsync();
-                    lastClickedFill = zoneCandidate.Fill.ToLowerInvariant();
+                    lastClicked = zoneCandidate;
+                    lastSvgCandidate = svgCandidate;
                     _logger.LogInformation("[OnestopSeat] 구역 후보 클릭 — key={Key}, fill={Fill}, area={Area:F0}, x={X:F1}, y={Y:F1}",
                         zoneCandidate.Key, zoneCandidate.Fill, zoneCandidate.Area, zoneCandidate.ClientX, zoneCandidate.ClientY);
 
-                    var loaded = await WaitForNolOnestopSeatsLoadedAsync(page, lastClickedFill, TimeSpan.FromMilliseconds(1500), cancellationToken);
+                    var loaded = await WaitForNolOnestopSeatsLoadedAsync(page, zoneCandidate.Fill.ToLowerInvariant(), TimeSpan.FromMilliseconds(1500), cancellationToken);
                     if (loaded)
                     {
-                        _logger.LogInformation("[OnestopSeat] 구역 클릭 후 좌석 로드 확인(fill={Fill}).", lastClickedFill);
-                        return lastClickedFill;
+                        _logger.LogInformation("[OnestopSeat] 구역 클릭 후 좌석 로드 확인(fill={Fill}, bounds=({X:F1},{Y:F1},{W:F1},{H:F1})).",
+                            zoneCandidate.Fill,
+                            svgCandidate?.X ?? double.NaN, svgCandidate?.Y ?? double.NaN, svgCandidate?.Width ?? double.NaN, svgCandidate?.Height ?? double.NaN);
+                        return svgCandidate;
                     }
                     continue;
                 }
@@ -2133,8 +2143,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     }
 
     // 캡처된 사용자 클릭 좌표를 SVG 좌표계로 변환한 뒤, SVG 후보들의 bounding box 중 포함하는 것을 찾아
-    // 해당 후보의 fill(=사용자가 실제로 선택한 구역의 fill)을 반환한다. 실패 시 null.
-    private async Task<string?> ResolveUserClickZoneFillAsync(IPage page)
+    // 해당 후보 자체(fill + bounds)를 반환한다. 반환된 candidate의 bounds를 사용해 좌석 선택에서
+    // "같은 fill의 여러 구역" 중 정확한 구역만 필터할 수 있다.
+    private async Task<NolZoneSvgCandidate?> ResolveUserClickZoneCandidateAsync(IPage page)
     {
         try
         {
@@ -2181,11 +2192,11 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             {
                 _logger.LogDebug("[OnestopSeat] 클릭 좌표({CX:F1},{CY:F1})→SVG({SX:F1},{SY:F1}) 매칭 후보 fill={Fill}, key={Key}.",
                     clickX, clickY, svgX, svgY, containing.Fill, containing.Key);
-                return containing.Fill.ToLowerInvariant();
+                return containing;
             }
 
-            // 2차: 근처 후보 (오차 허용) — 영역 경계 바로 밖이면 8px viewport 허용
-            var tolerance = Math.Max(vw, vh) * 0.02; // viewBox 크기의 2%
+            // 2차: 근처 후보 (오차 허용) — 영역 경계 바로 밖이면 viewBox 크기의 2% 허용
+            var tolerance = Math.Max(vw, vh) * 0.02;
             var nearby = candidates
                 .Where(c => c.ContainsSvgPoint(svgX, svgY, tolerance))
                 .OrderBy(c => (c.CenterX - svgX) * (c.CenterX - svgX) + (c.CenterY - svgY) * (c.CenterY - svgY))
@@ -2193,7 +2204,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
             if (nearby is not null)
             {
                 _logger.LogDebug("[OnestopSeat] 클릭 좌표 근접(tol={Tol:F1}) 매칭 fill={Fill}, key={Key}.", tolerance, nearby.Fill, nearby.Key);
-                return nearby.Fill.ToLowerInvariant();
+                return nearby;
             }
 
             _logger.LogDebug("[OnestopSeat] 클릭 좌표({CX:F1},{CY:F1})→SVG({SX:F1},{SY:F1})에 매칭되는 후보 없음 (후보 {Count}개).",
@@ -2202,9 +2213,47 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         }
         catch (Exception ex) when (ex is PlaywrightException or HttpRequestException or TaskCanceledException or JsonException or XmlException)
         {
-            _logger.LogDebug(ex, "[OnestopSeat] 사용자 클릭 좌표→fill 해석 실패.");
+            _logger.LogDebug(ex, "[OnestopSeat] 사용자 클릭 좌표→후보 해석 실패.");
             return null;
         }
+    }
+
+    // 좌석 클릭 후 NOL이 띄우는 alertdialog(ModalConfirm_outerWrap)을 감지해 "확인" 버튼을 자동 클릭한다.
+    // 이 모달이 열려 있으면 '선택 완료' 버튼을 덮어 클릭이 계속 실패하므로 진입 즉시 닫아야 한다.
+    private static async Task<bool> DismissNolSeatConfirmModalAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>(@"() => {
+                // ModalConfirm_outerWrap + role=alertdialog 조합을 우선 매칭
+                let modal = document.querySelector('[class*=""ModalConfirm_outerWrap""][aria-modal=""true""], [class*=""ModalConfirm_""][role=""alertdialog""], div[role=""alertdialog""][aria-modal=""true""]');
+                if (!modal) {
+                    // 드문 변형: outerWrap 없이 내부 컨테이너만 있을 수 있음
+                    const any = document.querySelector('[class*=""ModalConfirm_""]');
+                    if (any && any.offsetWidth > 0) modal = any;
+                }
+                if (!modal) return false;
+
+                // 확인 버튼 후보: primary 스타일 > '확인' 텍스트 > 첫 번째 button
+                const primaries = [...modal.querySelectorAll('button[class*=""primary""], button[class*=""Primary""]')];
+                const textConfirm = [...modal.querySelectorAll('button')].filter(b => {
+                    const t = (b.innerText || '').trim();
+                    return /^(\s*확인\s*|\s*예\s*|\s*OK\s*|\s*Confirm\s*)$/i.test(t);
+                });
+                const allButtons = [...modal.querySelectorAll('button')];
+
+                const ordered = [...new Set([...primaries, ...textConfirm, ...allButtons])];
+                for (const b of ordered) {
+                    const s = window.getComputedStyle(b);
+                    if (s.display === 'none' || s.visibility === 'hidden') continue;
+                    if (b.disabled) continue;
+                    b.click();
+                    return true;
+                }
+                return false;
+            }");
+        }
+        catch (PlaywrightException) { return false; }
     }
 
     // 활성 좌석 circle의 fill 분포를 분석해 지배적 fill(= 사용자가 선택한 구역 fill)을 판정한다.
@@ -2317,7 +2366,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         return false;
     }
 
-    private async Task<NolOnestopZoneCandidate?> TryFindNolOnestopZoneCandidateAsync(IPage page, string? desiredBlock, HashSet<string> attemptedZones)
+    // 화면 좌표(ClientX/Y, fill/area)와 SVG 좌표(bounds 포함)를 pair로 반환하여
+    // 좌석 선택 시 bounds로 소속 좌석을 필터할 수 있도록 한다.
+    private async Task<(NolOnestopZoneCandidate? Zone, NolZoneSvgCandidate? Svg)> TryFindNolOnestopZoneCandidatePairAsync(IPage page, string? desiredBlock, HashSet<string> attemptedZones)
     {
         const string script = @"() => {
             const wrapper = document.querySelector('[class*=""SeatMap_blockImg_""]');
@@ -2344,12 +2395,12 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         {
             var imageInfo = await page.EvaluateAsync<JsonElement?>(script);
             if (imageInfo is null || imageInfo.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-                return null;
+                return (null, null);
 
             var image = imageInfo.Value;
             var src = image.GetProperty("src").GetString();
             if (string.IsNullOrWhiteSpace(src))
-                return null;
+                return (null, null);
 
             var left = image.GetProperty("left").GetDouble();
             var top = image.GetProperty("top").GetDouble();
@@ -2363,7 +2414,7 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 .ToList();
 
             if (ordered.Count == 0)
-                return null;
+                return (null, null);
 
             // DesiredBlock이 "1","2"…처럼 1-based 정수 문자열이면 해당 후보를 최우선 시도.
             // 실측 기준 SVG에는 블록 이름(A1,B2 등) 메타데이터가 없어 텍스트 매칭은 불가능하다.
@@ -2377,15 +2428,16 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 var clientX = left + (cand.CenterX / cand.ViewWidth) * width;
                 var clientY = top + (cand.CenterY / cand.ViewHeight) * height;
-                return new NolOnestopZoneCandidate(cand.Key, clientX, clientY, cand.Fill, cand.Area);
+                var zone = new NolOnestopZoneCandidate(cand.Key, clientX, clientY, cand.Fill, cand.Area);
+                return (zone, cand);
             }
 
-            return null;
+            return (null, null);
         }
         catch (Exception ex) when (ex is PlaywrightException or HttpRequestException or TaskCanceledException or XmlException)
         {
             _logger.LogWarning(ex, "[OnestopSeat] 구역 후보 계산 실패");
-            return null;
+            return (null, null);
         }
     }
 
@@ -2557,12 +2609,22 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
         return (xs.Min(), ys.Min(), xs.Max() - xs.Min(), ys.Max() - ys.Min());
     }
 
-    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, string? requiredFill, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
+    private async Task<string> SelectNolOnestopSeatAsync(IPage page, HashSet<string> excludedSeats, NolZoneSvgCandidate? zoneCandidate, ManualResetEventSlim? pauseGate, IProgress<AutomationProgress>? progress, CancellationToken cancellationToken)
     {
         const int maxRetries = 10;
-        // requiredFill이 지정되면 해당 fill 색의 좌석만 후보로 삼아 "사용자가 선택한 구역"에 속한 좌석만 클릭한다.
-        // NEW URL 좌석맵은 선택 안 한 다른 구역 좌석도 disabled 없이 렌더링하므로 fill 필터가 없으면 엉뚱한 구역 좌석을 선택한다(실측 확인).
-        var normalizedFill = requiredFill?.ToLowerInvariant() ?? string.Empty;
+        // zoneCandidate가 지정되면 해당 구역의 fill(색) + bounds(SVG 좌표 범위)로 좌석을 제한한다.
+        // NEW URL 좌석맵은 선택 안 한 다른 구역 좌석도 disabled 없이 렌더링하며, 같은 fill(예: 주황)의 여러 구역이 함께 활성화된다.
+        // 따라서 fill만으로는 "주황 G석 선택 → 주황 H석 클릭" 버그를 막을 수 없고,
+        // 좌석 cx/cy가 구역 bounding box 안에 있는지까지 검사해야 한다.
+        // zoneCandidate가 bounds를 모르는 fallback(dummy Key="<fill-only>", bounds NaN)이면 fill만 적용.
+        var normalizedFill = zoneCandidate?.Fill.ToLowerInvariant() ?? string.Empty;
+        var hasBounds = zoneCandidate is not null
+            && !double.IsNaN(zoneCandidate.X) && !double.IsNaN(zoneCandidate.Y)
+            && zoneCandidate.Width > 0 && zoneCandidate.Height > 0;
+        var boundsX = hasBounds ? zoneCandidate!.X : double.NaN;
+        var boundsY = hasBounds ? zoneCandidate!.Y : double.NaN;
+        var boundsW = hasBounds ? zoneCandidate!.Width : double.NaN;
+        var boundsH = hasBounds ? zoneCandidate!.Height : double.NaN;
         for (var retry = 0; retry < maxRetries; retry++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2573,6 +2635,8 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     const circles = document.querySelectorAll('__SEAT_SELECTOR__');
                     const excluded = args.excluded || [];
                     const requiredFill = (args.requiredFill || '').toLowerCase();
+                    const hasBounds = !!args.hasBounds;
+                    const bx = args.boundsX, by = args.boundsY, bw = args.boundsW, bh = args.boundsH;
                     const seats = [];
                     let i = 0;
                     for (const c of circles) {
@@ -2588,6 +2652,9 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                         if (requiredFill && (c.getAttribute('fill') || '').toLowerCase() !== requiredFill) { i++; continue; }
                         const cx = parseFloat(c.getAttribute('cx') || '0');
                         const cy = parseFloat(c.getAttribute('cy') || '0');
+                        // bounds 필터: 좌석 cx/cy가 구역 bounding box 내부인지 (SVG viewBox 좌표 동일).
+                        // NEW 좌석맵은 같은 fill(주황)의 여러 구역이 모두 활성화되므로 bounds로 구역 단위를 엄격히 제한.
+                        if (hasBounds && (cx < bx || cx > bx + bw || cy < by || cy > by + bh)) { i++; continue; }
                         const seatId = cx.toFixed(1) + ',' + cy.toFixed(1);
                         if (excluded.includes(seatId)) { i++; continue; }
                         seats.push({ cx: cx, cy: cy, idx: i, id: seatId });
@@ -2598,7 +2665,16 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                     const t = seats[0];
                     return JSON.stringify({ s: 'candidate', c: seats.length, id: t.id, idx: t.idx, cx: t.cx, cy: t.cy });
                 }".Replace("__SEAT_SELECTOR__", NolOnestopSeatCircleSelector.Replace("'", "\\'"));
-                var scanResult = await page.EvaluateAsync<string>(scanScript, new { excluded = excludedArray, requiredFill = normalizedFill });
+                var scanResult = await page.EvaluateAsync<string>(scanScript, new
+                {
+                    excluded = excludedArray,
+                    requiredFill = normalizedFill,
+                    hasBounds,
+                    boundsX,
+                    boundsY,
+                    boundsW,
+                    boundsH,
+                });
 
                 using var doc = JsonDocument.Parse(scanResult);
                 var status = doc.RootElement.GetProperty("s").GetString();
@@ -2657,6 +2733,18 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
                 }
                 // 좌석 클릭 후 DOM 상태 업데이트 최소 대기. 너무 짧으면 완료 버튼 아직 active 안 됨.
                 await Task.Delay(30, cancellationToken);
+
+                // NOL은 좌석 클릭 시 종종 "선택하시겠습니까?" 같은 ModalConfirm_outerWrap 확인 모달을
+                // 띄운다. 이 모달이 '선택 완료' 버튼 위를 덮어 pointer events를 가로채므로
+                // 완료 클릭이 계속 timeout 1500ms * 재시도로 수초씩 밀리는 지연의 주범이 된다.
+                // 감지 즉시 확인 버튼을 자동 클릭해 모달을 닫는다.
+                var dismissed = await DismissNolSeatConfirmModalAsync(page);
+                if (dismissed)
+                {
+                    _logger.LogInformation("[OnestopSeat] 좌석 선택 확인 모달 자동 확인 클릭.");
+                    // 모달 close 애니메이션/DOM detach 완료 대기
+                    await Task.Delay(80, cancellationToken);
+                }
 
                 // selectionConfirmed 500ms: React state 반영 시간. 성공은 보통 100~200ms, 500ms면 2배 여유.
                 var selectionConfirmed = await PlaywrightRuntime.TryWaitForConditionAsync(
