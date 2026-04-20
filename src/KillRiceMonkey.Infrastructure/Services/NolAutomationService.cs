@@ -1590,56 +1590,94 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
     {
         const string inputSelector = "#txtCaptcha, [class*='captchaInput'] input, [class*='captchaInput'], input[placeholder*='문자'], input[name*='captcha' i], input[id*='captcha' i], input[name*='CAPTCHA'], input[placeholder*='보안문자'], input[placeholder*='자동입력']";
         var infinite = timeout == Timeout.InfiniteTimeSpan;
-        var deadline = infinite ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow + timeout;
+        var timeoutMs = infinite ? int.MaxValue : (float)timeout.TotalMilliseconds;
 
-        while (DateTimeOffset.UtcNow < deadline)
+        using var innerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var winnerTcs = new TaskCompletionSource<(ILocator?, IFrame?, IPage?)>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // 이벤트 기반: 각 context page + 주요 frame에 대해 Locator.WaitForAsync를 병렬 발사.
+        // 서버 응답이 도착해 DOM에 입력창이 attach되는 즉시 성공 반환 → 폴링 30ms overhead 제거.
+        var waitTasks = new List<Task>();
+
+        void RegisterPage(IPage targetPage)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (targetPage.IsClosed) return;
 
-            var pagesToSearch = new List<IPage> { page };
+            // main frame
+            waitTasks.Add(WaitOneAsync(targetPage, null, inputSelector, timeoutMs, innerCts.Token, winnerTcs));
+            // 현재 존재하는 child frames
             try
             {
-                foreach (var contextPage in page.Context.Pages)
+                foreach (var f in targetPage.Frames)
                 {
-                    if (contextPage != page && !contextPage.IsClosed)
-                        pagesToSearch.Add(contextPage);
+                    if (f == targetPage.MainFrame) continue;
+                    waitTasks.Add(WaitOneAsync(targetPage, f, inputSelector, timeoutMs, innerCts.Token, winnerTcs));
                 }
             }
-            catch { }
+            catch (PlaywrightException) { }
 
-            foreach (var searchPage in pagesToSearch)
+            // 이후 등장하는 새 frame도 감지 (OLD iframe 새로 붙을 수 있음)
+            targetPage.FrameAttached += (_, frame) =>
             {
-                if (searchPage.IsClosed) continue;
-
-                try
-                {
-                    var mainInput = searchPage.Locator(inputSelector);
-                    if (await mainInput.CountAsync() > 0)
-                        return (mainInput, null, searchPage);
-                }
-                catch (PlaywrightException) { }
-
-                try
-                {
-                    foreach (var frame in searchPage.Frames)
-                    {
-                        if (frame == searchPage.MainFrame) continue;
-                        try
-                        {
-                            var frameInput = frame.Locator(inputSelector);
-                            if (await frameInput.CountAsync() > 0)
-                                return (frameInput, frame, searchPage);
-                        }
-                        catch (PlaywrightException) { }
-                    }
-                }
-                catch { }
-            }
-
-            await Task.Delay(PlaywrightRuntime.PollDelayMilliseconds, cancellationToken);
+                if (innerCts.IsCancellationRequested) return;
+                if (frame == targetPage.MainFrame) return;
+                waitTasks.Add(WaitOneAsync(targetPage, frame, inputSelector, timeoutMs, innerCts.Token, winnerTcs));
+            };
         }
 
-        return (null, null, null);
+        try
+        {
+            RegisterPage(page);
+            foreach (var p in page.Context.Pages)
+            {
+                if (p != page) RegisterPage(p);
+            }
+
+            // 새 페이지 열릴 경우도 감지
+            page.Context.Page += (_, newPage) =>
+            {
+                if (innerCts.IsCancellationRequested) return;
+                if (newPage != page) RegisterPage(newPage);
+            };
+
+            if (waitTasks.Count == 0)
+                return (null, null, null);
+
+            // winner 또는 전체 timeout 대기
+            var timeoutTask = infinite ? Task.Delay(Timeout.InfiniteTimeSpan, innerCts.Token)
+                                       : Task.Delay(timeout, innerCts.Token);
+            var completed = await Task.WhenAny(winnerTcs.Task, timeoutTask);
+            if (completed == winnerTcs.Task)
+                return await winnerTcs.Task;
+            return (null, null, null);
+        }
+        finally
+        {
+            // 대기 중인 WaitForAsync들을 취소해 playwright 부하 해소
+            innerCts.Cancel();
+            try { await Task.WhenAll(waitTasks).WaitAsync(TimeSpan.FromMilliseconds(50)); } catch { }
+        }
+
+        static async Task WaitOneAsync(
+            IPage owningPage, IFrame? frame, string selector, float timeoutMs,
+            CancellationToken token, TaskCompletionSource<(ILocator?, IFrame?, IPage?)> winner)
+        {
+            try
+            {
+                var baseLocator = frame is null ? owningPage.Locator(selector) : frame.Locator(selector);
+                await baseLocator.First.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Attached,
+                    Timeout = timeoutMs,
+                }).WaitAsync(token);
+
+                if (token.IsCancellationRequested) return;
+                winner.TrySetResult((baseLocator, frame, owningPage));
+            }
+            catch (OperationCanceledException) { }
+            catch (PlaywrightException) { }
+            catch (Exception) { }
+        }
     }
 
     private sealed class NolRoundItem
@@ -2549,8 +2587,10 @@ public sealed class NolAutomationService : INolAutomationService, IAsyncDisposab
 
                 return false;
             },
-            // 2500ms: 서버 응답 포함 페이지 전환은 1~2초. 2.5초면 여유 확보.
-            TimeSpan.FromMilliseconds(2500), cancellationToken);
+            // 3500ms: 실측상 정상 전환은 300~500ms지만 서버/네트워크 variance가 커서
+            // 2500ms로는 timeout 후 재시도가 자주 발생(실측 2회차 2886ms). 재시도 1회 오버헤드(~3000ms)가
+            // timeout 1000ms 추가보다 훨씬 크므로 3500ms로 상향해 재시도를 방지.
+            TimeSpan.FromMilliseconds(3500), cancellationToken);
     }
 
     private async Task SelectNolLegacySeatAndCompleteAsync(IPage page, TimeSpan timeout, IProgress<AutomationProgress>? progress, string? desiredBlock, HashSet<string> excludedSeats, ManualResetEventSlim? pauseGate, CancellationToken cancellationToken)
