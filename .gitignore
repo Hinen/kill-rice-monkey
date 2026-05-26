@@ -27,8 +27,12 @@ publish-output/
 publish/kill-rice-monkey-yes24/
 
 .claude
-.omc
+.omc/
 .sisyphus/
 .tmp-yes24-qa/
 yes24.txt
 kakao.txt
+
+.omo/
+.omx/
+AGENTS.md
